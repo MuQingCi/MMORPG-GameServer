@@ -7,6 +7,8 @@
 #include <vector>
 
 class Msg;
+
+template<typename T>
 class MsgQueue;
 
 class MsgBus
@@ -25,26 +27,23 @@ using MsgPtr = std::shared_ptr<Msg>;  //选择shared_ptr以适配broadcastToLogi
     MsgBus& operator=(MsgBus&&) = delete;
     
     //根据第一个参数哈希
-    void sendToActor(ActorId id, MsgPtr m);
-    void sendToModule(ModuleId mid, MsgPtr m);
+    void sendToActor(ActorId id, Msg& m);
+    void sendToModule(ModuleId mid, Msg& m);
     //精准回投源逻辑线程
-    void sendToWorker(WorkerId wid, MsgPtr m);
+    void sendToWorker(WorkerId wid, Msg& m);
     //投递消息到对应辅助线程
     void sendToNet(MsgPtr m);
-    void sendToTimer(MsgPtr m);
     void sendToDB(MsgPtr m);
 
     //从辅助线程对应的消息队列中取消息
     bool tryPopWorker(WorkerId wid, Msg& out);
     bool tryPopNet(Msg& out);
-    bool tryPopTimer(Msg& out);
     bool tryPopDB(Msg& out);
 
     void broadcastToLogic(MsgPtr m);
 private:
-    std::vector<std::unique_ptr<MsgQueue>> worker_queues_;
-    std::unique_ptr<MsgQueue> net_queue_;
-    std::unique_ptr<MsgQueue> timer_queue_;
-    std::unique_ptr<MsgQueue> db_queue_;
+    std::vector<std::unique_ptr<MsgQueue<Msg>>> worker_queues_;
+    std::unique_ptr<MsgQueue<Msg>> net_queue_;
+    std::unique_ptr<MsgQueue<Msg>> db_queue_;
 };
 #endif

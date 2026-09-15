@@ -77,9 +77,6 @@ struct MsgHead
 {
     uint16_t msgType = MsgType::MSGTYPE_NONE;
 
-    uint16_t src;   //发送线程id
-    uint16_t dst;   //接收线程id
-
     //模块id,方法id--用于逻辑线程查路由并分发
     uint16_t modle;
     uint16_t method;
@@ -87,12 +84,24 @@ struct MsgHead
     uint64_t seq;      //请求序列号,原样回传
     uint32_t session;  //会话id
     uint64_t playerId; //玩家id
+    uint32_t srcWorkerId; // 仅用于"结果回投原逻辑线程"，不是路由依据
 };
 
 struct Msg
 {
     MsgHead head;
     std::string body;
+};
+
+struct TimerOp // 定时器线程专用，不塞进 MsgBus
+{          
+    enum Kind { ADD, CANCEL } kind;
+    uint32_t timerId;
+    uint64_t ownerWorkerId;   // 到期后回投哪个逻辑线程
+    uint64_t intervalMs;
+    bool repeat;
+    uint16_t module, method;
+    uint64_t playerId, session, seq;
 };
 
 #endif
