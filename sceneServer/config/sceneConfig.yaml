@@ -1,0 +1,13 @@
+SceneServer:
+    sceneID: 1  #场景编号
+    threadPoolSize: 8   #逻辑线程池大小
+    
+    listenAddr: 127.0.0.1 #当前场景监听地址
+    listenPort: 12345     #当前场景监听端口
+
+    regitstry:
+        type: etcd      #服务注册类型
+        etcd_url: http://127.0.0.1:2379
+
+    
+    
