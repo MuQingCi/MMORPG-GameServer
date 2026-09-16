@@ -3,13 +3,15 @@
 
 #include "common/queue.h"
 #include "common/msgBus.h"
+#include "common/buffer.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <thread>
 #include <map>
-
+#include <unordered_map>
 
 class NetServer
 {
@@ -21,15 +23,30 @@ public:
     bool start();
     void stop();
 
+    void enableWrite(uint64_t session, bool on);
+
 private:
-    NetServer();
+struct Conn
+    {
+        int fd = -1;                    //连接对应的Fd
+        uint64_t session = 0;
+        uint64_t gatewayID;             //网关ID
+        uint64_t playerId;              //玩家id
+        bool peer_closed = false;       // 对端已断,只允许回写并等待逻辑踢除
+
+        bool writing = false; //是否开启写事件监听
+
+        Buffer buffer;  //待发送数据缓冲区
+    };
     
     void run();
 
     void acceptNewConn();
-    void handleRead();
-    void handleWrite();
-    void handleClose();
+    void processBusMsg();
+    void doWrite(Conn& conn);
+    void handleRead(Conn& conn);
+    void handleWrite(Conn& conn);
+    void handleClose(Conn& conn);
 
     bool started_ = false;
 
@@ -38,21 +55,12 @@ private:
     std::string addr_;
     size_t port_;
 
-    size_t epFd_;
-    size_t listenFd_;
-    size_t weakupFd_;
+    int epFd_;
+    int listenFd_;
+    int weakupFd_;
 
-    std::atomic<uint64_t> nextId_;
+    std::atomic<uint64_t> nextSession_;
 
-    struct Conn
-    {
-        uint64_t gatewayID;             //网关ID
-        uint64_t playerId;              //玩家id
-        bool peer_closed = false;       // 对端已断,只允许回写并等待逻辑踢除
-        size_t fd = -1;                 //连接对应的Fd
-        size_t id;
-        std::string body;               //数据
-    };
     std::map<uint64_t,Conn> conns_;     //session->Conn
     MsgBus* mBus_ = nullptr;
 };
