@@ -46,26 +46,16 @@ enum MsgType : uint16_t
 
 namespace Modle
 {
-    constexpr uint16_t LOGIN           = 1;    //登录
-    constexpr uint16_t REGISTER        = 2;    //注册
     constexpr uint16_t MOVE            = 3;    //移动
     constexpr uint16_t BAG             = 4;    //背包
     constexpr uint16_t BATTLE          = 5;    //战斗
     constexpr uint16_t SHOPPINGMALL    = 6;    //商城
-    constexpr uint16_t PLAYER          = 7;    //玩家
+    constexpr uint16_t PLAYER          = 7;    //玩家模块
 };
 
 
 namespace method
 {
-    //登录
-    constexpr uint16_t L_LOGIN_ACCOUNT      = 1;    //登录账号
-    constexpr uint16_t L_LOGIN_PLAYER       = 2;    //登录角色
-
-    //注册
-    constexpr uint16_t R_REGISTER_ACCOUNT   = 1;    //注册账号
-    constexpr uint16_t R_REGISTER_PLAYER    = 2;    //注册角色
-
     //移动
     constexpr uint16_t M_MOVE       = 1;
 
@@ -82,7 +72,7 @@ struct MsgHead
     uint16_t method;
     
     uint64_t seq;      //请求序列号,原样回传
-    uint32_t session;  //会话id
+    uint64_t session;  //会话id
     uint64_t playerId; //玩家id
     uint32_t srcWorkerId; // 仅用于"结果回投原逻辑线程"，不是路由依据
 };
@@ -96,12 +86,37 @@ struct Msg
 struct TimerOp // 定时器线程专用，不塞进 MsgBus
 {          
     enum Kind { ADD, CANCEL } kind;
-    uint32_t timerId;
+    uint64_t timerId;
     uint64_t ownerWorkerId;   // 到期后回投哪个逻辑线程
     uint64_t intervalMs;
     bool repeat;
     uint16_t module, method;
     uint64_t playerId, session, seq;
 };
+
+// 便捷小工具
+inline void PutU16(std::string& s, uint16_t v) {
+  s.push_back(char(v & 0xFF));
+  s.push_back(char((v >> 8) & 0xFF));
+}
+inline void PutU32(std::string& s, uint32_t v) {
+  for (int i = 0; i < 4; ++i) s.push_back(char((v >> (8 * i)) & 0xFF));
+}
+inline void PutI64(std::string& s, int64_t v) {
+  uint64_t u = static_cast<uint64_t>(v);
+  for (int i = 0; i < 8; ++i) s.push_back(char((u >> (8 * i)) & 0xFF));
+}
+inline uint16_t GetU16(const char* p) {
+  return uint16_t(uint8_t(p[0]) | (uint8_t(p[1]) << 8));
+}
+inline uint32_t GetU32(const char* p) {
+  return uint32_t(uint8_t(p[0]) | (uint8_t(p[1]) << 8) | (uint8_t(p[2]) << 16) |
+                  (uint8_t(p[3]) << 24));
+}
+inline int64_t GetI64(const char* p) {
+  uint64_t u = 0;
+  for (int i = 0; i < 8; ++i) u |= uint64_t(uint8_t(p[i])) << (8 * i);
+  return static_cast<int64_t>(u);
+}
 
 #endif

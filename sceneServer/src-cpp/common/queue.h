@@ -9,7 +9,7 @@
  * @brief MPSC消息队列封装，使用此队列需要确保满足多生产者，单消费者的前提
  * 
  */
- template<typename T>
+template<typename T>
 class MsgQueue
 {
 public:
