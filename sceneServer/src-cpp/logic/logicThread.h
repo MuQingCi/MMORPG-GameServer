@@ -3,32 +3,55 @@
 
 #include "common/queue.h"
 #include "common/msgBus.h"
+#include "common/msg.h"
 
-
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <thread>
 
 struct lua_State;
+class LuaEnv;
+class ITimerService;
+class PlayerManager;
 
 class LogicThread
 {
 public:
-    LogicThread(uint32_t threadId, MsgBus& bus);
+    LogicThread(uint16_t threadId, MsgBus& bus, const std::string& luaDir);
     ~LogicThread();
 
     bool start();
     void stop();
 
-    void run();
+    void bindTimer(ITimerService* timer);
+    
 private:
-    void work();
+    void run();
+    void handleMsg(Msg& m);
 
+    void onNetMsg(Msg& m);
+    void onDBResult(Msg& m);
+    void onTimer(Msg& m);
+    void onReload(Msg& m);
+    void doReload();
+
+    void ScanIdle();
+    void FlushTimer();
+
+    //viod RedisHeartbeat();
+
+    void processPendingMsg();
     std::thread thread_;
     uint32_t threadId_;
-    bool stared_ = false;
+    std::atomic<bool> started_ = false;
+    std::atomic<bool> lua_reload_requested_ = false;
 
-    lua_State* l_state = nullptr;
     MsgBus* m_bus_ = nullptr;
+    std::string lua_dir_;
+
+    std::unique_ptr<LuaEnv> luaEnvPtr_;
+    std::unique_ptr<PlayerManager> playerMgr_;
 };  
 
 #endif
