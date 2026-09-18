@@ -206,7 +206,7 @@ private:
 
     void ensureWriteable(size_t len);
 
-    static const size_t kCheapPrepend = 8;
+    static const size_t kCheapPrepend = 32;
     size_t writeIndex_;
     size_t readIndex_;
 
