@@ -111,8 +111,8 @@ int64_t SendDbFromLua(lua_State* L, uint8_t kind) {
 	// m.h.type = MT_DB_TASK;
 	// m.h.src = THREAD_LOGIC;
 	// m.h.dst = THREAD_DB;
-	// m.h.module = Mod::LUA_DB;          // 结果回投给 lua db 分发
-	// m.h.method = Meth::LUA_DB_ACK;
+	// m.h.Module = Module::LUA_DB;          // 结果回投给 lua db 分发
+	// m.h.Method = Method::LUA_DB_ACK;
 	// m.h.ctx = ctx;
 	// dbv::DbTask task;
 	// task.kind = kind;
@@ -193,7 +193,7 @@ static int l_net_send(lua_State* L) {
 	}
 	std::string body = pb->SerializeAsString();
 	delete pb;
-	NetServer::SendPacket(session, route->module, route->method, seq, body);
+	NetServer::SendPacket(session, route->Module, route->Method, seq, body);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -330,16 +330,16 @@ static int l_player_list_bag(lua_State* L) {
   }
   return 1;
 }
-static int l_player_modify_hp(lua_State* L) {
+static int l_player_Moduleify_hp(lua_State* L) {
   uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
   int32_t delta = (int32_t)luaL_checkinteger(L, 2);
-  PlayerMgr::I().ModifyHp(pid, delta);
+  PlayerMgr::I().ModuleifyHp(pid, delta);
   return 0;
 }
-static int l_player_modify_mp(lua_State* L) {
+static int l_player_Moduleify_mp(lua_State* L) {
   uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
   int32_t delta = (int32_t)luaL_checkinteger(L, 2);
-  PlayerMgr::I().ModifyMp(pid, delta);
+  PlayerMgr::I().ModuleifyMp(pid, delta);
   return 0;
 }
 static int l_player_add_gold(lua_State* L) {
@@ -377,116 +377,118 @@ static int l_player_bag_add(lua_State* L) {
   return 0;
 }
 static int l_player_kick(lua_State* L) {
-  uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
-  PlayerMgr::I().Logout(pid, true);
-  return 0;
+    uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
+    PlayerMgr::I().Logout(pid, true);
+    return 0;
 }
 // 查询玩家当前会话(供附近广播等安全发送使用)
 static int l_player_session(lua_State* L) {
-  uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
-  lua_pushinteger(L, PlayerMgr::I().SessionOf(pid));
-  return 1;
+    uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, PlayerMgr::I().SessionOf(pid));
+    return 1;
 }
 static int l_player_get_nearby(lua_State* L) {
-  Player* p = RequireOnline(L, 1);
-  if (!p) return 0;
-  std::vector<uint32_t> near = Scene::I().GetNearby(p->pid);
-  lua_newtable(L);
-  int idx = 1;
-  for (uint32_t np : near) {
-    Player* o = PlayerMgr::I().Online(np);
-    if (!o) continue;
+    Player* p = RequireOnline(L, 1);
+    if (!p) return 0;
+    std::vector<uint32_t> near = Scene::I().GetNearby(p->pid);
     lua_newtable(L);
-    lua_pushinteger(L, o->pid);
-    lua_setfield(L, -2, "pid");
-    lua_pushstring(L, o->name.c_str());
-    lua_setfield(L, -2, "name");
-    lua_pushinteger(L, o->x);
-    lua_setfield(L, -2, "x");
-    lua_pushinteger(L, o->y);
-    lua_setfield(L, -2, "y");
-    lua_rawseti(L, -2, idx++);
-  }
-  return 1;
+    int idx = 1;
+    for (uint32_t np : near) {
+        Player* o = PlayerMgr::I().Online(np);
+        if (!o) continue;
+        lua_newtable(L);
+        lua_pushinteger(L, o->pid);
+        lua_setfield(L, -2, "pid");
+        lua_pushstring(L, o->name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushinteger(L, o->x);
+        lua_setfield(L, -2, "x");
+        lua_pushinteger(L, o->y);
+        lua_setfield(L, -2, "y");
+        lua_rawseti(L, -2, idx++);
+    }
+    return 1;
 }
 
 static int l_item_conf(lua_State* L) {
-  int32_t item_id = (int32_t)luaL_checkinteger(L, 1);
-  const ItemConf* conf = ItemConfMgr::I().Find(item_id);
-  if (!conf) {
-    lua_pushnil(L);
+    int32_t item_id = (int32_t)luaL_checkinteger(L, 1);
+    const ItemConf* conf = ItemConfMgr::I().Find(item_id);
+    if (!conf) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, conf->item_id);
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, conf->name.c_str());
+    lua_setfield(L, -2, "name");
+    lua_pushinteger(L, conf->item_type);
+    lua_setfield(L, -2, "type");
+    lua_pushinteger(L, conf->max_stack);
+    lua_setfield(L, -2, "stack");
+    lua_pushstring(L, conf->use_func.c_str());
+    lua_setfield(L, -2, "func");
+    // 参数 JSON 树 -> Lua
+    if (conf->param.type == JsonNode::kObj) {
+        PushJson(L, conf->param);
+        lua_setfield(L, -2, "param");
+    }
     return 1;
-  }
-  lua_newtable(L);
-  lua_pushinteger(L, conf->item_id);
-  lua_setfield(L, -2, "id");
-  lua_pushstring(L, conf->name.c_str());
-  lua_setfield(L, -2, "name");
-  lua_pushinteger(L, conf->item_type);
-  lua_setfield(L, -2, "type");
-  lua_pushinteger(L, conf->max_stack);
-  lua_setfield(L, -2, "stack");
-  lua_pushstring(L, conf->use_func.c_str());
-  lua_setfield(L, -2, "func");
-  // 参数 JSON 树 -> Lua
-  if (conf->param.type == JsonNode::kObj) {
-    PushJson(L, conf->param);
-    lua_setfield(L, -2, "param");
-  }
-  return 1;
 }
 
 static int l_path_find(lua_State* L) {
-  int sx = (int)luaL_checkinteger(L, 1);
-  int sy = (int)luaL_checkinteger(L, 2);
-  int tx = (int)luaL_checkinteger(L, 3);
-  int ty = (int)luaL_checkinteger(L, 4);
-  auto path = Scene::I().FindPath(sx, sy, tx, ty);
-  lua_newtable(L);
-  int idx = 1;
-  for (auto& p : path) {
+    int sx = (int)luaL_checkinteger(L, 1);
+    int sy = (int)luaL_checkinteger(L, 2);
+    int tx = (int)luaL_checkinteger(L, 3);
+    int ty = (int)luaL_checkinteger(L, 4);
+    auto path = Scene::I().FindPath(sx, sy, tx, ty);
     lua_newtable(L);
-    lua_pushinteger(L, p.first);
-    lua_setfield(L, -2, "x");
-    lua_pushinteger(L, p.second);
-    lua_setfield(L, -2, "y");
-    lua_rawseti(L, -2, idx++);
-  }
-  return 1;
+    int idx = 1;
+    for (auto& p : path) {
+        lua_newtable(L);
+        lua_pushinteger(L, p.first);
+        lua_setfield(L, -2, "x");
+        lua_pushinteger(L, p.second);
+        lua_setfield(L, -2, "y");
+        lua_rawseti(L, -2, idx++);
+    }
+    return 1;
 }
 
-static int64_t FieldI64(lua_State* L, int tbl, const char* key, int64_t def) {
-  lua_getfield(L, tbl, key);
-  int64_t v = GetI64(L, -1, def);
-  lua_pop(L, 1);
-  return v;
+static int64_t FieldI64(lua_State* L, int tbl, const char* key, int64_t def) 
+{
+    lua_getfield(L, tbl, key);
+    int64_t v = GetI64(L, -1, def);
+    lua_pop(L, 1);
+    return v;
 }
 
-static int l_player_login_ok(lua_State* L) {
-  uint32_t session = (uint32_t)luaL_checkinteger(L, 1);
-  int tbl = 2;
-  if (lua_type(L, tbl) != LUA_TTABLE) return luaL_error(L, "arg2 not table");
-  PlayerLoginData d;
-  d.account_id = (uint64_t)FieldI64(L, tbl, "account_id", 0);
-  d.pid = (uint32_t)FieldI64(L, tbl, "pid", 0);
-  lua_getfield(L, tbl, "name");
-  const char* name = lua_tostring(L, -1);
-  if (name) d.name = name;
-  lua_pop(L, 1);
-  d.level = (int32_t)FieldI64(L, tbl, "level", 1);
-  d.exp = FieldI64(L, tbl, "exp", 0);
-  d.hp = (int32_t)FieldI64(L, tbl, "hp", 100);
-  d.mp = (int32_t)FieldI64(L, tbl, "mp", 50);
-  d.gold = FieldI64(L, tbl, "gold", 0);
-  d.scene = (int32_t)FieldI64(L, tbl, "scene", 1);
-  d.x = (int32_t)FieldI64(L, tbl, "x", 100);
-  d.y = (int32_t)FieldI64(L, tbl, "y", 100);
-  d.dir = (int32_t)FieldI64(L, tbl, "dir", 0);
-  d.perm = (uint32_t)FieldI64(L, tbl, "perm", 0);
-  d.version = (uint32_t)FieldI64(L, tbl, "version", 0);
-  bool ok = PlayerMgr::I().EnterWorld(session, d);
-  lua_pushboolean(L, ok ? 1 : 0);
-  return 1;
+static int l_player_login_ok(lua_State* L) 
+{
+    uint32_t session = (uint32_t)luaL_checkinteger(L, 1);
+    int tbl = 2;
+    if (lua_type(L, tbl) != LUA_TTABLE) return luaL_error(L, "arg2 not table");
+    PlayerLoginData d;
+    d.account_id = (uint64_t)FieldI64(L, tbl, "account_id", 0);
+    d.pid = (uint32_t)FieldI64(L, tbl, "pid", 0);
+    lua_getfield(L, tbl, "name");
+    const char* name = lua_tostring(L, -1);
+    if (name) d.name = name;
+    lua_pop(L, 1);
+    d.level = (int32_t)FieldI64(L, tbl, "level", 1);
+    d.exp = FieldI64(L, tbl, "exp", 0);
+    d.hp = (int32_t)FieldI64(L, tbl, "hp", 100);
+    d.mp = (int32_t)FieldI64(L, tbl, "mp", 50);
+    d.gold = FieldI64(L, tbl, "gold", 0);
+    d.scene = (int32_t)FieldI64(L, tbl, "scene", 1);
+    d.x = (int32_t)FieldI64(L, tbl, "x", 100);
+    d.y = (int32_t)FieldI64(L, tbl, "y", 100);
+    d.dir = (int32_t)FieldI64(L, tbl, "dir", 0);
+    d.perm = (uint32_t)FieldI64(L, tbl, "perm", 0);
+    d.version = (uint32_t)FieldI64(L, tbl, "version", 0);
+    bool ok = PlayerMgr::I().EnterWorld(session, d);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
 }
 
 // 逻辑线程主循环空闲时执行热更(避免在 Lua 调用栈内重载)
@@ -680,35 +682,40 @@ static int l_player_list_warehouse(lua_State* L) {
   }
   return 1;
 }
-static int l_player_give_item(lua_State* L) {
-  uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
-  int32_t item_id = (int32_t)luaL_checkinteger(L, 2);
-  int32_t count = (int32_t)luaL_optinteger(L, 3, 1);
-  // 返回 (placed, overflow, placed_wh, used_warehouse)
-  BagPutResult r = PlayerMgr::I().GiveItem(pid, item_id, count);
-  lua_pushinteger(L, r.placed);
-  lua_pushinteger(L, r.overflow);
-  lua_pushinteger(L, r.placed_wh);
-  lua_pushboolean(L, r.used_warehouse ? 1 : 0);
-  return 4;
+static int l_player_give_item(lua_State* L) 
+{
+    uint32_t pid = (uint32_t)luaL_checkinteger(L, 1);
+    int32_t item_id = (int32_t)luaL_checkinteger(L, 2);
+    int32_t count = (int32_t)luaL_optinteger(L, 3, 1);
+    // 返回 (placed, overflow, placed_wh, used_warehouse)
+    BagPutResult r = PlayerMgr::I().GiveItem(pid, item_id, count);
+    lua_pushinteger(L, r.placed);
+    lua_pushinteger(L, r.overflow);
+    lua_pushinteger(L, r.placed_wh);
+    lua_pushboolean(L, r.used_warehouse ? 1 : 0);
+    return 4;
 }
 
 // ================ 注册到 Lua ================
-static void Reg(lua_State* L, const char* ns, const luaL_Reg* fns) {
-  lua_newtable(L);
-  luaL_setfuncs(L, fns, 0);
-  lua_setglobal(L, ns);
-}
-static void RegFn(lua_State* L, const char* ns, const char* name,
-                  lua_CFunction fn) {
-  lua_getglobal(L, ns);
-  if (!lua_istable(L, -1)) {
-    lua_pop(L, 1);
+static void Reg(lua_State* L, const char* ns, const luaL_Reg* fns) 
+{
     lua_newtable(L);
-  }
-  lua_pushcfunction(L, fn);
-  lua_setfield(L, -2, name);
-  lua_setglobal(L, ns);
+    luaL_setfuncs(L, fns, 0);
+    lua_setglobal(L, ns);
+}
+static void RegFn(lua_State* L, 
+                  const char* ns, 
+                  const char* name,
+                  lua_CFunction fn) 
+{
+    lua_getglobal(L, ns);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+    }
+    lua_pushcfunction(L, fn);
+    lua_setfield(L, -2, name);
+    lua_setglobal(L, ns);
 }
 
 }  // namespace
@@ -746,8 +753,8 @@ bool RegisterAll(lua_State* L) {
 	RegFn(L, "player", "online", l_player_online);
 	RegFn(L, "player", "info", l_player_info);
 	RegFn(L, "player", "list_bag", l_player_list_bag);
-	RegFn(L, "player", "modify_hp", l_player_modify_hp);
-	RegFn(L, "player", "modify_mp", l_player_modify_mp);
+	RegFn(L, "player", "Moduleify_hp", l_player_Moduleify_hp);
+	RegFn(L, "player", "Moduleify_mp", l_player_Moduleify_mp);
 	RegFn(L, "player", "add_gold", l_player_add_gold);
 	RegFn(L, "player", "move", l_player_move);
 	RegFn(L, "player", "bag_consume", l_player_bag_consume);

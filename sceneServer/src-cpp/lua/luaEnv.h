@@ -54,7 +54,7 @@ public:
 		// 返回 false 表示函数缺失或执行出错(调用方需兜底)
 		bool CallI64(const char* path, const std::vector<int64_t>& args);
 
-		// Lua 定时器(内部转成 Mod::TIMER 的定时器消息)
+		// Lua 定时器(内部转成 Module::TIMER 的定时器消息)
 		uint32_t AddLuaTimer(uint64_t workId, uint64_t playerId, uint64_t session,int64_t delay_ms, bool repeat, const std::string& fn);
 		void CancelLuaTimer(uint32_t timer_id);
 		void OnLuaTimerFire(uint32_t timer_id);

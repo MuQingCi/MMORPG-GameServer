@@ -87,7 +87,7 @@ bool LuaEnv::LoadScripts(lua_State* L) {
 	lua_gc(L, LUA_GCCOLLECT, 0);
 
 	// package.path: 支持 require
-	std::string path = root_ + "/?.lua;" + root_ + "/module/?.lua;" + root_ +
+	std::string path = root_ + "/?.lua;" + root_ + "/Module/?.lua;" + root_ +
 						"/core/?.lua;";
 	lua_getglobal(L, "package");
 	lua_getfield(L, -1, "path");
