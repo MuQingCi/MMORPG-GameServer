@@ -260,8 +260,8 @@ void TimerThread::doAdd(const TimerOp& op)
     item.userTimerId = op.timerId;
     item.ownerWorkerId = op.ownerWorkerId;
     item.repeat = op.repeat;
-    item.module = op.module;
-    item.method = op.method;
+    item.Module = op.Module;
+    item.Method = op.Method;
     item.playerId = op.playerId;
     item.session = op.session;
     item.seq = op.seq;
@@ -399,13 +399,14 @@ void TimerThread::fire(const TimerItem& item)
     //    定时器回调可重建(幂等)，绝不能阻塞时间轮线程；
     //    逻辑层收到后必须重新校验 Actor 是否还活着。
     Msg m;
-    m.head.msgType = MsgType::MSGTYPE_TIMER_FIRE;
-    m.head.modle = item.module;
-    m.head.method = item.method;
-    m.head.seq = item.seq;
-    m.head.session = static_cast<uint32_t>(item.session);
-    m.head.playerId = item.playerId;
+    m.head.msgType     = MsgType::MSGTYPE_TIMER_FIRE;
+    m.head.Module      = item.Module;
+    m.head.Method      = item.Method;
+    m.head.seq         = item.seq;
+    m.head.session     = static_cast<uint32_t>(item.session);
+    m.head.playerId    = item.playerId;
     m.head.srcWorkerId = static_cast<uint32_t>(item.ownerWorkerId);
+    m.head.ctx         = item.userTimerId;
     m.body.clear();
 
     m_bus_->sendToWorker(static_cast<uint32_t>(item.ownerWorkerId), m);
@@ -414,8 +415,8 @@ void TimerThread::fire(const TimerItem& item)
     {
         LOG_WARNING<<"[TimerThread] TIMER_FIRE timerId= "<<item.userTimerId
                    <<", worker="<<item.ownerWorkerId
-                   <<", module="<<item.module
-                   <<", method=" <<item.method;
+                   <<", Module="<<item.Module
+                   <<", Method=" <<item.Method;
     }
 }
 

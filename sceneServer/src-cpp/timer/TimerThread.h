@@ -46,7 +46,7 @@ inline uint64_t NextTimerId()
  *   ownerWorkerId  ADD 必填，到期后 MSG_TIMER_FIRE 回投哪个逻辑线程
  *   intervalMs     超时时间；repeat=true 时同时作为重复周期
  *   repeat         是否周期触发
- *   module/method  到期后路由到 Lua 哪个模块/方法
+ *   Module/Method  到期后路由到 Lua 哪个模块/方法
  *   playerId/session/seq  到期后原样透传
  *
  * 关键保证：
@@ -112,8 +112,8 @@ private:
         uint64_t intervalMs = 0;
         bool repeat = false;
 
-        uint16_t module = 0;
-        uint16_t method = 0;
+        uint16_t Module = 0;
+        uint16_t Method = 0;
         uint64_t playerId = 0;
         uint64_t session = 0;
         uint64_t seq = 0;
