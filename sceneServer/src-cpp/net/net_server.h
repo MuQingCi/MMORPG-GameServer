@@ -23,8 +23,6 @@ public:
     bool start();
     void stop();
 
-    void enableWrite(uint64_t session, bool on);
-
 private:
 struct Conn
     {
@@ -36,10 +34,14 @@ struct Conn
 
         bool writing = false; //是否开启写事件监听
 
-        Buffer buffer;  //待发送数据缓冲区
+        Buffer sendBuffer;  //待发送数据缓冲区
+        Buffer readBuffer;  //读缓冲
     };
     
     void run();
+
+    void enableWrite(Conn& conn, bool on);
+    void parseFrames(Conn& conn);
 
     void acceptNewConn();
     void processBusMsg();
@@ -60,8 +62,9 @@ struct Conn
     int weakupFd_;
 
     std::atomic<uint64_t> nextSession_;
-
+    // std::map<uint64_t, uint32_t> playerWorker_; //playerId->workerId
     std::map<uint64_t,Conn> conns_;     //session->Conn
+    std::map<uint64_t, uint64_t> session_;  //session->playerId
     MsgBus* mBus_ = nullptr;
 };
 
