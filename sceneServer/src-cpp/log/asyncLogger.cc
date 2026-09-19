@@ -1,4 +1,4 @@
-#include "asyncLogger.h"
+#include "log/asyncLogger.h"
 #include <cstdio>
 #include <ctime>
 #include <iomanip>
@@ -30,21 +30,24 @@ void AsyncLogger::stop()
 
 void AsyncLogger::append(const char* data, size_t len)
 {
-    if(currentBuffer_->writeableBytes() > len)
-        currentBuffer_->append(data, len);
-    else
-    {
-        buffers_.push_back(std::move(currentBuffer_));
-        if(nextBuffer_)
-            currentBuffer_ = std::move(nextBuffer_);
-        else
-        {
-            currentBuffer_.reset(new Buffer);
-        }
+    // 必须加锁：append 会被任意业务线程调用，而 buffers_/currentBuffer_
+    // 以及 Buffer 本身都不是线程安全的（旧实现无锁 -> 多线程下必然踩数据）
+    std::lock_guard<std::mutex> lock(mutex_);
 
+    if(currentBuffer_->writeableBytes() > len)
+    {
         currentBuffer_->append(data, len);
-        cond_.notify_one();
-    };
+        return;
+    }
+
+    buffers_.push_back(std::move(currentBuffer_));
+    if(nextBuffer_)
+        currentBuffer_ = std::move(nextBuffer_);
+    else
+        currentBuffer_.reset(new Buffer);
+
+    currentBuffer_->append(data, len);
+    cond_.notify_one();
 }
 
 void AsyncLogger::threadFunc()
@@ -100,10 +103,13 @@ void AsyncLogger::threadFunc()
 void AsyncLogger::write(const char* data, size_t len)
 {
     auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
+    struct tm tmBuf;
+    struct tm* tm = ::localtime_r(&now, &tmBuf);
+    if (tm == nullptr)
+        return;
 
     std::ostringstream dataStream;
-    dataStream << std::put_time(&tm, "%Y-%m-%d");
+    dataStream << std::put_time(tm, "%Y-%m-%d");
 
     std::string today = dataStream.str();
 

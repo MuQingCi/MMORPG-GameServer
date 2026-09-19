@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 
 
@@ -15,7 +16,7 @@ enum LogLevel
     DEBUG,
     INFO,
     WARNING,
-    ERRNOR,
+    ERROR,
     OTHER
 };
 
@@ -26,8 +27,8 @@ inline std::string LogLevelToString(LogLevel level)
     case LogLevel::DEBUG: return "DEBUG";
     case LogLevel::INFO:  return "INFO";
     case LogLevel::WARNING: return "WARNING";
-    case LogLevel::ERRNOR: return "ERROR";
-    default: return "UNKNOW";
+    case LogLevel::ERROR: return "ERROR";
+    default: return "UNKNOWN";
     }
 }
 
@@ -52,8 +53,10 @@ public:
     LogStream& operator<<(long double v){ buffer_ += std::to_string(v); return *this; }
     
     LogStream& operator<<(char v){ buffer_ += v; return *this; }
-    LogStream& operator<<(const char* v){ buffer_ += v; return *this; }
+    LogStream& operator<<(const char* v){ buffer_ += (v ? v : "(null)"); return *this; }
     LogStream& operator<<(const std::string& v){ buffer_ += v; return *this; }
+    // protobuf v3x 起 name()/full_name() 等返回 string_view；日志里必须能直接用
+    LogStream& operator<<(std::string_view v){ buffer_.append(v.data(), v.size()); return *this; }
 
     LogStream& operator<<(std::thread::id v) 
     {
@@ -113,6 +116,6 @@ private:
 #define LOG_DEBUG Logger(LogLevel::DEBUG,    __FILE__, __LINE__, __func__).stream()
 #define LOG_INFO Logger(LogLevel::INFO,      __FILE__, __LINE__, __func__).stream()
 #define LOG_WARNING Logger(LogLevel::WARNING,__FILE__, __LINE__, __func__).stream()
-#define LOG_ERROR Logger(LogLevel::ERRNOR,    __FILE__, __LINE__, __func__).stream()
+#define LOG_ERROR Logger(LogLevel::ERROR,    __FILE__, __LINE__, __func__).stream()
 
 #endif
