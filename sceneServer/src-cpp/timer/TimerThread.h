@@ -48,6 +48,8 @@ inline uint64_t NextTimerId()
  *   repeat         是否周期触发
  *   Module/Method  到期后路由到 Lua 哪个模块/方法
  *   playerId/session/seq  到期后原样透传
+ *   epoch          发起时刻的 Actor 版本号：逻辑层收到后必须先校验它，
+ *                  不匹配说明 Actor 已下线重建，回调必须丢弃
  *
  * 关键保证：
  *   - 同一 Actor 的定时回调与它的其它消息一定落在同一逻辑线程上(ownerWorkerId)，
@@ -117,6 +119,7 @@ private:
         uint64_t playerId = 0;
         uint64_t session = 0;
         uint64_t seq = 0;
+        uint32_t epoch = 0;   // 发起时刻的 Actor 版本号，原样回传供逻辑层校验
     };
 
     struct LiveTimer

@@ -9,13 +9,9 @@
 
 namespace
 {
-// MsgBus::sendToWorker 目前返回 void，拿不到"逻辑队列是否已满"的结果。
-// 若后续改成返回 bool，把这里切到 kLogFireFailure 分支即可。
-constexpr bool kLogFireFailure = false;
-
 void logDrop(const char* what, uint64_t id)
 {
-    LOG_WARNING<< what << "failed(queue full/stopped), timerId=" << id;
+    LOG_WARNING << what << " failed(queue full/stopped), timerId=" << id;
 }
 } // namespace
 
@@ -265,6 +261,7 @@ void TimerThread::doAdd(const TimerOp& op)
     item.playerId = op.playerId;
     item.session = op.session;
     item.seq = op.seq;
+    item.epoch = op.epoch;
 
     // intervalMs 既是超时时间，也是 repeat 时的周期；下限一个 tick，
     // 避免 0 周期导致每个 tick 都触发。
@@ -395,29 +392,23 @@ void TimerThread::fire(const TimerItem& item)
         }
     }
 
-    // 2. //TODO 到期事件回投 ownerWorkerId 对应的逻辑线程。
+    // 2. 到期事件回投 ownerWorkerId 对应的逻辑线程。
     //    定时器回调可重建(幂等)，绝不能阻塞时间轮线程；
-    //    逻辑层收到后必须重新校验 Actor 是否还活着。
+    //    逻辑层收到后必须重新校验 Actor 是否还活着(用 epoch)。
     Msg m;
     m.head.msgType     = MsgType::MSGTYPE_TIMER_FIRE;
     m.head.Module      = item.Module;
     m.head.Method      = item.Method;
     m.head.seq         = item.seq;
-    m.head.session     = static_cast<uint32_t>(item.session);
+    m.head.session     = item.session;
     m.head.playerId    = item.playerId;
     m.head.srcWorkerId = static_cast<uint32_t>(item.ownerWorkerId);
+    m.head.epoch       = item.epoch;
     m.head.ctx         = item.userTimerId;
     m.body.clear();
 
-    m_bus_->sendToWorker(static_cast<uint32_t>(item.ownerWorkerId), m);
-
-    if (kLogFireFailure)
-    {
-        LOG_WARNING<<"[TimerThread] TIMER_FIRE timerId= "<<item.userTimerId
-                   <<", worker="<<item.ownerWorkerId
-                   <<", Module="<<item.Module
-                   <<", Method=" <<item.Method;
-    }
+    if (!m_bus_->sendToWorker(static_cast<uint32_t>(item.ownerWorkerId), std::move(m)))
+        logDrop("fire", item.userTimerId);
 }
 
 void TimerThread::clearAll()
