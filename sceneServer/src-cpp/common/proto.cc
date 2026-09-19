@@ -1,147 +1,219 @@
-#include "proto.h"
-#include "log/logger.h"
-#include "utils.h"
+#include "common/proto.h"
 
+#include "common/utils.h"
+#include "log/logger.h"
+
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 
+namespace
+{
+// 单次解码调用内的最大重同步次数：防止"满屏伪魔数"把网络线程拖死
+constexpr int kMaxResyncPerCall = 16;
+
+// 没有魔数时保留的尾部字节数：魔数可能被拆包，留 1 字节等下次补齐
+constexpr size_t kKeepTailWhenNoMagic = 1;
 
 /**
- * @brief 只窥探Buffer中的数据，不修改其中数据
- * 
- * @param buff 
- * @return size_t 
+ * @brief 在当前可读区域内寻找魔数（网络序两字节）
+ * @return 相对 peek() 的偏移；未找到返回 npos
  */
-static size_t findMagicInBuffer(Buffer* buff)
+size_t FindMagic(Buffer& buf)
 {
-    if(buff == nullptr) return static_cast<size_t>(-1);
-
-    //将魔数转换成大端字节序并分别保留其高位/低位字节以使用search寻找相同子序列
-    uint16_t magicNet = host16ToNet(kMagic);
-    char magicBytes[2];
-    magicBytes[0] = static_cast<char>((magicNet >>8) & 0xFF);
-    magicBytes[1] = static_cast<char>(magicNet & 0xFF);
-
-    const char* start = buff->peek();
-    const char* end = start + buff->readableBytes();
-    const char* pos = std::search(start,end,magicBytes,magicBytes + 2);
-
-    if(pos == end)
+    const size_t readable = buf.readableBytes();
+    if (readable < sizeof(uint16_t))
         return static_cast<size_t>(-1);
+
+    // 魔数在帧里是**大端字节序**：先高字节后低字节（0xC1, 0xEA）。
+    // 这里绝不能再套一次 host16ToNet：那会得到 (0xEA, 0xC1)，
+    // 与帧里的字节序相反 -> 永远搜不到魔数，重同步逻辑直接失效。
+    const char magicBytes[2] = {
+        static_cast<char>((kMagic >> 8) & 0xFF),
+        static_cast<char>(kMagic & 0xFF),
+    };
+
+    const char* start = buf.peek();
+    const char* end = start + readable;
+    const char* pos = std::search(start, end, magicBytes, magicBytes + 2);
+    if (pos == end)
+        return static_cast<size_t>(-1);
+
     return static_cast<size_t>(pos - start);
 }
 
-
-void encode(Buffer& buf, uint8_t msgTypes, Header& head)
+// 跳过"当前这个候选魔数"，让下次搜索从它之后开始。
+// 旧实现用 retrieve(offset)：魔数恰好位于偏移 0 时 retrieve(0) 一个字节都没消费，
+// 一旦 msgType/dst 不匹配就会永久死循环并把网络线程打满 CPU。
+void SkipCurrentMagic(Buffer& buf)
 {
-    uint32_t body_len = buf.readableBytes();
+    buf.retrieve(sizeof(uint16_t));
+}
+}  // namespace
 
-    buf.prependInt8(head.dstServiceID);
-    buf.prependInt8(head.srcServiceID);
-
-    buf.prependInt32(body_len);
-    
-    buf.prependInt64(head.playerId);
-    buf.prependInt64(head.seq);
-
-    buf.prependInt16(head.module);
-    buf.prependInt16(head.method);
-    buf.prependInt8(head.retrFlag);
-
-    buf.prependInt8(msgTypes);
-
-    buf.prependInt16(kVersion);
-    buf.prependInt16(kMagic);
+Header MakeHeader(uint8_t msgType,
+                  uint16_t module,
+                  uint16_t method,
+                  uint64_t seq,
+                  uint64_t playerId,
+                  uint8_t srcServiceID,
+                  uint8_t dstServiceID)
+{
+    Header h;
+    h.retrFlag = 0;
+    h.msgType = msgType;
+    h.module = module;
+    h.method = method;
+    h.seq = seq;
+    h.playerId = playerId;
+    h.srcServiceID = srcServiceID;
+    h.dstServiceID = dstServiceID;
+    return h;
 }
 
-int decode(Buffer& buf, Header& head, uint8_t msgTypes, std::string& body)
+void EncodeFrame(Buffer& out, const Header& head, const std::string& body)
 {
-    if(buf.readableBytes() <= kMinLength)
-        return 0;
-    
-    size_t offset;
-    while(buf.readableBytes() >= kMinLength)
+    const uint32_t totalLen = static_cast<uint32_t>(kHeaderSize + body.size());
+
+    // 先把 32 字节头组装成一段连续内存，再整体 append。
+    //
+    // 为什么不用 Buffer::prepend：
+    //   prepend 是"往可读区之前写"。当 out 里**已经有数据**（粘包场景：同一批里编第二帧）
+    //   时，新帧头会被插到旧数据前面，缓冲里的帧顺序直接错乱。
+    //   按偏移顺序 append 与 out 现有内容完全无关，语义稳定。
+    char hdr[kHeaderSize];
+
+    const uint16_t magicNet   = host16ToNet(kMagic);
+    const uint16_t versionNet = host16ToNet(kVersion);
+    const uint16_t moduleNet  = host16ToNet(head.module);
+    const uint16_t methodNet  = host16ToNet(head.method);
+    const uint64_t seqNet     = host64ToNet(head.seq);
+    const uint64_t playerNet  = host64ToNet(head.playerId);
+    const uint32_t lenNet     = host32ToNet(totalLen);
+
+    // 每一步都写入"网络序值的内存表示"，即大端字节序列（与主机字节序无关）
+    std::memcpy(hdr + 0,  &magicNet,   sizeof(magicNet));    // +0  魔数
+    std::memcpy(hdr + 2,  &versionNet, sizeof(versionNet));  // +2  版本
+    hdr[4] = static_cast<char>(head.msgType);                             // +4  网络消息类型
+    hdr[5] = static_cast<char>(head.retrFlag);                            // +5  重试标记
+    std::memcpy(hdr + 6,  &moduleNet,  sizeof(moduleNet));   // +6  模块
+    std::memcpy(hdr + 8,  &methodNet,  sizeof(methodNet));   // +8  方法
+    std::memcpy(hdr + 10, &seqNet,     sizeof(seqNet));      // +10 序列号
+    std::memcpy(hdr + 18, &playerNet,  sizeof(playerNet));   // +18 玩家ID
+    std::memcpy(hdr + 26, &lenNet,     sizeof(lenNet));      // +26 整帧长度
+    hdr[30] = static_cast<char>(head.srcServiceID);                       // +30 源服务
+    hdr[31] = static_cast<char>(head.dstServiceID);                       // +31 目的服务
+
+    out.append(hdr, sizeof(hdr));
+    if (!body.empty())
+        out.append(body.data(), body.size());
+}
+
+DecodeStatus DecodeFrame(Buffer& buf,
+                         Header& head,
+                         uint8_t expectedDstServiceID,
+                         std::string& body)
+{
+    int resync = 0;
+
+    for (;;)
     {
-        uint16_t magicNet;
-        std::memcpy(&magicNet, buf.peek(),sizeof(magicNet));
-        uint16_t magic = netToHost16(magicNet);
+        if (buf.readableBytes() < kHeaderSize)
+            return DecodeStatus::kNeedMore;
 
-        //在Buffer中寻找下一个正确的魔数
-        offset = findMagicInBuffer(&buf);
-        if(magic != kMagic)
+        // 1. 定位魔数（快速路径：就在当前位置）
+        const size_t offset = FindMagic(buf);
+        if (offset == static_cast<size_t>(-1))
         {
-            if(offset == static_cast<size_t>(-1))
+            // 全是垃圾：丢掉绝大部分，只留可能的半截魔数
+            const size_t readable = buf.readableBytes();
+            const size_t drop = readable > kKeepTailWhenNoMagic ? readable - kKeepTailWhenNoMagic : 0;
+            if (drop > 0)
             {
-                //并不存在一个正确的魔数,把所有数据包全部丢弃
-                LOG_INFO<< "Discard "<< buf.readableBytes() <<" Bytes of data";
-                buf.retrieveAll();
-                return -1;
+                LOG_DEBUG << "proto: drop " << drop << " bytes without magic";
+                buf.retrieve(drop);
             }
-            else {
-                //将第一个正确的魔数之前的数据包全部丢弃
-                buf.retrieve(offset);
-                LOG_INFO<< "Discard "<< offset <<" Bytes of data";
-                continue;
-            }
+            return DecodeStatus::kNeedMore;
         }
-        uint16_t versionNet;
-        std::memcpy(&versionNet, buf.peek() + sizeof(magic), sizeof(versionNet));
-        uint16_t version = netToHost16(versionNet);
 
-        uint8_t msgType;
-        std::memcpy(&msgType, buf.peek()+4, sizeof(msgType));
-        if(msgType != msgTypes)
+        if (offset > 0)
         {
-            if(offset == static_cast<size_t>(-1))
-            {
-                //并不存在一个正确的魔数,把所有数据包全部丢弃
-                LOG_INFO<< "Discard "<< buf.readableBytes() <<" Bytes of data";
-                buf.retrieveAll();
-                return -1;
-            }
-            LOG_INFO<< "msgTypes:"<< msgTypes <<"Invalid";
+            LOG_DEBUG << "proto: resync, drop " << offset << " bytes";
             buf.retrieve(offset);
+            if (++resync > kMaxResyncPerCall)
+            {
+                LOG_WARNING << "proto: too many resync in one call";
+                return DecodeStatus::kError;
+            }
+            if (buf.readableBytes() < kHeaderSize)
+                return DecodeStatus::kNeedMore;
+        }
+
+        // 此处 buf[0..1] 已是魔数
+        uint16_t versionNet = 0;
+        std::memcpy(&versionNet, buf.peek() + 2, sizeof(versionNet));
+        if (netToHost16(versionNet) != kVersion)
+        {
+            LOG_DEBUG << "proto: bad version, skip one candidate";
+            SkipCurrentMagic(buf);
+            if (++resync > kMaxResyncPerCall)
+                return DecodeStatus::kError;
             continue;
         }
 
-        uint32_t totalLenNet;
-        std::memcpy(&totalLenNet, buf.peek() + 28, sizeof(totalLenNet));
-        uint32_t totalLen = netToHost32(totalLenNet);
+        uint32_t totalLenNet = 0;
+        std::memcpy(&totalLenNet, buf.peek() + 26, sizeof(totalLenNet));
+        const uint32_t totalLen = netToHost32(totalLenNet);
 
-        //长度不合法，先读取一字节数据以防假魔数
-        if(totalLen < kMinLength || totalLen > kMaxMessageSize)
+        // 长度必须能容纳一个头；否则 bodyLen 会下溢成约 4GB
+        if (totalLen < kHeaderSize || totalLen > kMaxMessageSize)
         {
-            buf.retrieve(1);
-            LOG_INFO<< "Discard "<< 1 <<" Bytes of data";
+            LOG_DEBUG << "proto: illegal totalLen=" << totalLen << ", skip one candidate";
+            SkipCurrentMagic(buf);
+            if (++resync > kMaxResyncPerCall)
+                return DecodeStatus::kError;
             continue;
         }
 
-        if(totalLen > buf.readableBytes())
+        const uint8_t dstServiceID = *reinterpret_cast<const uint8_t*>(buf.peek() + 31);
+
+        // 过滤维度：这条消息是不是发给本服务的
+        if (expectedDstServiceID != kServiceAny && dstServiceID != expectedDstServiceID)
         {
-            //数据包不完全，等下次读取
-            return 0;
-     
+            LOG_DEBUG << "proto: dst=" << ServerIdName(dstServiceID)
+                      << " not mine, skip one candidate";
+            SkipCurrentMagic(buf);
+            if (++resync > kMaxResyncPerCall)
+                return DecodeStatus::kError;
+            continue;
         }
 
-        auto Magic = buf.readUint16();
-        auto Version = buf.readUint16();
-        auto msgtype = buf.readUint8();
-        head.retrFlag = buf.readUint8();
-        head.module = buf.readUint16();
-        head.method = buf.readUint16();
-        head.seq = buf.readUint64();
-        head.playerId = buf.readUint64();
+        // 2. 整帧到齐了吗（半包）
+        if (totalLen > buf.readableBytes())
+            return DecodeStatus::kNeedMore;
 
-        auto Body_len = buf.readUint32();
+        // 3. 消费帧头（逐字段 pop，顺序与编码严格一致）
+        buf.readUint16();                       // magic（已校验）
+        buf.readUint16();                       // version（已校验）
+        head.msgType      = buf.readUint8();
+        head.totalLen     = totalLen;
+        head.retrFlag     = buf.readUint8();
+        head.module       = buf.readUint16();
+        head.method       = buf.readUint16();
+        head.seq          = buf.readUint64();
+        head.playerId     = buf.readUint64();
+        buf.readUint32();                       // totalLen（整帧长度，已在上方校验并记录）
         head.srcServiceID = buf.readUint8();
         head.dstServiceID = buf.readUint8();
 
-        if(buf.readableBytes() < Body_len) 
-            return 0;
+        // 注意区分两种长度：totalLen 是**整帧长度**，bodyLen 必须减去头长度。
+        // 把 totalLen 直接当 bodyLen 用，会多吞 32 字节 -> 永远只解出半包。
+        const uint32_t bodyLen = totalLen - kHeaderSize;
+        if (buf.readableBytes() < bodyLen)
+            return DecodeStatus::kNeedMore;
 
-        body = buf.readAsString(Body_len);
-        return 1;
+        body = buf.readAsString(bodyLen);
+        return DecodeStatus::kOk;
     }
-    return -1;
 }
