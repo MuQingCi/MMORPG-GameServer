@@ -1,24 +1,29 @@
-#include "msgBus.h"
+#include "common/msgBus.h"
+
+#include "common/hash.h"
+#include "common/msg.h"
+#include "common/queue.h"
 #include "log/logger.h"
-#include "msg.h"
-#include "queue.h"
-#include <cassert>
-#include <memory>
+
+#include <cstdint>
 #include <utility>
 
-namespace 
+namespace
 {
-//Actor哈希规则
+// 队列积压深度的兜底比较：<=0 说明队列为空
+inline bool LessLoaded(size_t a, size_t b) { return a < b; }
+}  // namespace
 
-//Module哈希规则
-
-}
-
-MsgBus::MsgBus(size_t num_workers) : net_queue_(std::make_unique<MsgQueue<Msg>>()),
-                                     db_queue_(std::make_unique<MsgQueue<Msg>>())
+MsgBus::MsgBus(size_t numWorkers)
+    : net_queue_(std::make_unique<MsgQueue<Msg>>())
+    , mysql_queue_(std::make_unique<MsgQueue<Msg>>())
+    , redis_queue_(std::make_unique<MsgQueue<Msg>>())
 {
-    worker_queues_.reserve(num_workers);
-    for(int i = 0; i < num_workers; ++i)
+    if (numWorkers == 0)
+        numWorkers = 1;  // 至少一个逻辑线程，否则后面取模会除零
+
+    worker_queues_.reserve(numWorkers);
+    for (size_t i = 0; i < numWorkers; ++i)
         worker_queues_.emplace_back(std::make_unique<MsgQueue<Msg>>());
 }
 
@@ -26,54 +31,105 @@ MsgBus::~MsgBus() = default;
 
 bool MsgBus::sendToActor(ActorId id, Msg m)
 {
-    //TODO
+    const WorkerId wid = static_cast<WorkerId>(hashutil::WorkerForActor(id, worker_queues_.size()));
+    return sendToWorker(wid, std::move(m));
 }
 
 bool MsgBus::sendToModule(ModuleId mid, Msg m)
 {
-    //TODO
+    // 模块消息与 Actor 无关，直接按模块号取模：保证"同一模块的消息串行"
+    const WorkerId wid = static_cast<WorkerId>(mid % worker_queues_.size());
+    return sendToWorker(wid, std::move(m));
 }
 
 bool MsgBus::sendToWorkerByPlayerId(PlayerId pid, Msg m)
 {
-    auto hashWid = pid % worker_queues_.size();
-    return sendToWorker(hashWid, std::move(m));
+    // 玩家即 Actor：归属决策点全进程唯一，就在这一行
+    const WorkerId wid = static_cast<WorkerId>(hashutil::WorkerForActor(pid, worker_queues_.size()));
+    return sendToWorker(wid, std::move(m));
 }
 
-//精准回投源逻辑线程
 bool MsgBus::sendToWorker(WorkerId wid, Msg m)
 {
-    if(wid >= worker_queues_.size())
+    if (wid >= worker_queues_.size())
     {
-        LOG_ERROR<<"The wid >= workerNum";
+        LOG_ERROR << "sendToWorker: wid=" << wid << " out of range, numWorker=" << worker_queues_.size();
         return false;
     }
 
-    bool res = worker_queues_[wid]->try_push(std::move(m));
-    return res;
+    const bool ok = worker_queues_[wid]->try_push(std::move(m));
+    if (!ok)
+        LOG_WARNING << "sendToWorker: queue full, wid=" << wid;
+
+    return ok;
 }
 
-//投递消息到对应辅助线程
+void MsgBus::broadcastToLogic(const Msg& m)
+{
+    //TODO 存在拷贝，后续可用shared_ptr指针来优化
+    for (auto& q : worker_queues_)
+    {
+        Msg copy = m;  // 每条队列一份副本：Msg 不能跨线程共享同一对象
+        if (!q->try_push(std::move(copy)))
+            LOG_ERROR << "broadcastToLogic: try_push failed";
+    }
+}
+
 bool MsgBus::sendToNet(Msg m)
 {
-    return net_queue_->try_push(std::move(m));;
-}
-
-bool MsgBus::sendToDB(Msg m)
-{
-    return db_queue_->try_push(std::move(m));;
-}
-
-//从辅助线程对应的消息队列中取消息
-bool MsgBus::tryPopWorker(WorkerId wid, Msg& out)
-{
-    if(wid >= worker_queues_.size())
+    const bool ok = net_queue_->try_push(std::move(m));
+    if (!ok)
     {
-        LOG_ERROR<<"The wid >= workerNum";
+        LOG_WARNING << "sendToNet: queue full";
         return false;
     }
 
+    // 入队成功才唤醒：空队列时的唤醒是纯浪费
+    if (net_wakeup_)
+        net_wakeup_();
+
+    return true;
+}
+
+void MsgBus::setNetWakeup(Wakeup cb)
+{
+    net_wakeup_ = std::move(cb);
+}
+
+bool MsgBus::sendToDb(Msg m)
+{
+    const bool redis = (m.head.msgType == MsgType::MSGTYPE_DB_TASK_REDIS);
+    const bool mysql = (m.head.msgType == MsgType::MSGTYPE_DB_TASK_MYSQL);
+    if (!redis && !mysql)
+    {
+        LOG_ERROR << "sendToDb: illegal msgType=" << MsgTypeName(m.head.msgType);
+        return false;
+    }
+
+    const bool ok = redis ? redis_queue_->try_push(std::move(m)) : mysql_queue_->try_push(std::move(m));
+    if (!ok)
+        LOG_WARNING << "sendToDb: queue full, redis=" << redis;
+    return ok;
+}
+
+bool MsgBus::tryPopWorker(WorkerId wid, Msg& out)
+{
+    if (wid >= worker_queues_.size())
+    {
+        LOG_ERROR << "tryPopWorker: wid=" << wid << " out of range";
+        return false;
+    }
     return worker_queues_[wid]->try_pop(out);
+}
+
+bool MsgBus::waitPopWorker(WorkerId wid, Msg& out, std::chrono::milliseconds timeoutMs)
+{
+    if (wid >= worker_queues_.size())
+    {
+        LOG_ERROR << "waitPopWorker: wid=" << wid << " out of range";
+        return false;
+    }
+    return worker_queues_[wid]->wait_pop_for(out, timeoutMs);
 }
 
 bool MsgBus::tryPopNet(Msg& out)
@@ -81,43 +137,58 @@ bool MsgBus::tryPopNet(Msg& out)
     return net_queue_->try_pop(out);
 }
 
-bool MsgBus::tryPopDB(Msg& out)
-{
-    return db_queue_->try_pop(out);
-}
-
-//超时等待版本
-bool MsgBus::waitPopWorker(WorkerId wid, Msg& out,std::chrono::milliseconds timeoutMs)
-{
-    if(wid >= worker_queues_.size())
-    {
-        LOG_ERROR<<"The wid >= workerNum";
-        return false;
-    }
-    return worker_queues_[wid]->wait_pop_for(out, timeoutMs);
-}
-
 bool MsgBus::waitPopNet(Msg& out, std::chrono::milliseconds timeoutMs)
 {
     return net_queue_->wait_pop_for(out, timeoutMs);
 }
 
-bool MsgBus::waitPopDB(Msg& out, std::chrono::milliseconds timeoutMs)
+bool MsgBus::tryPopDbMySql(Msg& out)
 {
-    return db_queue_->wait_pop_for(out, timeoutMs);
+    return mysql_queue_->try_pop(out);
 }
 
-
-void MsgBus::broadcastToLogic(MsgPtr m)
+bool MsgBus::waitPopDbMySql(Msg& out, std::chrono::milliseconds timeoutMs)
 {
-    if(!m) return;
+    return mysql_queue_->wait_pop_for(out, timeoutMs);
+}
 
-    for(auto& q : worker_queues_)
+bool MsgBus::tryPopDbRedis(Msg& out)
+{
+    return redis_queue_->try_pop(out);
+}
+
+bool MsgBus::waitPopDbRedis(Msg& out, std::chrono::milliseconds timeoutMs)
+{
+    return redis_queue_->wait_pop_for(out, timeoutMs);
+}
+
+size_t MsgBus::depth(WorkerId wid) const
+{
+    if (wid >= worker_queues_.size())
+        return 0;
+    return worker_queues_[wid]->current_size();
+}
+
+MsgBus::WorkerId MsgBus::leastLoadedWorker(uint64_t tieBreak) const
+{
+    const size_t n = worker_queues_.size();
+    if (n == 1)
+        return 0;
+
+    const WorkerId start = static_cast<WorkerId>(hashutil::SplitMix64(tieBreak) % n);
+
+    WorkerId best = start;
+    size_t bestDepth = depth(start);
+    // 从哈希起点开始环形扫描，同分取哈希起点优先 -> 同分时天然打散
+    for (size_t i = 1; i < n; ++i)
     {
-        Msg copy = *m;    
-        if (!q->try_push(std::move(copy))) 
+        const WorkerId wid = static_cast<WorkerId>((start + i) % n);
+        const size_t d = depth(wid);
+        if (LessLoaded(d, bestDepth))
         {
-            LOG_ERROR << "broadcastToLogic: try_push failed";
+            best = wid;
+            bestDepth = d;
         }
     }
+    return best;
 }

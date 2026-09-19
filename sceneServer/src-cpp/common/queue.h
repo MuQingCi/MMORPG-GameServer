@@ -1,7 +1,6 @@
 #ifndef CLEARMOON_COMMON_QUEUE_H
 #define CLEARMOON_COMMON_QUEUE_H
 
-#include "msg.h"
 #include <concurrentqueue/moodycamel/concurrentqueue.h>
 #include <concurrentqueue/moodycamel/blockingconcurrentqueue.h>
 #include <cstddef>
