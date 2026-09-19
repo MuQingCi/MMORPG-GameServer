@@ -206,6 +206,16 @@ private:
 
     void ensureWriteable(size_t len);
 
+    /**
+     * @brief 保证头部有 len 字节的预留空间；不足时把可读数据整体后移
+     *
+     * 为什么必须做：帧编码是一次性 prepend 32 字节头。若 Buffer 的
+     * 可读数据已经消费了一部分（readIndex_ 变小），原有实现的
+     * assert(len <= prependBytes()) 会直接崩掉；而 release 版本下
+     * 越界写会安静地破坏内存。这里统一改写为"搬移/扩容"。
+     */
+    void ensurePrepend(size_t len);
+
     static const size_t kCheapPrepend = 32;
     size_t writeIndex_;
     size_t readIndex_;

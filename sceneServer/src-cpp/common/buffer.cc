@@ -117,10 +117,27 @@ void Buffer::append(const char* src, size_t len)
 
 void Buffer::prepend(const void* data, size_t len)
 {
-    assert(len <= prependBytes());
+    ensurePrepend(len);
     const char* src = static_cast<const char*>(data);
     readIndex_ -= len;
     std::copy(src, src + len, begin() + readIndex_);
+}
+
+void Buffer::ensurePrepend(size_t len)
+{
+    if (prependBytes() >= len)
+        return;
+
+    const size_t readable = readableBytes();
+    const size_t keep = len > kCheapPrepend ? len : kCheapPrepend;
+
+    std::vector<char> moved(keep + readable);
+    if (readable > 0)
+        std::copy(begin() + readIndex_, begin() + writeIndex_, moved.begin() + keep);
+
+    buff_.swap(moved);
+    readIndex_ = keep;
+    writeIndex_ = keep + readable;
 }
 
 // =========== 与文件描述符相关的 =========== //
@@ -141,8 +158,8 @@ ssize_t Buffer::readFd(int fd, int* savedErrno)
 
     if(n < 0)
         *savedErrno = errno;
-    else if(n < writeble)
-        writeIndex_ += n;
+    else if(static_cast<size_t>(n) < writeble)
+        writeIndex_ += static_cast<size_t>(n);
     else
     {
         writeIndex_ = buff_.size();
