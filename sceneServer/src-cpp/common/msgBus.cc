@@ -14,17 +14,22 @@ namespace
 inline bool LessLoaded(size_t a, size_t b) { return a < b; }
 }  // namespace
 
-MsgBus::MsgBus(size_t numWorkers)
+MsgBus::MsgBus(size_t numWorkers, size_t redisShards)
     : net_queue_(std::make_unique<MsgQueue<Msg>>())
     , mysql_queue_(std::make_unique<MsgQueue<Msg>>())
-    , redis_queue_(std::make_unique<MsgQueue<Msg>>())
 {
     if (numWorkers == 0)
         numWorkers = 1;  // 至少一个逻辑线程，否则后面取模会除零
+    if (redisShards == 0)
+        redisShards = 1;
 
     worker_queues_.reserve(numWorkers);
     for (size_t i = 0; i < numWorkers; ++i)
         worker_queues_.emplace_back(std::make_unique<MsgQueue<Msg>>());
+
+    redis_queues_.reserve(redisShards);
+    for (size_t i = 0; i < redisShards; ++i)
+        redis_queues_.emplace_back(std::make_unique<MsgQueue<Msg>>());
 }
 
 MsgBus::~MsgBus() = default;
@@ -106,9 +111,27 @@ bool MsgBus::sendToDb(Msg m)
         return false;
     }
 
-    const bool ok = redis ? redis_queue_->try_push(std::move(m)) : mysql_queue_->try_push(std::move(m));
+    if (!redis)
+    {
+        const bool ok = mysql_queue_->try_push(std::move(m));
+        if (!ok)
+            LOG_WARNING << "sendToDb: mysql queue full";
+        return ok;
+    }
+
+    // Redis：按分片索引选队列。索引越界说明调用方算错了分片数
+    // （例如配置改了 shards 数量而 MsgBus 没重建），必须明确报错而不是静默落到 0 号。
+    const size_t shard = m.head.dbShard;
+    if (shard >= redis_queues_.size())
+    {
+        LOG_ERROR << "sendToDb: redis shard " << shard << " out of range, shardCount="
+                  << redis_queues_.size();
+        return false;
+    }
+
+    const bool ok = redis_queues_[shard]->try_push(std::move(m));
     if (!ok)
-        LOG_WARNING << "sendToDb: queue full, redis=" << redis;
+        LOG_WARNING << "sendToDb: redis queue full, shard=" << shard;
     return ok;
 }
 
@@ -152,14 +175,18 @@ bool MsgBus::waitPopDbMySql(Msg& out, std::chrono::milliseconds timeoutMs)
     return mysql_queue_->wait_pop_for(out, timeoutMs);
 }
 
-bool MsgBus::tryPopDbRedis(Msg& out)
+bool MsgBus::tryPopDbRedis(uint16_t shard, Msg& out)
 {
-    return redis_queue_->try_pop(out);
+    if (shard >= redis_queues_.size())
+        return false;
+    return redis_queues_[shard]->try_pop(out);
 }
 
-bool MsgBus::waitPopDbRedis(Msg& out, std::chrono::milliseconds timeoutMs)
+bool MsgBus::waitPopDbRedis(uint16_t shard, Msg& out, std::chrono::milliseconds timeoutMs)
 {
-    return redis_queue_->wait_pop_for(out, timeoutMs);
+    if (shard >= redis_queues_.size())
+        return false;
+    return redis_queues_[shard]->wait_pop_for(out, timeoutMs);
 }
 
 size_t MsgBus::depth(WorkerId wid) const

@@ -148,6 +148,12 @@ struct MsgHead
 
     // 上下文-根据消息类型决定ctx存的值
     uint64_t ctx = 0;
+
+    // DB 通道内部分片索引：
+    //   Redis 多实例分片时，投递前由 db.redis 绑定层按 key 哈希算出（见 db/redisKey.h），
+    //   MsgBus 据此选择对应的 Redis 队列；MySQL 通道恒为 0。
+    //   它**不是**路由依据（线程归属仍由 srcWorkerId/队列决定），只是队列选择器。
+    uint16_t dbShard = 0;
 };
 
 struct Msg

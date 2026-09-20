@@ -42,7 +42,7 @@ public:
     using WorkerId = uint32_t;
     using PlayerId = uint64_t;
 
-    explicit MsgBus(size_t numWorkers);
+    explicit MsgBus(size_t numWorkers, size_t redisShards = 1);
     ~MsgBus();
 
     MsgBus(const MsgBus&) = delete;
@@ -63,7 +63,7 @@ public:
 
     // ---------------- 辅助线程投递 ----------------
     bool sendToNet(Msg m);
-    // 按 msgType 自动选择 DB 通道（MSGTYPE_DB_TASK_MYSQL / MSGTYPE_DB_TASK_REDIS）
+    // 按 msgType 自动选择 DB 通道；Redis 通道再按 m.head.dbShard 选队列
     bool sendToDb(Msg m);
 
     // ---------------- 消费侧（只能在对应线程调用）----------------
@@ -76,8 +76,9 @@ public:
     bool tryPopDbMySql(Msg& out);
     bool waitPopDbMySql(Msg& out, std::chrono::milliseconds timeoutMs);
 
-    bool tryPopDbRedis(Msg& out);
-    bool waitPopDbRedis(Msg& out, std::chrono::milliseconds timeoutMs);
+    // Redis 分片：每个分片一条独立队列、由各自的 DB 线程消费
+    bool tryPopDbRedis(uint16_t shard, Msg& out);
+    bool waitPopDbRedis(uint16_t shard, Msg& out, std::chrono::milliseconds timeoutMs);
 
     // ---------------- 唤醒回调 ----------------
     // 消费者线程启动前注册一次；生产者入队后调用它把消费者从 epoll/阻塞中叫醒。
@@ -88,6 +89,7 @@ public:
 
     // ---------------- 负载信息 ----------------
     size_t numWorker() const { return worker_queues_.size(); }
+    size_t redisShardCount() const { return redis_queues_.size(); }
     // 队列积压深度（选线程的唯一依据：accept 时看不到"连接数"这种全局量）
     size_t depth(WorkerId wid) const;
     // 选一个最空闲的逻辑线程，同分用 tieBreak 哈希打散，避免羊群效应
@@ -97,7 +99,9 @@ private:
     std::vector<std::unique_ptr<MsgQueue<Msg>>> worker_queues_;
     std::unique_ptr<MsgQueue<Msg>> net_queue_;
     std::unique_ptr<MsgQueue<Msg>> mysql_queue_;
-    std::unique_ptr<MsgQueue<Msg>> redis_queue_;
+    // 每个 Redis 分片一条队列：慢 SQL（MySQL 通道）与 Redis 互不影响，
+    // 分片之间也互不影响（一个实例慢不会拖累其它实例的读）
+    std::vector<std::unique_ptr<MsgQueue<Msg>>> redis_queues_;
 
     Wakeup net_wakeup_;
 };
