@@ -3,6 +3,7 @@
 
 #include "common/msg.h"
 #include "common/msgBus.h"
+#include "db/redisKey.h"
 #include "lua/luaApiCtx.h"
 
 #include <atomic>
@@ -48,6 +49,8 @@ public:
         int64_t flushIntervalMs = 30000;     // 定期快照间隔（防宕机丢数据）
         int64_t scanIdleMs = 10000;          // 空闲连接扫描间隔
         uint64_t luaInstructionLimit = 10000000;  // 0 = 关闭 Lua 指令预算
+        // Redis 命名空间：脚本发的每条 Redis 命令都按它校验 key 前缀（见 db/redisKey.h）
+        RedisNamespace redisNs;
     };
 
     LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg);

@@ -63,6 +63,7 @@ bool LogicThread::start()
     apiCtx_.players = players_.get();
     apiCtx_.timer = timer_;
     apiCtx_.workerId = threadId_;
+    apiCtx_.redisNs = cfg_.redisNs;   // 脚本的 Redis 命令按此命名空间校验/分片
 
     started_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run(); });
