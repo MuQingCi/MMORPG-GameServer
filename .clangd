@@ -1,0 +1,8 @@
+# 此配置位于 GameServer/，CMake 项目及编译数据库位于 Zone/build/。
+# 用编译数据库保留各 target 的实际 -I、宏和 C++ 标准，不额外注入硬编码路径。
+If:
+  PathMatch: Zone/.*
+CompileFlags:
+  CompilationDatabase: Zone/build
+Index:
+  Background: Build

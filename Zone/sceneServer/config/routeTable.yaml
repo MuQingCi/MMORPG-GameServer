@@ -1,0 +1,16 @@
+#TODO 修改routeTable，使其在初始化时读取当前配置文件并将各个route单独视为一个Route结构体供C++逻辑线程分发任务，不知道是否可行
+routeTable:
+    route:
+        module: Module::PLAYER
+        Method:: PLAYER_MOVE
+        req_type: "gs.WalkReq"
+        ack_type: "gs.WalkAck"
+        luaFn: "move.c2s_walk"
+    
+    route:
+        module: Module::PLAYER
+        Method:: PLAYER_PATH
+        req_type: "gs.PathReq"
+        ack_type: "gs.PathAck"
+        luaFn: "move.c2s_path"
+        

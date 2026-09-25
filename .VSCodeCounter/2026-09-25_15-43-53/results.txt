@@ -1,0 +1,190 @@
+Date : 2026-09-25 15:43:53
+Directory : /home/lanxiyuan/Project_Cpp/GameServer/Zone
+Total : 128 files,  11553 codes, 2152 comments, 2584 blanks, all 16289 lines
+
+Languages
++------------------+------------+------------+------------+------------+------------+
+| language         | files      | code       | comment    | blank      | total      |
++------------------+------------+------------+------------+------------+------------+
+| C++              |        113 |     11,174 |      1,990 |      2,475 |     15,639 |
+| CMake            |          7 |        190 |         83 |         58 |        331 |
+| YAML             |          5 |         75 |         36 |         23 |        134 |
+| Lua              |          2 |         62 |         29 |         18 |        109 |
+| Protocol Buffers |          1 |         52 |         14 |         10 |         76 |
++------------------+------------+------------+------------+------------+------------+
+
+Directories
++------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                     | files      | code       | comment    | blank      | total      |
++------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                        |        128 |     11,553 |      2,152 |      2,584 |     16,289 |
+| . (Files)                                                                                |          1 |         19 |         10 |          8 |         37 |
+| chatServer                                                                               |          1 |          0 |          0 |          1 |          1 |
+| config                                                                                   |          1 |         25 |         11 |          5 |         41 |
+| gatewayServer                                                                            |         47 |      3,650 |        719 |        949 |      5,318 |
+| gatewayServer (Files)                                                                    |         23 |      2,527 |        486 |        573 |      3,586 |
+| gatewayServer/common                                                                     |          5 |        133 |         28 |         52 |        213 |
+| gatewayServer/config                                                                     |          1 |         18 |         19 |          6 |         43 |
+| gatewayServer/event                                                                      |          8 |        482 |         73 |        165 |        720 |
+| gatewayServer/poller                                                                     |          5 |        171 |         25 |         58 |        254 |
+| gatewayServer/timer                                                                      |          5 |        319 |         88 |         95 |        502 |
+| globalServer                                                                             |          1 |          0 |          0 |          1 |          1 |
+| proto                                                                                    |          3 |        105 |         27 |         29 |        161 |
+| sceneServer                                                                              |         56 |      6,103 |      1,104 |      1,262 |      8,469 |
+| sceneServer (Files)                                                                      |          2 |        231 |         75 |         51 |        357 |
+| sceneServer/config                                                                       |          3 |         32 |          6 |         12 |         50 |
+| sceneServer/lua_script                                                                   |          2 |         62 |         29 |         18 |        109 |
+| sceneServer/lua_script (Files)                                                           |          1 |         44 |         20 |         12 |         76 |
+| sceneServer/lua_script/core                                                              |          1 |         18 |          9 |          6 |         33 |
+| sceneServer/src-cpp                                                                      |         49 |      5,778 |        994 |      1,181 |      7,953 |
+| sceneServer/src-cpp (Files)                                                              |          4 |        317 |         62 |         66 |        445 |
+| sceneServer/src-cpp/actor                                                                |          1 |         32 |         17 |         11 |         60 |
+| sceneServer/src-cpp/common                                                               |          6 |        469 |        128 |        107 |        704 |
+| sceneServer/src-cpp/config                                                               |          4 |        343 |         91 |         80 |        514 |
+| sceneServer/src-cpp/db                                                                   |         12 |      1,319 |        202 |        251 |      1,772 |
+| sceneServer/src-cpp/logic                                                                |          2 |        472 |         61 |        101 |        634 |
+| sceneServer/src-cpp/lua                                                                  |          5 |        946 |        144 |        185 |      1,275 |
+| sceneServer/src-cpp/net                                                                  |          2 |        648 |         71 |        126 |        845 |
+| sceneServer/src-cpp/player                                                               |          9 |        362 |         86 |        102 |        550 |
+| sceneServer/src-cpp/proto                                                                |          2 |        460 |         37 |         55 |        552 |
+| sceneServer/src-cpp/timer                                                                |          2 |        410 |         95 |         97 |        602 |
+| zone_common                                                                              |         18 |      1,651 |        281 |        329 |      2,261 |
+| zone_common (Files)                                                                      |          1 |          0 |          0 |          1 |          1 |
+| zone_common/base                                                                         |         13 |      1,311 |        260 |        250 |      1,821 |
+| zone_common/log                                                                          |          4 |        340 |         21 |         78 |        439 |
++------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++------------------------------------------------------------------------------------------+------------------+------------+------------+------------+------------+
+| filename                                                                                 | language         | code       | comment    | blank      | total      |
++------------------------------------------------------------------------------------------+------------------+------------+------------+------------+------------+
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/CMakeLists.txt                               | CMake            |         19 |         10 |          8 |         37 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/chatServer/CMakeLists.txt                    | CMake            |          0 |          0 |          1 |          1 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml                       | YAML             |         25 |         11 |          5 |         41 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/CMakeLists.txt                 | CMake            |         45 |         32 |         13 |         90 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/acceptor.cc                    | C++              |         54 |          3 |         10 |         67 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/acceptor.h                     | C++              |         29 |          2 |         10 |         41 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/clientSession.cc               | C++              |         96 |          3 |         17 |        116 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/clientSession.h                | C++              |         36 |         25 |         13 |         74 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/common/callbacks.h             | C++              |         16 |          0 |          8 |         24 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/common/currentThread.cc        | C++              |         17 |          0 |          5 |         22 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/common/currentThread.h         | C++              |         29 |          9 |          8 |         46 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/common/timestamp.cc            | C++              |         36 |          5 |         15 |         56 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/common/timestamp.h             | C++              |         35 |         14 |         16 |         65 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/config/gatewayConfig.yaml      | YAML             |         18 |         19 |          6 |         43 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/connRole.h                     | C++              |          9 |          0 |          3 |         12 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/channel.cc               | C++              |         54 |          8 |         14 |         76 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/channel.h                | C++              |         44 |          6 |         19 |         69 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/eventLoop.cc             | C++              |        154 |          7 |         38 |        199 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/eventLoop.h              | C++              |         53 |         20 |         25 |         98 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/eventThread.cc           | C++              |         65 |          9 |         19 |         93 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/eventThread.h            | C++              |         39 |          1 |         17 |         57 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/eventThreadPool.cc       | C++              |         44 |         19 |         17 |         80 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/event/eventThreadPool.h        | C++              |         29 |          3 |         16 |         48 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/gatewayConfig.cc               | C++              |        160 |         30 |         37 |        227 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/gatewayConfig.h                | C++              |         26 |         26 |         11 |         63 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/gatewayDispatcher.cc           | C++              |        499 |         43 |         76 |        618 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/gatewayDispatcher.h            | C++              |         86 |         35 |         25 |        146 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/gatewayServer.cc               | C++              |        153 |         31 |         31 |        215 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/gatewayServer.h                | C++              |         51 |         26 |         20 |         97 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/inetAddress.cc                 | C++              |        144 |         16 |         33 |        193 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/inetAddress.h                  | C++              |         84 |          7 |         14 |        105 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/main.cpp                       | C++              |         84 |         30 |         20 |        134 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/poller/DefaultPoller.h         | C++              |          9 |          0 |          4 |         13 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/poller/epoller.cc              | C++              |        104 |         24 |         30 |        158 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/poller/epoller.h               | C++              |         20 |          0 |          7 |         27 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/poller/poller.cc               | C++              |         13 |          1 |          7 |         21 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/poller/poller.h                | C++              |         25 |          0 |         10 |         35 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/returnRoute.cc                 | C++              |         62 |          0 |          7 |         69 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/returnRoute.h                  | C++              |         26 |         20 |          8 |         54 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/serviceRegistry.cc             | C++              |         88 |          4 |         17 |        109 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/serviceRegistry.h              | C++              |         33 |         20 |         11 |         64 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/socket.cc                      | C++              |        128 |          7 |         49 |        184 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/socket.h                       | C++              |         31 |          4 |         11 |         46 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/tcpConnection.cc               | C++              |        490 |         80 |         99 |        669 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/tcpConnection.h                | C++              |        113 |         42 |         38 |        193 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/timer/timer.cc                 | C++              |         14 |          6 |          2 |         22 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/timer/timer.h                  | C++              |         38 |          7 |         13 |         58 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/timer/timerId.h                | C++              |         16 |          4 |          6 |         26 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/timer/timerQueue.cc            | C++              |        198 |         42 |         51 |        291 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/timer/timerQueue.h             | C++              |         53 |         29 |         23 |        105 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/globalServer/CMakeLists.txt                  | CMake            |          0 |          0 |          1 |          1 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/proto/CMakeLists.txt                         | CMake            |         24 |          7 |          8 |         39 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/proto/gameProto.proto                        | Protocol Buffers |         52 |         14 |         10 |         76 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/proto/proto.h                                | C++              |         29 |          6 |         11 |         46 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/CMakeLists.txt                   | CMake            |        102 |         34 |         26 |        162 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/route.yaml                | YAML             |          0 |          0 |          1 |          1 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/routeTable.yaml           | YAML             |         13 |          1 |          2 |         16 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml          | YAML             |         19 |          5 |          9 |         33 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/lua_script/core/init.lua         | Lua              |         18 |          9 |          6 |         33 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/lua_script/move.lua              | Lua              |         44 |         20 |         12 |         76 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/main.cc                          | C++              |        129 |         41 |         25 |        195 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/actor/actorRef.h         | C++              |         32 |         17 |         11 |         60 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/common/ITimerService.h   | C++              |         12 |          0 |          4 |         16 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/common/hash.h            | C++              |         27 |         27 |          8 |         62 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/common/msg.h             | C++              |        146 |         39 |         31 |        216 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/common/msgBus.cc         | C++              |        179 |          8 |         35 |        222 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/common/msgBus.h          | C++              |         53 |         39 |         18 |        110 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/common/queue.h           | C++              |         52 |         15 |         11 |         78 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/config/sceneConfig.cc    | C++              |        159 |         16 |         27 |        202 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/config/sceneConfig.h     | C++              |         28 |         34 |         14 |         76 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/config/zoneConfig.cc     | C++              |        135 |         15 |         29 |        179 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/config/zoneConfig.h      | C++              |         21 |         26 |         10 |         57 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/dbConfig.h            | C++              |         59 |         29 |         16 |        104 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/dbThread.cc           | C++              |        219 |          9 |         48 |        276 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/dbThread.h            | C++              |         60 |         21 |         21 |        102 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/dbValue.cc            | C++              |        136 |          1 |         12 |        149 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/dbValue.h             | C++              |         53 |         10 |          9 |         72 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/mysqlConnection.cc    | C++              |        276 |          7 |         38 |        321 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/mysqlConnection.h     | C++              |         25 |         23 |         10 |         58 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/redisApi.h            | C++              |         42 |         13 |          7 |         62 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/redisConnection.cc    | C++              |        171 |          6 |         34 |        211 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/redisConnection.h     | C++              |         25 |         22 |         10 |         57 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/redisKey.cc           | C++              |        219 |         12 |         34 |        265 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/db/redisKey.h            | C++              |         34 |         49 |         12 |         95 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/logic/logicThread.cc     | C++              |        393 |         38 |         77 |        508 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/logic/logicThread.h      | C++              |         79 |         23 |         24 |        126 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/lua/luaApiCtx.h          | C++              |         25 |         20 |         10 |         55 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/lua/luaBind.cc           | C++              |        421 |         43 |         75 |        539 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/lua/luaEnv.cc            | C++              |        418 |         33 |         67 |        518 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/lua/luaEnv.h             | C++              |         71 |         44 |         26 |        141 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/lua/lua_register.h       | C++              |         11 |          4 |          7 |         22 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/net/net_server.cc        | C++              |        561 |         40 |        103 |        704 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/net/net_server.h         | C++              |         87 |         31 |         23 |        141 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/bag.cc            | C++              |         65 |          2 |         16 |         83 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/bag.h             | C++              |         29 |          9 |         10 |         48 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/item.h            | C++              |         27 |         10 |          7 |         44 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/player.cc         | C++              |         44 |          1 |          6 |         51 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/player.h          | C++              |         55 |         19 |         20 |         94 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/playerManager.cc  | C++              |         86 |          7 |         21 |        114 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/playerManager.h   | C++              |         39 |         31 |         15 |         85 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/playerMannager.cc | C++              |          0 |          0 |          1 |          1 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/player/playerMannager.h  | C++              |         17 |          7 |          6 |         30 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/proto/pb_lua.cc          | C++              |        439 |         12 |         42 |        493 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/proto/pb_lua.h           | C++              |         21 |         25 |         13 |         59 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/routeTable.cc            | C++              |        111 |          9 |         18 |        138 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/routeTable.h             | C++              |         22 |         15 |          9 |         46 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/sceneServer.cc           | C++              |        144 |         18 |         25 |        187 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/sceneServer.h            | C++              |         40 |         20 |         14 |         74 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/timer/TimerThread.cc     | C++              |        308 |         44 |         73 |        425 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/timer/TimerThread.h      | C++              |        102 |         51 |         24 |        177 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/CMakeLists.txt                   | CMake            |          0 |          0 |          1 |          1 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/buffer.cc                   | C++              |        157 |          7 |         42 |        206 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/buffer.h                    | C++              |        138 |         55 |         36 |        229 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/clientProto.cc              | C++              |        186 |          8 |         33 |        227 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/clientProto.h               | C++              |         53 |         43 |         15 |        111 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/copy.h                      | C++              |          9 |          4 |          4 |         17 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/json.cc                     | C++              |        155 |          1 |          4 |        160 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/json.h                      | C++              |         27 |          2 |          5 |         34 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/noncopy.h                   | C++              |         12 |          0 |          2 |         14 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/proto.cc                    | C++              |        190 |         30 |         32 |        252 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/proto.h                     | C++              |         86 |         61 |         18 |        165 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/utils.h                     | C++              |         58 |          3 |         11 |         72 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/yaml.cc                     | C++              |        212 |          9 |         37 |        258 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/yaml.h                      | C++              |         28 |         37 |         11 |         76 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/log/asyncLogger.cc               | C++              |        155 |         11 |         28 |        194 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/log/asyncLogger.h                | C++              |         46 |          5 |         14 |         65 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/log/logger.cc                    | C++              |         48 |          3 |          8 |         59 |
+| /home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/log/logger.h                     | C++              |         91 |          2 |         28 |        121 |
+| Total                                                                                    |                  |     11,553 |      2,152 |      2,584 |     16,289 |
++------------------------------------------------------------------------------------------+------------------+------------+------------+------------+------------+

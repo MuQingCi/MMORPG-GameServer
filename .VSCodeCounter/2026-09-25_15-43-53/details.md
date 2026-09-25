@@ -1,0 +1,143 @@
+# Details
+
+Date : 2026-09-25 15:43:53
+
+Directory /home/lanxiyuan/Project_Cpp/GameServer/Zone
+
+Total : 128 files,  11553 codes, 2152 comments, 2584 blanks, all 16289 lines
+
+[Summary](results.md) / Details / [Diff Summary](diff.md) / [Diff Details](diff-details.md)
+
+## Files
+| filename | language | code | comment | blank | total |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| [Zone/CMakeLists.txt](/Zone/CMakeLists.txt) | CMake | 19 | 10 | 8 | 37 |
+| [Zone/chatServer/CMakeLists.txt](/Zone/chatServer/CMakeLists.txt) | CMake | 0 | 0 | 1 | 1 |
+| [Zone/config/zoneConfig.yaml](/Zone/config/zoneConfig.yaml) | YAML | 25 | 11 | 5 | 41 |
+| [Zone/gatewayServer/CMakeLists.txt](/Zone/gatewayServer/CMakeLists.txt) | CMake | 45 | 32 | 13 | 90 |
+| [Zone/gatewayServer/acceptor.cc](/Zone/gatewayServer/acceptor.cc) | C++ | 54 | 3 | 10 | 67 |
+| [Zone/gatewayServer/acceptor.h](/Zone/gatewayServer/acceptor.h) | C++ | 29 | 2 | 10 | 41 |
+| [Zone/gatewayServer/clientSession.cc](/Zone/gatewayServer/clientSession.cc) | C++ | 96 | 3 | 17 | 116 |
+| [Zone/gatewayServer/clientSession.h](/Zone/gatewayServer/clientSession.h) | C++ | 36 | 25 | 13 | 74 |
+| [Zone/gatewayServer/common/callbacks.h](/Zone/gatewayServer/common/callbacks.h) | C++ | 16 | 0 | 8 | 24 |
+| [Zone/gatewayServer/common/currentThread.cc](/Zone/gatewayServer/common/currentThread.cc) | C++ | 17 | 0 | 5 | 22 |
+| [Zone/gatewayServer/common/currentThread.h](/Zone/gatewayServer/common/currentThread.h) | C++ | 29 | 9 | 8 | 46 |
+| [Zone/gatewayServer/common/timestamp.cc](/Zone/gatewayServer/common/timestamp.cc) | C++ | 36 | 5 | 15 | 56 |
+| [Zone/gatewayServer/common/timestamp.h](/Zone/gatewayServer/common/timestamp.h) | C++ | 35 | 14 | 16 | 65 |
+| [Zone/gatewayServer/config/gatewayConfig.yaml](/Zone/gatewayServer/config/gatewayConfig.yaml) | YAML | 18 | 19 | 6 | 43 |
+| [Zone/gatewayServer/connRole.h](/Zone/gatewayServer/connRole.h) | C++ | 9 | 0 | 3 | 12 |
+| [Zone/gatewayServer/event/channel.cc](/Zone/gatewayServer/event/channel.cc) | C++ | 54 | 8 | 14 | 76 |
+| [Zone/gatewayServer/event/channel.h](/Zone/gatewayServer/event/channel.h) | C++ | 44 | 6 | 19 | 69 |
+| [Zone/gatewayServer/event/eventLoop.cc](/Zone/gatewayServer/event/eventLoop.cc) | C++ | 154 | 7 | 38 | 199 |
+| [Zone/gatewayServer/event/eventLoop.h](/Zone/gatewayServer/event/eventLoop.h) | C++ | 53 | 20 | 25 | 98 |
+| [Zone/gatewayServer/event/eventThread.cc](/Zone/gatewayServer/event/eventThread.cc) | C++ | 65 | 9 | 19 | 93 |
+| [Zone/gatewayServer/event/eventThread.h](/Zone/gatewayServer/event/eventThread.h) | C++ | 39 | 1 | 17 | 57 |
+| [Zone/gatewayServer/event/eventThreadPool.cc](/Zone/gatewayServer/event/eventThreadPool.cc) | C++ | 44 | 19 | 17 | 80 |
+| [Zone/gatewayServer/event/eventThreadPool.h](/Zone/gatewayServer/event/eventThreadPool.h) | C++ | 29 | 3 | 16 | 48 |
+| [Zone/gatewayServer/gatewayConfig.cc](/Zone/gatewayServer/gatewayConfig.cc) | C++ | 160 | 30 | 37 | 227 |
+| [Zone/gatewayServer/gatewayConfig.h](/Zone/gatewayServer/gatewayConfig.h) | C++ | 26 | 26 | 11 | 63 |
+| [Zone/gatewayServer/gatewayDispatcher.cc](/Zone/gatewayServer/gatewayDispatcher.cc) | C++ | 499 | 43 | 76 | 618 |
+| [Zone/gatewayServer/gatewayDispatcher.h](/Zone/gatewayServer/gatewayDispatcher.h) | C++ | 86 | 35 | 25 | 146 |
+| [Zone/gatewayServer/gatewayServer.cc](/Zone/gatewayServer/gatewayServer.cc) | C++ | 153 | 31 | 31 | 215 |
+| [Zone/gatewayServer/gatewayServer.h](/Zone/gatewayServer/gatewayServer.h) | C++ | 51 | 26 | 20 | 97 |
+| [Zone/gatewayServer/inetAddress.cc](/Zone/gatewayServer/inetAddress.cc) | C++ | 144 | 16 | 33 | 193 |
+| [Zone/gatewayServer/inetAddress.h](/Zone/gatewayServer/inetAddress.h) | C++ | 84 | 7 | 14 | 105 |
+| [Zone/gatewayServer/main.cpp](/Zone/gatewayServer/main.cpp) | C++ | 84 | 30 | 20 | 134 |
+| [Zone/gatewayServer/poller/DefaultPoller.h](/Zone/gatewayServer/poller/DefaultPoller.h) | C++ | 9 | 0 | 4 | 13 |
+| [Zone/gatewayServer/poller/epoller.cc](/Zone/gatewayServer/poller/epoller.cc) | C++ | 104 | 24 | 30 | 158 |
+| [Zone/gatewayServer/poller/epoller.h](/Zone/gatewayServer/poller/epoller.h) | C++ | 20 | 0 | 7 | 27 |
+| [Zone/gatewayServer/poller/poller.cc](/Zone/gatewayServer/poller/poller.cc) | C++ | 13 | 1 | 7 | 21 |
+| [Zone/gatewayServer/poller/poller.h](/Zone/gatewayServer/poller/poller.h) | C++ | 25 | 0 | 10 | 35 |
+| [Zone/gatewayServer/returnRoute.cc](/Zone/gatewayServer/returnRoute.cc) | C++ | 62 | 0 | 7 | 69 |
+| [Zone/gatewayServer/returnRoute.h](/Zone/gatewayServer/returnRoute.h) | C++ | 26 | 20 | 8 | 54 |
+| [Zone/gatewayServer/serviceRegistry.cc](/Zone/gatewayServer/serviceRegistry.cc) | C++ | 88 | 4 | 17 | 109 |
+| [Zone/gatewayServer/serviceRegistry.h](/Zone/gatewayServer/serviceRegistry.h) | C++ | 33 | 20 | 11 | 64 |
+| [Zone/gatewayServer/socket.cc](/Zone/gatewayServer/socket.cc) | C++ | 128 | 7 | 49 | 184 |
+| [Zone/gatewayServer/socket.h](/Zone/gatewayServer/socket.h) | C++ | 31 | 4 | 11 | 46 |
+| [Zone/gatewayServer/tcpConnection.cc](/Zone/gatewayServer/tcpConnection.cc) | C++ | 490 | 80 | 99 | 669 |
+| [Zone/gatewayServer/tcpConnection.h](/Zone/gatewayServer/tcpConnection.h) | C++ | 113 | 42 | 38 | 193 |
+| [Zone/gatewayServer/timer/timer.cc](/Zone/gatewayServer/timer/timer.cc) | C++ | 14 | 6 | 2 | 22 |
+| [Zone/gatewayServer/timer/timer.h](/Zone/gatewayServer/timer/timer.h) | C++ | 38 | 7 | 13 | 58 |
+| [Zone/gatewayServer/timer/timerId.h](/Zone/gatewayServer/timer/timerId.h) | C++ | 16 | 4 | 6 | 26 |
+| [Zone/gatewayServer/timer/timerQueue.cc](/Zone/gatewayServer/timer/timerQueue.cc) | C++ | 198 | 42 | 51 | 291 |
+| [Zone/gatewayServer/timer/timerQueue.h](/Zone/gatewayServer/timer/timerQueue.h) | C++ | 53 | 29 | 23 | 105 |
+| [Zone/globalServer/CMakeLists.txt](/Zone/globalServer/CMakeLists.txt) | CMake | 0 | 0 | 1 | 1 |
+| [Zone/proto/CMakeLists.txt](/Zone/proto/CMakeLists.txt) | CMake | 24 | 7 | 8 | 39 |
+| [Zone/proto/gameProto.proto](/Zone/proto/gameProto.proto) | Protocol Buffers | 52 | 14 | 10 | 76 |
+| [Zone/proto/proto.h](/Zone/proto/proto.h) | C++ | 29 | 6 | 11 | 46 |
+| [Zone/sceneServer/CMakeLists.txt](/Zone/sceneServer/CMakeLists.txt) | CMake | 102 | 34 | 26 | 162 |
+| [Zone/sceneServer/config/route.yaml](/Zone/sceneServer/config/route.yaml) | YAML | 0 | 0 | 1 | 1 |
+| [Zone/sceneServer/config/routeTable.yaml](/Zone/sceneServer/config/routeTable.yaml) | YAML | 13 | 1 | 2 | 16 |
+| [Zone/sceneServer/config/sceneConfig.yaml](/Zone/sceneServer/config/sceneConfig.yaml) | YAML | 19 | 5 | 9 | 33 |
+| [Zone/sceneServer/lua\_script/core/init.lua](/Zone/sceneServer/lua_script/core/init.lua) | Lua | 18 | 9 | 6 | 33 |
+| [Zone/sceneServer/lua\_script/move.lua](/Zone/sceneServer/lua_script/move.lua) | Lua | 44 | 20 | 12 | 76 |
+| [Zone/sceneServer/main.cc](/Zone/sceneServer/main.cc) | C++ | 129 | 41 | 25 | 195 |
+| [Zone/sceneServer/src-cpp/actor/actorRef.h](/Zone/sceneServer/src-cpp/actor/actorRef.h) | C++ | 32 | 17 | 11 | 60 |
+| [Zone/sceneServer/src-cpp/common/ITimerService.h](/Zone/sceneServer/src-cpp/common/ITimerService.h) | C++ | 12 | 0 | 4 | 16 |
+| [Zone/sceneServer/src-cpp/common/hash.h](/Zone/sceneServer/src-cpp/common/hash.h) | C++ | 27 | 27 | 8 | 62 |
+| [Zone/sceneServer/src-cpp/common/msg.h](/Zone/sceneServer/src-cpp/common/msg.h) | C++ | 146 | 39 | 31 | 216 |
+| [Zone/sceneServer/src-cpp/common/msgBus.cc](/Zone/sceneServer/src-cpp/common/msgBus.cc) | C++ | 179 | 8 | 35 | 222 |
+| [Zone/sceneServer/src-cpp/common/msgBus.h](/Zone/sceneServer/src-cpp/common/msgBus.h) | C++ | 53 | 39 | 18 | 110 |
+| [Zone/sceneServer/src-cpp/common/queue.h](/Zone/sceneServer/src-cpp/common/queue.h) | C++ | 52 | 15 | 11 | 78 |
+| [Zone/sceneServer/src-cpp/config/sceneConfig.cc](/Zone/sceneServer/src-cpp/config/sceneConfig.cc) | C++ | 159 | 16 | 27 | 202 |
+| [Zone/sceneServer/src-cpp/config/sceneConfig.h](/Zone/sceneServer/src-cpp/config/sceneConfig.h) | C++ | 28 | 34 | 14 | 76 |
+| [Zone/sceneServer/src-cpp/config/zoneConfig.cc](/Zone/sceneServer/src-cpp/config/zoneConfig.cc) | C++ | 135 | 15 | 29 | 179 |
+| [Zone/sceneServer/src-cpp/config/zoneConfig.h](/Zone/sceneServer/src-cpp/config/zoneConfig.h) | C++ | 21 | 26 | 10 | 57 |
+| [Zone/sceneServer/src-cpp/db/dbConfig.h](/Zone/sceneServer/src-cpp/db/dbConfig.h) | C++ | 59 | 29 | 16 | 104 |
+| [Zone/sceneServer/src-cpp/db/dbThread.cc](/Zone/sceneServer/src-cpp/db/dbThread.cc) | C++ | 219 | 9 | 48 | 276 |
+| [Zone/sceneServer/src-cpp/db/dbThread.h](/Zone/sceneServer/src-cpp/db/dbThread.h) | C++ | 60 | 21 | 21 | 102 |
+| [Zone/sceneServer/src-cpp/db/dbValue.cc](/Zone/sceneServer/src-cpp/db/dbValue.cc) | C++ | 136 | 1 | 12 | 149 |
+| [Zone/sceneServer/src-cpp/db/dbValue.h](/Zone/sceneServer/src-cpp/db/dbValue.h) | C++ | 53 | 10 | 9 | 72 |
+| [Zone/sceneServer/src-cpp/db/mysqlConnection.cc](/Zone/sceneServer/src-cpp/db/mysqlConnection.cc) | C++ | 276 | 7 | 38 | 321 |
+| [Zone/sceneServer/src-cpp/db/mysqlConnection.h](/Zone/sceneServer/src-cpp/db/mysqlConnection.h) | C++ | 25 | 23 | 10 | 58 |
+| [Zone/sceneServer/src-cpp/db/redisApi.h](/Zone/sceneServer/src-cpp/db/redisApi.h) | C++ | 42 | 13 | 7 | 62 |
+| [Zone/sceneServer/src-cpp/db/redisConnection.cc](/Zone/sceneServer/src-cpp/db/redisConnection.cc) | C++ | 171 | 6 | 34 | 211 |
+| [Zone/sceneServer/src-cpp/db/redisConnection.h](/Zone/sceneServer/src-cpp/db/redisConnection.h) | C++ | 25 | 22 | 10 | 57 |
+| [Zone/sceneServer/src-cpp/db/redisKey.cc](/Zone/sceneServer/src-cpp/db/redisKey.cc) | C++ | 219 | 12 | 34 | 265 |
+| [Zone/sceneServer/src-cpp/db/redisKey.h](/Zone/sceneServer/src-cpp/db/redisKey.h) | C++ | 34 | 49 | 12 | 95 |
+| [Zone/sceneServer/src-cpp/logic/logicThread.cc](/Zone/sceneServer/src-cpp/logic/logicThread.cc) | C++ | 393 | 38 | 77 | 508 |
+| [Zone/sceneServer/src-cpp/logic/logicThread.h](/Zone/sceneServer/src-cpp/logic/logicThread.h) | C++ | 79 | 23 | 24 | 126 |
+| [Zone/sceneServer/src-cpp/lua/luaApiCtx.h](/Zone/sceneServer/src-cpp/lua/luaApiCtx.h) | C++ | 25 | 20 | 10 | 55 |
+| [Zone/sceneServer/src-cpp/lua/luaBind.cc](/Zone/sceneServer/src-cpp/lua/luaBind.cc) | C++ | 421 | 43 | 75 | 539 |
+| [Zone/sceneServer/src-cpp/lua/luaEnv.cc](/Zone/sceneServer/src-cpp/lua/luaEnv.cc) | C++ | 418 | 33 | 67 | 518 |
+| [Zone/sceneServer/src-cpp/lua/luaEnv.h](/Zone/sceneServer/src-cpp/lua/luaEnv.h) | C++ | 71 | 44 | 26 | 141 |
+| [Zone/sceneServer/src-cpp/lua/lua\_register.h](/Zone/sceneServer/src-cpp/lua/lua_register.h) | C++ | 11 | 4 | 7 | 22 |
+| [Zone/sceneServer/src-cpp/net/net\_server.cc](/Zone/sceneServer/src-cpp/net/net_server.cc) | C++ | 561 | 40 | 103 | 704 |
+| [Zone/sceneServer/src-cpp/net/net\_server.h](/Zone/sceneServer/src-cpp/net/net_server.h) | C++ | 87 | 31 | 23 | 141 |
+| [Zone/sceneServer/src-cpp/player/bag.cc](/Zone/sceneServer/src-cpp/player/bag.cc) | C++ | 65 | 2 | 16 | 83 |
+| [Zone/sceneServer/src-cpp/player/bag.h](/Zone/sceneServer/src-cpp/player/bag.h) | C++ | 29 | 9 | 10 | 48 |
+| [Zone/sceneServer/src-cpp/player/item.h](/Zone/sceneServer/src-cpp/player/item.h) | C++ | 27 | 10 | 7 | 44 |
+| [Zone/sceneServer/src-cpp/player/player.cc](/Zone/sceneServer/src-cpp/player/player.cc) | C++ | 44 | 1 | 6 | 51 |
+| [Zone/sceneServer/src-cpp/player/player.h](/Zone/sceneServer/src-cpp/player/player.h) | C++ | 55 | 19 | 20 | 94 |
+| [Zone/sceneServer/src-cpp/player/playerManager.cc](/Zone/sceneServer/src-cpp/player/playerManager.cc) | C++ | 86 | 7 | 21 | 114 |
+| [Zone/sceneServer/src-cpp/player/playerManager.h](/Zone/sceneServer/src-cpp/player/playerManager.h) | C++ | 39 | 31 | 15 | 85 |
+| [Zone/sceneServer/src-cpp/player/playerMannager.cc](/Zone/sceneServer/src-cpp/player/playerMannager.cc) | C++ | 0 | 0 | 1 | 1 |
+| [Zone/sceneServer/src-cpp/player/playerMannager.h](/Zone/sceneServer/src-cpp/player/playerMannager.h) | C++ | 17 | 7 | 6 | 30 |
+| [Zone/sceneServer/src-cpp/proto/pb\_lua.cc](/Zone/sceneServer/src-cpp/proto/pb_lua.cc) | C++ | 439 | 12 | 42 | 493 |
+| [Zone/sceneServer/src-cpp/proto/pb\_lua.h](/Zone/sceneServer/src-cpp/proto/pb_lua.h) | C++ | 21 | 25 | 13 | 59 |
+| [Zone/sceneServer/src-cpp/routeTable.cc](/Zone/sceneServer/src-cpp/routeTable.cc) | C++ | 111 | 9 | 18 | 138 |
+| [Zone/sceneServer/src-cpp/routeTable.h](/Zone/sceneServer/src-cpp/routeTable.h) | C++ | 22 | 15 | 9 | 46 |
+| [Zone/sceneServer/src-cpp/sceneServer.cc](/Zone/sceneServer/src-cpp/sceneServer.cc) | C++ | 144 | 18 | 25 | 187 |
+| [Zone/sceneServer/src-cpp/sceneServer.h](/Zone/sceneServer/src-cpp/sceneServer.h) | C++ | 40 | 20 | 14 | 74 |
+| [Zone/sceneServer/src-cpp/timer/TimerThread.cc](/Zone/sceneServer/src-cpp/timer/TimerThread.cc) | C++ | 308 | 44 | 73 | 425 |
+| [Zone/sceneServer/src-cpp/timer/TimerThread.h](/Zone/sceneServer/src-cpp/timer/TimerThread.h) | C++ | 102 | 51 | 24 | 177 |
+| [Zone/zone\_common/CMakeLists.txt](/Zone/zone_common/CMakeLists.txt) | CMake | 0 | 0 | 1 | 1 |
+| [Zone/zone\_common/base/buffer.cc](/Zone/zone_common/base/buffer.cc) | C++ | 157 | 7 | 42 | 206 |
+| [Zone/zone\_common/base/buffer.h](/Zone/zone_common/base/buffer.h) | C++ | 138 | 55 | 36 | 229 |
+| [Zone/zone\_common/base/clientProto.cc](/Zone/zone_common/base/clientProto.cc) | C++ | 186 | 8 | 33 | 227 |
+| [Zone/zone\_common/base/clientProto.h](/Zone/zone_common/base/clientProto.h) | C++ | 53 | 43 | 15 | 111 |
+| [Zone/zone\_common/base/copy.h](/Zone/zone_common/base/copy.h) | C++ | 9 | 4 | 4 | 17 |
+| [Zone/zone\_common/base/json.cc](/Zone/zone_common/base/json.cc) | C++ | 155 | 1 | 4 | 160 |
+| [Zone/zone\_common/base/json.h](/Zone/zone_common/base/json.h) | C++ | 27 | 2 | 5 | 34 |
+| [Zone/zone\_common/base/noncopy.h](/Zone/zone_common/base/noncopy.h) | C++ | 12 | 0 | 2 | 14 |
+| [Zone/zone\_common/base/proto.cc](/Zone/zone_common/base/proto.cc) | C++ | 190 | 30 | 32 | 252 |
+| [Zone/zone\_common/base/proto.h](/Zone/zone_common/base/proto.h) | C++ | 86 | 61 | 18 | 165 |
+| [Zone/zone\_common/base/utils.h](/Zone/zone_common/base/utils.h) | C++ | 58 | 3 | 11 | 72 |
+| [Zone/zone\_common/base/yaml.cc](/Zone/zone_common/base/yaml.cc) | C++ | 212 | 9 | 37 | 258 |
+| [Zone/zone\_common/base/yaml.h](/Zone/zone_common/base/yaml.h) | C++ | 28 | 37 | 11 | 76 |
+| [Zone/zone\_common/log/asyncLogger.cc](/Zone/zone_common/log/asyncLogger.cc) | C++ | 155 | 11 | 28 | 194 |
+| [Zone/zone\_common/log/asyncLogger.h](/Zone/zone_common/log/asyncLogger.h) | C++ | 46 | 5 | 14 | 65 |
+| [Zone/zone\_common/log/logger.cc](/Zone/zone_common/log/logger.cc) | C++ | 48 | 3 | 8 | 59 |
+| [Zone/zone\_common/log/logger.h](/Zone/zone_common/log/logger.h) | C++ | 91 | 2 | 28 | 121 |
+
+[Summary](results.md) / Details / [Diff Summary](diff.md) / [Diff Details](diff-details.md)
