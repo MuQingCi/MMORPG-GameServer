@@ -1,0 +1,40 @@
+ZoneServer:
+    # 区服身份：**zoneId 只在这里出现**（sceneConfig 不再持有它）
+    # Redis key 命名空间也从它派生：zone:{zoneId}:...
+    zoneId: 1
+
+    db:
+        enable: true
+        mysql:              # 区服内不做读写分离：只配主库（从库仅做备份/离线分析）
+            host: 127.0.0.1
+            port: 3306
+            user: root
+            password: ""
+            dbName: game    # ★ db.enable=true 时必填，否则启动即报错（不再静默连空库）
+            charset: utf8mb4
+            connectTimeoutSec: 3
+            readTimeoutSec: 5
+
+        redis:              # 与 MySQL 完全独立的通道（慢 SQL 不该堵住 Redis）
+            host: 127.0.0.1
+            port: 6379
+            password: ""
+            timeoutMs: 1000
+            # 可选：多实例逻辑分片。同一 key 恒等落到同一实例（按 key 稳定哈希）；
+            # 配了 shards 就忽略上面的 host/port；跨分片的多 key 命令会被拒绝。
+            # shards:
+            #     - 127.0.0.1:6379
+            #     - 127.0.0.1:6380
+            #
+            # 注意：Redis key 前缀由框架统一补（zone:{zoneId}:scene:{sceneId}:...），
+            # 脚本必须用 db.key.zone/scene/player 构造 key，裸写 key 会被拒绝。
+
+    # 反向连接的网关集群（区服共享：场景服/全局服/聊天服连同一批）
+    gateways:
+        - 127.0.0.1:10000
+
+    log:
+        level: info         # debug / info / warn / error
+        dir: ./logs
+        name: scene         # ★ 必须显式指定（多服务共用 zoneConfig，空值会让它们写同一文件）
+        rollSize: 67108864  # 单文件滚动阈值(64MB)

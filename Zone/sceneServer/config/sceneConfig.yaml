@@ -1,0 +1,32 @@
+SceneServer:
+    # 只放**场景服特有**的配置。
+    # 区服共享项（zoneId / db / gateways / log）在 zoneConfig.yaml —— 两份文件由
+    # main 加载后经 SceneConfig::AttachZone() 合并，物理上不会出现"同一项两份存储"。
+    sceneId: 1              # 场景编号（握手时上报网关）
+    serviceId: 8            # 本服务 id（出站帧 srcServiceID，必须与网关配置一致）
+
+    # 每个 Lua VM 都加载全套脚本，内存 × N。
+    # 建议第一阶段取 2~4，先跑通再往上调。
+    logicThreadNum: 4
+
+    luaDir: ./lua_script    # Lua 脚本根目录（core/ -> 根目录 -> module/ 依次加载）
+    luaInstructionLimit: 10000000   # 单次调用允许的 Lua 指令数，0 = 关闭（防 while true do end）
+
+    idleWaitMs: 5           # 逻辑线程队列空时的阻塞等待上限（ms）
+    flushIntervalMs: 30000  # 定期快照间隔（ms）：防宕机丢数据
+    scanIdleMs: 10000       # 空闲玩家扫描间隔（ms）
+
+    net:
+        listenEnable: false  # 场景服通常反向连网关；本地联调/工具需要监听时打开
+        listenAddr: 0.0.0.0 # 不要绑 127.0.0.1：网关在别的机器/容器里
+        listenPort: 12345
+        maxReadBufferBytes: 1048576    # 单连接读缓冲上限（防对端狂发把内存吃光）
+        maxWriteBufferBytes: 4194304   # 单连接写缓冲上限（防慢客户端吃内存）
+        maxFramesPerSec: 1000          # 单连接帧速率上限（防刷包）
+        maxDecodeErrors: 64            # 累计协议错误上限，超过断开连接
+
+    timerTickMs: 50         # 时间轮步长 = 定时器精度
+    timerWheelSlots: 256    # 槽数：覆盖范围 = 256 × 50ms = 12.8s
+
+
+
