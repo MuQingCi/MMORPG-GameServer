@@ -1,0 +1,9 @@
+# 构建产物
+Zone/build
+Zone/gatewayServer/tests
+Zone/sceneServer/tests
+Zone/*.log
+Zone/compile_commands.json
+.cache/
+docs/*
+docker-data/
