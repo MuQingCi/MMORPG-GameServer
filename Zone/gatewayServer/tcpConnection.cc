@@ -317,6 +317,8 @@ void TcpConnection::sendInLoop(const void* data, size_t len)
             if(errno != EAGAIN)
             {
                 //TODO 错误处理
+                LOG_ERROR<<"Has a Error!";
+                handleClose();
             }
         }
     }
@@ -488,8 +490,7 @@ void TcpConnection::handleWrite()
         }
         else {
             if(savedErrno != EAGAIN)
-            //TODO 处理错误
-            handleError();
+                handleError();
         }
     }
 }
@@ -555,7 +556,7 @@ void TcpConnection::handleClose()
 
 void TcpConnection::handleError()
 {
-    //TODO 日志记录错误
+    LOG_ERROR<<"Has a Error!";
     handleClose();
 }
 
