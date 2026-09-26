@@ -88,7 +88,7 @@ std::string PackBackendHandshake(const BackendHandshake& h)
 
 bool UnpackBackendHandshake(const std::string& body, BackendHandshake& out)
 {
-    if (body.size() < 9)
+    if (body.size() != 9)
         return false;
 
     out.serviceId = static_cast<uint8_t>(body[0]);

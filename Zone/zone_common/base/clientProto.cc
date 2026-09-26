@@ -184,7 +184,7 @@ std::string MakeAuthBody(uint64_t playerId, uint64_t ticket)
 
 bool ParseAuthBody(const std::string& body, uint64_t& playerId, uint64_t& ticket)
 {
-    return ClientGetU64(body, 0, playerId) && ClientGetU64(body, 8, ticket);
+    return body.size() == 16 && ClientGetU64(body, 0, playerId) && ClientGetU64(body, 8, ticket);
 }
 
 std::string MakeAuthAckBody(uint64_t playerId, uint64_t sessionId, uint32_t epoch,
@@ -202,7 +202,7 @@ std::string MakeAuthAckBody(uint64_t playerId, uint64_t sessionId, uint32_t epoc
 bool ParseAuthAckBody(const std::string& body, uint64_t& playerId, uint64_t& sessionId,
                       uint32_t& epoch, uint32_t& zoneId, uint8_t& dstService)
 {
-    if (body.size() < 25)
+    if (body.size() != 25)
         return false;
     // 每个字段都有边界检查（ClientGet* 内部判长度），短包一律拒绝而不是读越界
     if (!ClientGetU64(body, 0, playerId) || !ClientGetU64(body, 8, sessionId) ||
@@ -219,7 +219,7 @@ std::string MakeServiceBody(uint8_t serviceId)
 
 bool ParseServiceBody(const std::string& body, uint8_t& serviceId)
 {
-    if (body.empty())
+    if (body.size() != 1)
         return false;
     serviceId = static_cast<uint8_t>(body[0]);
     return true;
