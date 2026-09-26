@@ -23,6 +23,16 @@ bool ReturnRouteTable::Take(uint64_t internalSeq, ReturnRoute& out)
     return true;
 }
 
+bool ReturnRouteTable::Get(uint64_t internalSeq, ReturnRoute& out) const
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = routes_.find(internalSeq);
+    if (it == routes_.end())
+        return false;
+    out = it->second;
+    return true;
+}
+
 size_t ReturnRouteTable::EraseBySession(uint64_t clientSessionId)
 {
     std::lock_guard<std::mutex> lk(mtx_);

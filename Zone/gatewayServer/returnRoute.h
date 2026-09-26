@@ -23,6 +23,10 @@ struct ReturnRoute
     uint64_t internalSeq     = 0;
     uint64_t clientSessionId = 0;
     uint64_t clientRequestId = 0;
+    uint8_t  backendServiceId = 0;
+    uint64_t playerId         = 0;
+    uint16_t module           = 0;
+    uint16_t method           = 0;
     uint32_t sessionEpoch    = 0;
     int64_t  createdAtMs     = 0;
 };
@@ -39,6 +43,8 @@ class ReturnRouteTable
 public:
     bool Add(const ReturnRoute& r, size_t maxSize);
     bool Take(uint64_t internalSeq, ReturnRoute& out);
+    // 先查询再按来源消费，避免其它后端用猜中的 seq 抢走回程路由。
+    bool Get(uint64_t internalSeq, ReturnRoute& out) const;
 
     size_t EraseBySession(uint64_t clientSessionId);
     size_t Sweep(int64_t nowMs, uint32_t ttlMs);
