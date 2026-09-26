@@ -326,6 +326,11 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     // ---------------- 控制通道（模块号 1）----------------
     if (h.kind == ClientKind::kControl || h.module == kClientSysModule)
     {
+        if (h.kind != ClientKind::kControl || h.module != kClientSysModule)
+        {
+            RejectClient(conn, h.requestId, h.method, "control kind and module mismatch");
+            return;
+        }
         switch (h.method)
         {
             case ClientSysMethod::kAuth:
@@ -417,6 +422,12 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
         return;
     }
 
+    if (h.requestId == 0)
+    {
+        RejectClient(conn, h.requestId, h.method, "requestId must be nonzero");
+        return;
+    }
+
     // 未鉴权连接不得访问业务路由。注意 playerId **不取客户端包头/包体**，
     // 只取会话上绑定的值 —— 这就是"伪造 playerId 被拒绝"的实现点。
     if (!s.authed)
@@ -442,6 +453,10 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     r.internalSeq = internalSeq;
     r.clientSessionId = sessionId;
     r.clientRequestId = h.requestId;
+    r.backendServiceId = dst;
+    r.playerId = s.playerId;
+    r.module = h.module;
+    r.method = h.method;
     r.sessionEpoch = s.epoch;
     r.createdAtMs = nowMs;
 
@@ -482,6 +497,13 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         {
             LOG_WARNING << "bad handshake body from " << conn->name();
             backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+            conn->forceClose();
+            return;
+        }
+
+        if (h.srcServiceID != hs.serviceId || h.seq != 0 || h.playerId != 0 || h.retrFlag != 0)
+        {
+            LOG_WARNING << "invalid backend handshake header from " << conn->name();
             conn->forceClose();
             return;
         }
@@ -544,10 +566,27 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         return;
     }
 
-    // 回程路径 1：按 internalSeq 反查（正常响应）
-    ReturnRoute r;
-    if (routes_.Take(h.seq, r))
+    if (h.srcServiceID != self.serviceId || h.retrFlag != 0)
     {
+        LOG_WARNING << "backend header identity/retry mismatch from " << conn->name();
+        conn->forceClose();
+        return;
+    }
+
+    // 回程路径 1：按 internalSeq 反查（正常响应）。先核实来源和请求上下文，
+    // 不允许其它服务或错误的 playerId/module/method 抢走路由。
+    ReturnRoute r;
+    if (h.seq != 0 && routes_.Get(h.seq, r))
+    {
+        if (r.backendServiceId != self.serviceId || r.playerId != h.playerId ||
+            r.module != h.module || r.method != h.method)
+        {
+            LOG_WARNING << "backend response context mismatch: seq=" << h.seq;
+            conn->forceClose();
+            return;
+        }
+        if (!routes_.Take(h.seq, r))
+            return;
         ClientSession s;
         if (sessions_.Get(r.clientSessionId, s) && s.authed && s.epoch == r.sessionEpoch && s.conn)
         {
@@ -568,8 +607,8 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         return;
     }
 
-    // 回程路径 2：没有匹配的请求 -> 视为推送，按 playerId 定位当前会话
-    if (h.playerId != 0)
+    // 回程路径 2：seq==0 才是推送；非零未知 seq 是重复/超时响应，不得投给当前玩家。
+    if (h.seq == 0 && h.playerId != 0)
     {
         ClientSession s;
         if (sessions_.FindByPlayer(h.playerId, s) && s.conn)
