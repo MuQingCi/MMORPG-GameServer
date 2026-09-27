@@ -1,0 +1,10 @@
+ChatServer:
+    serviceId: 3
+    net:
+        listenEnable: false  # 场景服通常反向连网关；本地联调/工具需要监听时打开
+        listenAddr: 0.0.0.0 # 不要绑 127.0.0.1：网关在别的机器/容器里
+        listenPort: 12345
+        maxReadBufferBytes: 1048576    # 单连接读缓冲上限（防对端狂发把内存吃光）
+        maxWriteBufferBytes: 4194304   # 单连接写缓冲上限（防慢客户端吃内存）
+        maxFramesPerSec: 1000          # 单连接帧速率上限（防刷包）
+        maxDecodeErrors: 64            # 累计协议错误上限，超过断开连接
