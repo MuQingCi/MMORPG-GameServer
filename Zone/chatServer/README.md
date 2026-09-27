@@ -1,3 +1,38 @@
+# 聊天服务器
+## 内部支持功能
+- 1.场景服内部私聊  
+- 2.跨场景服私聊  
+- 3.某一场景服内玩家对整个区级内部玩家喊话  
+- 4.管理员对当前区广播消息  
+> 3/4可以合并，由网关鉴权后传递玩家身份给聊天服务器，聊天服务器根据权限调用不同广播方法  
+
+### 功能示例
+- 1.跨场景服私聊  
+    - 例如:场景服1中一位PlayerID为12345的玩家向场景服3中PlayerID为41231的玩家发送一句消息"hello",后者会接收到一条"PlayerName（12345对应的角色名）: hello"  
+- 2.跨服广播 
+    - 管理者定时地向各个场景服广播消息，各个场景服内部的每个玩家都能收到消息
+
+## 职责边界
+- 聊天服务器不操作玩家数据、只负责根据src/dst PlayerId、playerName、body组装聊天帧ChatMsg并将其回投对应网关
+- 内部只持有网关会话表gatewaySessionTable和玩家Id所处网关速查表pGatewayTable  
+
+
+> gatewaySessionTable——gatewayId --> set/vector<playerEntry>
+> pGatewayTable——  playerId->gatewayId
+```c++
+struct playerEntry
+{
+    uint64_t playerId;
+    std::string playerName;
+
+}
+```
+## 与网关服务器的数据流
+
+ChatServer <————ChatMsg————> GatewayServer
+> ChatMsg格式如下
+> [2B魔数|2B版本|2B模块|2B方法|8B源玩家ID|8B目的玩家ID|业务数据body]——暂定头部为24Bytes
+
 # 最小单网关私聊服务
 
 构建：`cmake -S Zone -B Zone/build && cmake --build Zone/build -j 2`
