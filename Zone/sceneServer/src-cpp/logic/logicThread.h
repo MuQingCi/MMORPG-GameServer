@@ -91,7 +91,7 @@ private:
     // 懒创建 Actor：第一条带 playerId 的业务消息就是"玩家进入本场景"
     Player* ensureActor(uint64_t playerId, uint64_t session, uint32_t& epochOut);
 
-    void sendRetTip(uint64_t session, uint64_t playerId, uint64_t seq, int32_t code, const char* text);
+    void sendRetTip(const Msg& request, int32_t code, const char* text);
     void sendToSession(uint64_t session, const RouteTable::Route* route, uint64_t seq,
                        uint64_t playerId, const std::string& body);
     void flushDirtyPlayers();

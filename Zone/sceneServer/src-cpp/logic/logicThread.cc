@@ -237,10 +237,9 @@ Player* LogicThread::ensureActor(uint64_t playerId, uint64_t session, uint32_t& 
     return players_->getOrCreate(playerId, session, epochOut);
 }
 
-void LogicThread::sendRetTip(uint64_t session, uint64_t playerId, uint64_t seq,
-                             int32_t code, const char* text)
+void LogicThread::sendRetTip(const Msg& request, int32_t code, const char* text)
 {
-    if (session == 0)
+    if (request.head.session == 0)
         return;
 
     gs::RetTip tip;
@@ -249,11 +248,13 @@ void LogicThread::sendRetTip(uint64_t session, uint64_t playerId, uint64_t seq,
 
     Msg m;
     m.head.msgType = MsgType::MSGTYPE_SEND;
-    m.head.Module = Module::SYS;
-    m.head.Method = Method::SYS_RET_TIP;   // 出站路由：gs.RetTip
-    m.head.seq = seq;
-    m.head.session = session;
-    m.head.playerId = playerId;
+    // 非零 seq 是对客户端请求的回包：网关只接受原 module/method/playerId/seq。
+    // 无关联号的通知仍使用 RetTip 的出站 SYS 路由。
+    m.head.Module = request.head.seq ? request.head.Module : Module::SYS;
+    m.head.Method = request.head.seq ? request.head.Method : Method::SYS_RET_TIP;
+    m.head.seq = request.head.seq;
+    m.head.session = request.head.session;
+    m.head.playerId = request.head.playerId;
     m.body = tip.SerializeAsString();
     m_bus_->sendToNet(std::move(m));
 }
@@ -287,7 +288,7 @@ void LogicThread::onNetMsg(Msg& m)
     {
         LOG_WARNING << "worker " << threadId_ << " route not found, Module=" << m.head.Module
                     << " Method=" << m.head.Method;
-        sendRetTip(m.head.session, m.head.playerId, m.head.seq, 1001, "route not found");
+        sendRetTip(m, 1001, "route not found");
         return;
     }
 
@@ -308,13 +309,13 @@ void LogicThread::onNetMsg(Msg& m)
     if (route->lua_fn == nullptr || route->lua_fn[0] == '\0')
     {
         // TODO C++ 处理的路由（例如内部系统方法），当前未实现
-        sendRetTip(m.head.session, m.head.playerId, m.head.seq, 1002, "handler not implemented");
+        sendRetTip(m, 1002, "handler not implemented");
         return;
     }
 
     if (lua_ == nullptr || !lua_->ready())
     {
-        sendRetTip(m.head.session, m.head.playerId, m.head.seq, 1003, "lua env not ready");
+        sendRetTip(m, 1003, "lua env not ready");
         return;
     }
 
@@ -324,7 +325,7 @@ void LogicThread::onNetMsg(Msg& m)
     if (r != LuaEnv::DispatchResult::kOk)
     {
         // 明确回包，避免客户端无限等待
-        sendRetTip(m.head.session, m.head.playerId, m.head.seq,
+        sendRetTip(m,
                    r == LuaEnv::DispatchResult::kNoFn ? 1004 : 1005,
                    r == LuaEnv::DispatchResult::kNoFn ? "lua handler not found"
                                                       : "server internal error");
