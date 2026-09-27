@@ -6,6 +6,23 @@
 #include <cstdint>
 #include <string>
 
+// 公共协议字段的语义别名。宽度以实际线格式为准：GateFrame/ClientFrame 的
+// module、method 为 u16，totalLen 为 u32；握手/鉴权的 zoneId 为 u32。
+// 这些都是 uintXX_t 的别名，不会提供不同于整数的类型安全性。
+using MODULE = uint16_t;
+using METHOD = uint16_t;
+using LENGTH = uint32_t;
+using ZoneID = uint32_t;
+using InstanceID = uint32_t;
+using SessionID = uint64_t;
+using EpochID = uint32_t;
+
+// 不提供旧 proto/proto.h 的 BackendService 和 MessageKind：
+// BackendService::Scene=2 与当前 ServerID::kScene_1=8 冲突；
+// MessageKind 的 Request/Response/Push 是 ClientKind（clientProto.h）语义，
+// 不是 GateFrame::msgType（NetMessageType）。也不提供 VERSION 别名：
+// ClientFrame 版本为 u8，而 GateFrame 版本为 u16。
+
 /**
  * 场景服与网关/全局服/聊天服之间的线格式（固定 32 字节头）
  * -----------------------------------------------------------------------------------------------------
@@ -93,6 +110,19 @@ constexpr uint16_t kSYS = 1;   // 与 sceneServer 的 Module::SYS 同值
 namespace SysMethod
 {
 constexpr uint16_t kHandshake = 1;   // 后端 -> 网关：上报服务身份（握手体见下）
+}
+
+// 简化版服务业务通道：请求/响应使用相同的 module/method 和非零 seq，
+// 私聊推送使用 seq=0，playerId=接收方。后端不可使用其它模块冒充聊天消息。
+namespace ServiceModule
+{
+constexpr uint16_t kChat = 100;
+constexpr uint16_t kGlobal = 101;
+}
+namespace ServiceMethod
+{
+constexpr uint16_t kPrivateChat = 1;
+constexpr uint16_t kGlobalPing = 1;
 }
 
 /**
