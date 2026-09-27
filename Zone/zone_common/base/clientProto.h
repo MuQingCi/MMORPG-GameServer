@@ -17,24 +17,27 @@
  *      但必须带 `kind` 与 `requestId` 以便网关做请求/响应配对。
  *
  * ---------------------------------------------------------------------------
- * |2B魔数|1B版本|1B类型|2B模块|2B方法|8B请求号|4B总长度|业务数据|
+ * |2B魔数|1B版本|1B类型|2B模块|2B方法|8B请求号|4B总长度|12B角色名|业务数据|
  * ---------------------------------------------------------------------------
- *  偏移(十进制): 0      2      3     4      6      8       16      20
+ *  偏移(十进制): 0      2      3     4      6      8       16      20       32
  *
  * 约定：
  *   - 头部全部多字节字段为**网络序（大端）**，与 GateFrame 保持一致；
- *   - totalLen = 20(头) + body 长度，即整帧长度；
+ *   - totalLen = 32(头) + body 长度，即整帧长度；v2 与旧 20B v1 不兼容；
+ *   - 角色名为 UTF-8 字节（最多 12B），右侧补零，不含终止符时可占满 12B；
+ *     客户端提供的名字不是可信身份，聊天服只能用作展示，不能用来鉴权；
  *   - requestId 由客户端生成、响应原样回带（作用域 = 该客户端的会话内）；
  *   - 定长控制体（Auth/AuthAck/...）内的整数用**小端**，与场景服 HandshakeBody 的
  *     既有布局（`PutU32`）保持一致，避免同一进程内出现两种定长体风格。
  *
  * 与 GateFrame 的区别要点（"区分二者"的第一层）：
  *   - 魔数不同（0xC1EB vs 0xC1EA）→ 同一端口上误接另一套协议会被立刻识别为脏数据；
- *   - 帧头长度不同（20 vs 32）与字段不同 → 客户端无法伪造服务间字段。
+ *   - 虽同为 32B 头，但魔数和字段不同 → 客户端无法伪造服务间字段。
  */
 static constexpr uint16_t kClientMagic      = 0xC1EB;
-static constexpr uint8_t  kClientVersion    = 1;
-static constexpr uint16_t kClientHeaderSize = 20;
+static constexpr uint8_t  kClientVersion    = 2;
+static constexpr uint16_t kRoleNameSize     = 12;
+static constexpr uint16_t kClientHeaderSize = 32;
 // 客户端单帧上限：公网入口必须比服务间上限更紧（GateFrame 是 10MB）
 static constexpr uint32_t kMaxClientFrameSize = 64 * 1024;
 
@@ -71,10 +74,15 @@ struct ClientHeader
     uint16_t   method    = 0;
     uint64_t   requestId = 0;
     uint32_t   totalLen  = 0;   // 编码时由 body 长度推出；解码时原样给出
+    std::string roleName;       // 未填充的 UTF-8 字节，最多 12B；不代表可信身份
 };
+
+// 空串表示未提供名字；禁止内嵌 NUL/控制字符、截断的 UTF-8 和超出 12B。
+bool ValidRoleName(const std::string& name);
 
 /**
  * @brief 把一条完整的客户端帧追加到 out 尾部（语义与 EncodeFrame 一致：只追加）
+ * 无效角色名抛出 std::invalid_argument，不会静默丢帧。
  */
 void EncodeClientFrame(Buffer& out, const ClientHeader& h, const std::string& body);
 

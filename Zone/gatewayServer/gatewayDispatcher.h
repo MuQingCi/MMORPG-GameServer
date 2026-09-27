@@ -41,7 +41,7 @@ struct DispatcherConfig
  * 两类链路（这与"两个 Acceptor"是同一个区分的两个层面：传输层端口 + 协议层帧）：
  *
  *   Client  链路（公网端口）
- *     帧格式 : base/clientProto.h 的 ClientFrame（20B 头、魔数 0xC1EB、有 kind/requestId）
+     *     帧格式 : base/clientProto.h 的 ClientFrame v2（32B 头、魔数 0xC1EB、有 kind/requestId/roleName）
  *     信任级别: **不可信**。playerId/zoneId 一律由网关在鉴权后绑定，客户端包头里的任何
  *              身份字段都不参与路由；未鉴权连接只能发控制帧。
  *     入站   : 鉴权 / 绑定后端服务 / 心跳 / 业务请求
@@ -105,7 +105,8 @@ private:
 
     // 出站：给客户端发一帧（响应/推送/错误）
     void SendToClient(const TcpConnectionPtr& conn, ClientKind kind, uint16_t module,
-                      uint16_t method, uint64_t requestId, const std::string& body);
+                      uint16_t method, uint64_t requestId, const std::string& body,
+                      const std::string& roleName = "");
 
     // 拒绝客户端请求：回一个 kError 帧，并计数
     void RejectClient(const TcpConnectionPtr& conn, uint64_t requestId, uint16_t method,

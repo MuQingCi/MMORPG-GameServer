@@ -278,7 +278,8 @@ void GatewayDispatcher::OnBackendMessage(const TcpConnectionPtr& conn, Buffer* b
 }
 
 void GatewayDispatcher::SendToClient(const TcpConnectionPtr& conn, ClientKind kind, uint16_t module,
-                                     uint16_t method, uint64_t requestId, const std::string& body)
+                                     uint16_t method, uint64_t requestId, const std::string& body,
+                                     const std::string& roleName)
 {
     if (!conn || !conn->connected())
         return;
@@ -288,6 +289,7 @@ void GatewayDispatcher::SendToClient(const TcpConnectionPtr& conn, ClientKind ki
     h.module = module;
     h.method = method;
     h.requestId = requestId;
+    h.roleName = roleName;
 
     Buffer out;
     EncodeClientFrame(out, h, body);
@@ -436,7 +438,23 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
         return;
     }
 
-    const uint8_t dst = (s.dstService != 0) ? s.dstService : cfg_.defaultDstService;
+    // 客户端角色名不是可信身份，仅聊天消息展示用；不将其扩散到场景服或全局服。
+    if (h.module == ServiceModule::kChat && h.roleName.empty())
+    {
+        RejectClient(conn, h.requestId, h.method, "chat role name required");
+        return;
+    }
+
+    // 仅允许预定义的聊天/全局模块独立路由；普通业务仍使用会话绑定的目标服务。
+    // 不信任客户端提供服务号，且不能把未知模块随意送往其它后端。
+    const uint8_t dst = h.module == ServiceModule::kChat ? static_cast<uint8_t>(ServerID::kChat)
+                        : h.module == ServiceModule::kGlobal ? static_cast<uint8_t>(ServerID::kGlobal)
+                        : ((s.dstService != 0) ? s.dstService : cfg_.defaultDstService);
+    if (!IsAllowedService(dst))
+    {
+        RejectClient(conn, h.requestId, h.method, "service not allowed");
+        return;
+    }
 
     ServiceEndpoint ep;
     if (!services_.GetByService(dst, ep) || !ep.conn)
@@ -468,10 +486,25 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
 
     // 转发：src=网关，dst=目标服务，playerId 用**会话绑定的**玩家，seq 换成 internalSeq
     Buffer out;
+    std::string backendBody = body;
+    if (dst == ServerID::kChat && h.module == ServiceModule::kChat &&
+        h.method == ServiceMethod::kPrivateChat)
+    {
+        // Chat 请求的 body 原为 targetId(u64 BE)+text；仅在网关可信边界
+        // 注入客户端角色名，聊天服务不需要也无法解析公网 ClientFrame。
+        if (body.size() < 8)
+        {
+            routes_.Take(internalSeq, r);
+            RejectClient(conn, h.requestId, h.method, "invalid chat message");
+            return;
+        }
+        backendBody = body.substr(0, 8) + h.roleName +
+                      std::string(kRoleNameSize - h.roleName.size(), '\0') + body.substr(8);
+    }
     EncodeFrame(out,
                 MakeHeader(LinkTypeOf(dst), h.module, h.method, internalSeq, s.playerId,
                            cfg_.selfServiceId, dst),
-                body);
+                 backendBody);
     ep.conn->send(&out);
     backendFramesSent_.fetch_add(1, std::memory_order_relaxed);
 
@@ -566,7 +599,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         return;
     }
 
-    if (h.srcServiceID != self.serviceId || h.retrFlag != 0)
+    if (h.srcServiceID != self.serviceId || h.dstServiceID != cfg_.selfServiceId || h.retrFlag != 0)
     {
         LOG_WARNING << "backend header identity/retry mismatch from " << conn->name();
         conn->forceClose();
@@ -610,10 +643,39 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
     // 回程路径 2：seq==0 才是推送；非零未知 seq 是重复/超时响应，不得投给当前玩家。
     if (h.seq == 0 && h.playerId != 0)
     {
+        // 聊天推送只能来自聊天服务，不能让其它后端伪造聊天内容。
+        if ((h.module == ServiceModule::kChat && self.serviceId != ServerID::kChat) ||
+            (h.module == ServiceModule::kGlobal && self.serviceId != ServerID::kGlobal))
+        {
+            conn->forceClose();
+            return;
+        }
         ClientSession s;
         if (sessions_.FindByPlayer(h.playerId, s) && s.conn)
         {
-            SendToClient(s.conn, ClientKind::kPush, h.module, h.method, 0, body);
+            if (h.module == ServiceModule::kChat && h.method == ServiceMethod::kPrivateChat)
+            {
+                if (body.size() < 8 + kRoleNameSize)
+                {
+                    backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                size_t nameLen = 0;
+                while (nameLen < kRoleNameSize && body[8 + nameLen] != '\0') ++nameLen;
+                const std::string name = body.substr(8, nameLen);
+                bool padded = true;
+                for (size_t i = nameLen; i < kRoleNameSize; ++i)
+                    if (body[8 + i] != '\0') padded = false;
+                if (!padded || !ValidRoleName(name))
+                {
+                    backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                SendToClient(s.conn, ClientKind::kPush, h.module, h.method, 0,
+                             body.substr(0, 8) + body.substr(8 + kRoleNameSize), name);
+            }
+            else
+                SendToClient(s.conn, ClientKind::kPush, h.module, h.method, 0, body);
             LOG_INFO << "push b->c: player=" << h.playerId << " session=" << s.sessionId
                      << " from=" << ServerIdName(self.serviceId) << " module=" << h.module
                      << " method=" << h.method << " bodyLen=" << body.size();

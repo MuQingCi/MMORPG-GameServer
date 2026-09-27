@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <stdexcept>
 
 namespace
 {
@@ -36,11 +37,40 @@ size_t FindClientMagic(Buffer& buf)
 }
 }  // namespace
 
+bool ValidRoleName(const std::string& name)
+{
+    if (name.size() > kRoleNameSize) return false;
+    for (size_t i = 0; i < name.size();)
+    {
+        const uint8_t c = static_cast<uint8_t>(name[i]);
+        if (c < 0x20 || c == 0x7f) return false;
+        size_t n = 0;
+        if (c < 0x80) n = 1;
+        else if (c >= 0xc2 && c <= 0xdf) n = 2;
+        else if (c >= 0xe0 && c <= 0xef) n = 3;
+        else if (c >= 0xf0 && c <= 0xf4) n = 4;
+        else return false;
+        if (i + n > name.size()) return false;
+        for (size_t j = 1; j < n; ++j)
+            if ((static_cast<uint8_t>(name[i + j]) & 0xc0) != 0x80) return false;
+        if (n > 1)
+        {
+            const uint8_t second = static_cast<uint8_t>(name[i + 1]);
+            if ((c == 0xe0 && second < 0xa0) || (c == 0xed && second >= 0xa0) ||
+                (c == 0xf0 && second < 0x90) || (c == 0xf4 && second >= 0x90)) return false;
+        }
+        i += n;
+    }
+    return true;
+}
+
 void EncodeClientFrame(Buffer& out, const ClientHeader& h, const std::string& body)
 {
+    if (!ValidRoleName(h.roleName))
+        throw std::invalid_argument("invalid ClientFrame roleName");
     const uint32_t totalLen = static_cast<uint32_t>(kClientHeaderSize + body.size());
 
-    char hdr[kClientHeaderSize];
+    char hdr[kClientHeaderSize]{};
     const uint16_t magicNet  = host16ToNet(kClientMagic);
     const uint16_t moduleNet = host16ToNet(h.module);
     const uint16_t methodNet = host16ToNet(h.method);
@@ -54,6 +84,7 @@ void EncodeClientFrame(Buffer& out, const ClientHeader& h, const std::string& bo
     std::memcpy(hdr + 6, &methodNet, sizeof(methodNet));  // +6  方法
     std::memcpy(hdr + 8, &reqNet, sizeof(reqNet));        // +8  请求号
     std::memcpy(hdr + 16, &lenNet, sizeof(lenNet));       // +16 整帧长度
+    std::memcpy(hdr + 20, h.roleName.data(), h.roleName.size()); // +20 角色名，零填充
 
     out.append(hdr, sizeof(hdr));
     if (!body.empty())
@@ -122,6 +153,19 @@ DecodeStatus DecodeClientFrame(Buffer& buf, ClientHeader& h, std::string& body)
         if (totalLen > buf.readableBytes())
             return DecodeStatus::kNeedMore;   // 半包
 
+        const char* name = buf.peek() + 20;
+        size_t nameLen = 0;
+        while (nameLen < kRoleNameSize && name[nameLen] != '\0') ++nameLen;
+        const std::string roleName(name, nameLen);
+        bool padded = true;
+        for (size_t i = nameLen; i < kRoleNameSize; ++i)
+            if (name[i] != '\0') padded = false;
+        if (!padded || !ValidRoleName(roleName))
+        {
+            buf.retrieve(sizeof(uint16_t));
+            return DecodeStatus::kError;
+        }
+
         // 消费整帧头（逐字段 pop，顺序与编码严格一致）
         buf.readUint16();                                  // magic（已校验）
         h.totalLen = totalLen;
@@ -131,6 +175,8 @@ DecodeStatus DecodeClientFrame(Buffer& buf, ClientHeader& h, std::string& body)
         h.method    = buf.readUint16();
         h.requestId = buf.readUint64();
         buf.readUint32();                                  // totalLen（已校验）
+        buf.retrieve(kRoleNameSize);
+        h.roleName = roleName;
 
         const uint32_t bodyLen = totalLen - kClientHeaderSize;
         if (buf.readableBytes() < bodyLen)
