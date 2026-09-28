@@ -122,6 +122,8 @@ constexpr uint16_t kGlobal = 101;
 namespace ServiceMethod
 {
 constexpr uint16_t kPrivateChat = 1;
+constexpr uint16_t kZoneShout = 2;
+constexpr uint16_t kAdminBroadcast = 3; // reserved: requires trusted authorization
 constexpr uint16_t kGlobalPing = 1;
 }
 
