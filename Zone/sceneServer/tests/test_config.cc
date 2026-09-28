@@ -115,7 +115,7 @@ TEST(ZoneConfigLoadFromRealFile)
     CHECK(!z.gateways.empty());            // 网关列表已从 sceneConfig 迁到这里
     CHECK_EQ(z.gateways.size(), (size_t)1);
     if (!z.gateways.empty())
-        CHECK_EQ(z.gateways[0].port, (uint16_t)10000);
+        CHECK_EQ(z.gateways[0].port, (uint16_t)13145);
 
     // Redis 命名空间的 zoneId 必须由 zoneId 派生（不单独配，避免两处不一致）
     CHECK_EQ(z.db.redis.zoneId, z.zoneId);

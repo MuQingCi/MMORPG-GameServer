@@ -1,6 +1,7 @@
 find_package(Threads REQUIRED)
 add_executable(globalServer main.cc
     ${CMAKE_SOURCE_DIR}/zone_common/base/serviceApp.cc
+    ${CMAKE_SOURCE_DIR}/zone_common/base/clientProto.cc
     ${CMAKE_SOURCE_DIR}/zone_common/base/buffer.cc
     ${CMAKE_SOURCE_DIR}/zone_common/base/proto.cc
     ${CMAKE_SOURCE_DIR}/zone_common/log/logger.cc

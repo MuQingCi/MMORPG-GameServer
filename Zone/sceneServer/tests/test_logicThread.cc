@@ -2,6 +2,7 @@
 #include "common/msgBus.h"
 #include "logic/logicThread.h"
 #include "test_util.h"
+#include "gameProto.pb.h"
 
 #include <chrono>
 #include <thread>
@@ -74,6 +75,34 @@ TEST(LogicThreadInvalidRouteDoesNotCreateActor)
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     CHECK_EQ(lt.playerCount(), (size_t)0);
 
+    lt.stop();
+}
+
+// 错误体沿用 gs.RetTip，但回程头必须匹配原请求，否则网关拒绝并断开后端。
+TEST(LogicThreadErrorResponseKeepsRequestContext)
+{
+    MsgBus bus(1);
+    LogicThread lt(0, bus, TestCfg());
+    CHECK(lt.start());
+
+    for (const auto& request : {MakeConnData(9999, 9999, 4242),
+                                MakeConnData(Module::PLAYER, Method::PLAYER_MOVE, 4242)})
+    {
+        CHECK(bus.sendToWorker(0, request));
+        Msg response;
+        CHECK(WaitUntil([&] { return bus.tryPopNet(response); }));
+        CHECK_EQ(response.head.Module, request.head.Module);
+        CHECK_EQ(response.head.Method, request.head.Method);
+        CHECK_EQ(response.head.seq, request.head.seq);
+        CHECK_EQ(response.head.playerId, request.head.playerId);
+        CHECK_EQ(response.head.session, request.head.session);
+        gs::RetTip tip;
+        CHECK(tip.ParseFromString(response.body));
+        if (request.head.Module == 9999)
+            CHECK_EQ(tip.code(), 1001);
+        else
+            CHECK(tip.code() != 0);  // Lua 环境故障的具体错误码取决于初始化结果
+    }
     lt.stop();
 }
 

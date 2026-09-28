@@ -17,6 +17,9 @@
 
 场景服**不直接收发**客户端帧，客户端先经网关鉴权和转发：
 
+客户端链路当前使用 `ClientFrame v2`（32 字节头、版本 2、12 字节角色名）；
+场景服仍仅接收 `GateFrame v1`，不会解析客户端角色名。
+
 ```text
 Client -- ClientFrame(Request) --> Gateway -- GateFrame --> SceneServer
 Client <-- ClientFrame(Response/Push) <-- Gateway <-- GateFrame <-- SceneServer
@@ -48,7 +51,7 @@ GateFrame --> NetServer::onFrame --> MsgBus（玩家/会话所属 worker）
           --> NetServer::sendTo --> GateFrame --> Gateway --> ClientFrame
 ```
 
-无效路由会返回 `gs.RetTip` 且不创建 Actor。注意：这一错误提示使用 SYS 模块/方法，网关对非零 `seq` 的响应要求与原请求的 `module/method` 一致，**不能保证该提示能通过当前网关回程路由送达客户端**；排障时应结合网关和场景服日志。
+无效路由会返回 `gs.RetTip{code=1001,text="route not found"}` 且不创建 Actor。关联请求的错误响应沿用原请求的 `module/method/seq/playerId`，因此能通过网关回程路由并恢复客户端 `requestId`；客户端需在该请求的 Response body 中识别 `gs.RetTip`（当前服务间协议没有显式错误类别）。无关联请求的 RetTip 通知仍使用 SYS 模块/方法。
 
 ## 与 BackendServer 的消息流
 
@@ -88,7 +91,7 @@ NetServer -- 响应/推送 GateFrame(dst=ServerID::kGateway) --> Gateway
 
 - 共享配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
 - 专属配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器限额。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
-- **启动前对齐端口：**共享配置的 `gateways: 127.0.0.1:10000` 当前指向网关**公网**端口，而网关示例内网监听端口为 `13145`。应将 `ZoneServer.gateways` 改为实际内网地址（本机示例 `127.0.0.1:13145`），并确保 `zoneId` 一致、`serviceId=8` 位于网关 `allowedServices` 中。本文不修改配置。
+- **网关地址：**共享配置默认 `gateways: 127.0.0.1:13145`，与网关 `privateConfig` 内网监听一致；`10000` 是客户端公网端口，不应用于场景服反向连接。跨机器部署须改成实际可达的内网地址，并确保 `zoneId` 一致、`serviceId=8` 位于网关 `allowedServices` 中。
 - 示例 `ZoneServer.db.enable: true`；实际运行需要可用的 MySQL、Redis 及对应账号。无数据库联调可以按需禁用 DB 通道，但相关持久化功能不工作。
 
 从场景服目录启动以使用相对路径的 `./lua_script` 和日志目录。默认共享配置 `./config/zoneConfig.yaml` **不在此目录**，所以务必提供第一个位置参数；第二个参数显式指定场景配置：
