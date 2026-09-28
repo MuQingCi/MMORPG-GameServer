@@ -29,9 +29,9 @@ ZoneServer:
             # 注意：Redis key 前缀由框架统一补（zone:{zoneId}:scene:{sceneId}:...），
             # 脚本必须用 db.key.zone/scene/player 构造 key，裸写 key 会被拒绝。
 
-    # 反向连接的网关集群（区服共享：场景服/全局服/聊天服连同一批）
+    # 反向连接的网关内网入口（与 gatewayConfig.yaml privateConfig 保持一致，非公网端口）
     gateways:
-        - 127.0.0.1:10000
+        - 127.0.0.1:13145
 
     log:
         level: info         # debug / info / warn / error

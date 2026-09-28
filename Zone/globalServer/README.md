@@ -10,6 +10,6 @@
 关联，不另定义全局服务专用帧头。全局 Ping/Echo 不使用角色名字段，body 原样回传。
 body 可以是任意字节（不按文本或 UTF-8 解析）；不支持的方法返回 `unsupported method`，
 响应头保留请求的 `module/method/seq/playerId`，以便网关恢复客户端请求号。
-详细字节布局见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`。
+详细字节布局见 `GameServer/Zone/PROTOCOL.md`。
 
-运行命令与限制参见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/chatServer/README.md`。
+运行命令与限制参见 `GameServer/Zone/chatServer/README.md`。

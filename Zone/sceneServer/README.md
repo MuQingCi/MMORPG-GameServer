@@ -25,7 +25,7 @@ Client -- ClientFrame(Request) --> Gateway -- GateFrame --> SceneServer
 Client <-- ClientFrame(Response/Push) <-- Gateway <-- GateFrame <-- SceneServer
 ```
 
-网关从已鉴权会话写入 `playerId`、内部 `seq` 和目标服务号；场景服接收业务帧并回复到原连接。网关要求普通响应保持原请求的 `seq/playerId/module/method`，才能按回程路由还原客户端 `requestId`。详见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/README.md` 与 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`。
+网关从已鉴权会话写入 `playerId`、内部 `seq` 和目标服务号；场景服接收业务帧并回复到原连接。网关要求普通响应保持原请求的 `seq/playerId/module/method`，才能按回程路由还原客户端 `requestId`。详见 `GameServer/Zone/gatewayServer/README.md` 与 `GameServer/Zone/PROTOCOL.md`。
 
 ### 消息定义
 
@@ -40,7 +40,7 @@ Client <-- ClientFrame(Response/Push) <-- Gateway <-- GateFrame <-- SceneServer
 | totalLen / srcServiceID / dstServiceID | 4 / 1 / 1 B | 总长度含帧头，源和目的服务号 |
 | body | 可变 | 握手或玩法数据；整帧上限 10 MiB |
 
-头部多字节整数为**网络序（大端）**；握手体里的 `zoneId`、`sceneId` 为**小端**。定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/proto.h`。玩法路由见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/routeTable.cc`：当前入站 Lua 路由有 `PLAYER_MOVE`（`gs.WalkReq` → `gs.WalkAck`）与 `PLAYER_PATH`（`gs.PathReq` → `gs.PathAck`），还有仅出站的推送路由。
+头部多字节整数为**网络序（大端）**；握手体里的 `zoneId`、`sceneId` 为**小端**。定义见 `GameServer/Zone/zone_common/base/proto.h`。玩法路由见 `GameServer/Zone/sceneServer/src-cpp/routeTable.cc`：当前入站 Lua 路由有 `PLAYER_MOVE`（`gs.WalkReq` → `gs.WalkAck`）与 `PLAYER_PATH`（`gs.PathReq` → `gs.PathAck`），还有仅出站的推送路由。
 
 ### 场景服将结果返回给客户端
 
@@ -77,7 +77,7 @@ NetServer -- 响应/推送 GateFrame(dst=ServerID::kGateway) --> Gateway
 | `RouteTable` / `LuaEnv` | `(module,method)` 与 protobuf 类型、Lua 函数的映射和调度。 |
 | `DBThread` / `TimerThread` | 异步 DB 任务及定时器回投到所属逻辑线程。 |
 
-主要接口：`SceneServer::start/stop` 控制生命周期，`reloadLua` 广播热更新，`stats` 输出各 worker、定时器与 DB 快照；`MsgBus::sendToWorkerByPlayerId/sendToNet/sendToDb` 执行跨线程投递。生命周期细节见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/sceneServer.h`。
+主要接口：`SceneServer::start/stop` 控制生命周期，`reloadLua` 广播热更新，`stats` 输出各 worker、定时器与 DB 快照；`MsgBus::sendToWorkerByPlayerId/sendToNet/sendToDb` 执行跨线程投递。生命周期细节见 `GameServer/Zone/sceneServer/src-cpp/sceneServer.h`。
 
 ## 内部消息处理流程
 
@@ -89,20 +89,20 @@ NetServer -- 响应/推送 GateFrame(dst=ServerID::kGateway) --> Gateway
 
 ## 配置、构建与运行
 
-- 共享配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
-- 专属配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器限额。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
+- 共享配置 `GameServer/Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
+- 专属配置 `GameServer/Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器限额。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
 - **网关地址：**共享配置默认 `gateways: 127.0.0.1:13145`，与网关 `privateConfig` 内网监听一致；`10000` 是客户端公网端口，不应用于场景服反向连接。跨机器部署须改成实际可达的内网地址，并确保 `zoneId` 一致、`serviceId=8` 位于网关 `allowedServices` 中。
 - 示例 `ZoneServer.db.enable: true`；实际运行需要可用的 MySQL、Redis 及对应账号。无数据库联调可以按需禁用 DB 通道，但相关持久化功能不工作。
 
 从场景服目录启动以使用相对路径的 `./lua_script` 和日志目录。默认共享配置 `./config/zoneConfig.yaml` **不在此目录**，所以务必提供第一个位置参数；第二个参数显式指定场景配置：
 
 ```bash
-cmake -S /home/lanxiyuan/Project_Cpp/GameServer/Zone -B /home/lanxiyuan/Project_Cpp/GameServer/Zone/build -DSCENE_BUILD_TESTS=ON
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build --target sceneServer -j 4
-cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build/bin/sceneServer \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml
+cmake -S GameServer/Zone -B GameServer/Zone/build -DSCENE_BUILD_TESTS=ON
+cmake --build GameServer/Zone/build --target sceneServer -j 4
+cd GameServer/Zone/sceneServer
+GameServer/Zone/build/bin/sceneServer \
+  GameServer/Zone/config/zoneConfig.yaml \
+  GameServer/Zone/sceneServer/config/sceneConfig.yaml
 ```
 
 日志写入 `ZoneServer.log.dir` 指定的目录（相对路径基于工作目录）；发送 `SIGUSR1` 重载 `luaDir` 下脚本，`SIGTERM` 或 `SIGINT` 触发有序退出。
@@ -110,8 +110,8 @@ cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer
 测试：
 
 ```bash
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build -j 4
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build --output-on-failure -R '^scene_'
+cmake --build GameServer/Zone/build -j 4
+ctest --test-dir GameServer/Zone/build --output-on-failure -R '^scene_'
 ```
 
 包括 `scene_tests` 与 `scene_smoke_invalid_route`；后者通过临时配置验证真实网络帧经过总线和逻辑线程后，无效路由不会创建 Actor。

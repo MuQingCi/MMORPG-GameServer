@@ -1,8 +1,10 @@
 #include "gatewayConfig.h"
 #include "test_util.h"
+#include "base/yaml.h"
 
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -78,6 +80,35 @@ TEST(GatewayConfigLoadFromRealFile)
     CHECK_EQ(cfg.clientToken, (uint64_t)998877);
     CHECK_EQ(cfg.eventThreadNum, (uint32_t)4);
     CHECK(cfg.logLevel == "info");
+}
+
+// 直接读取两份部署用配置，防止后端目标误指向客户端公网端口。
+TEST(GatewayPrivateEndpointMatchesZoneConfig)
+{
+    GatewayConfig gateway;
+    std::string err;
+    const bool loaded = GatewayConfig::Load(RepoConfig("gatewayConfig.yaml"), gateway, err);
+    CHECK(loaded);
+    if (!loaded) return;
+
+    std::ifstream in(std::string(GATEWAY_SOURCE_DIR) + "/../config/zoneConfig.yaml");
+    CHECK(in.good());
+    if (!in.good()) return;
+    const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    YamlLite yaml;
+    const bool parsed = yaml.Parse(content, err);
+    CHECK(parsed);
+    if (!parsed) return;
+    const auto endpoints = yaml.GetList("ZoneServer.gateways");
+    CHECK(!endpoints.empty());
+    for (const auto& endpoint : endpoints)
+    {
+        const auto separator = endpoint.rfind(':');
+        CHECK(separator != std::string::npos);
+        if (separator == std::string::npos) continue;
+        CHECK_EQ(endpoint.substr(0, separator), gateway.privateListenAddr);
+        CHECK_EQ(endpoint.substr(separator + 1), std::to_string(gateway.privateListenPort));
+    }
 }
 
 // 改端口要能生效

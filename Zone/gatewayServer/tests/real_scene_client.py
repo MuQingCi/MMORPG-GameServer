@@ -6,8 +6,7 @@
 #   1. 连网关公网端口，发 ClientFrame 鉴权（playerId + ticket）-> 期待 AuthAck
 #   2. 发一条真实业务请求 PLAYER(3)/MOVE(2)，body 是手写的 gs.WalkReq
 #      （proto3 小字段号 + 小整数 = 全 varint，手写字节即可，不必引入 protobuf 运行时）
-#   3. 读出网关回来的 ClientFrame，把 kind/module/method/requestId/body(hex) 打出来
-#      （断言交给外层脚本：body 是否解出 WalkAck 的字段）
+#   3. 校验正常 WalkAck 和无效路由 gs.RetTip 都沿原请求头及 requestId 回传
 #
 # 用法: real_scene_client.py <publicPort> <playerId> <ticket>
 # ============================================================================
@@ -16,8 +15,8 @@ import struct
 import sys
 
 MAGIC = 0xC1EB
-VERSION = 1
-HEADER_LEN = 20
+VERSION = 2
+HEADER_LEN = 32
 
 KIND_REQUEST = 1
 KIND_RESPONSE = 2
@@ -35,25 +34,29 @@ METHOD_MOVE = 2
 
 def client_frame(kind, module, method, request_id, body=b""):
     total = HEADER_LEN + len(body)
-    return struct.pack(">HBBHHQI", MAGIC, VERSION, kind, module, method, request_id, total) + body
+    return struct.pack(">HBBHHQI", MAGIC, VERSION, kind, module, method, request_id, total) + bytes(12) + body
 
 
 def read_frame(sock):
-    buf = b""
-    while len(buf) < HEADER_LEN:
-        chunk = sock.recv(4096)
-        if not chunk:
-            return None
-        buf += chunk
-    magic, version, kind, module, method, request_id, total = struct.unpack(">HBBHHQI", buf[:HEADER_LEN])
+    buf = read_exact(sock, HEADER_LEN)
+    if buf is None:
+        return None
+    magic, version, kind, module, method, request_id, total = struct.unpack(">HBBHHQI", buf[:20])
     assert magic == MAGIC, "bad magic: 0x%04X" % magic
     assert version == VERSION, "bad version: %d" % version
-    while len(buf) < total:
-        chunk = sock.recv(4096)
+    assert HEADER_LEN <= total <= 65536
+    body = read_exact(sock, total - HEADER_LEN)
+    return None if body is None else (kind, module, method, request_id, body)
+
+
+def read_exact(sock, count):
+    buf = b""
+    while len(buf) < count:
+        chunk = sock.recv(count - len(buf))
         if not chunk:
             return None
         buf += chunk
-    return (kind, module, method, request_id, buf[HEADER_LEN:total])
+    return buf
 
 
 def walk_req(sx, sy, dx, dy):
@@ -106,11 +109,37 @@ def main():
             if kind != KIND_RESPONSE:
                 print("FAIL: 期待 Response(kind=2)，实际 kind=%d" % kind)
                 return 1
+            if (module, method, body) != (MOD_PLAYER, METHOD_MOVE, bytes.fromhex("100a1814")):
+                print("FAIL: WalkAck 内容或响应头错误")
+                return 1
             print("response ok: module=%d method=%d body=%s" % (module, method, body.hex()))
-            return 0
+            break
+    else:
+        print("FAIL: 没等到 requestId=2 的响应")
+        return 1
 
-    print("FAIL: 没等到 requestId=2 的响应")
-    return 1
+    # RetTip {code=1001, text="route not found"}，响应仍必须沿用无效请求的头。
+    tip = bytes.fromhex("08e907120f") + b"route not found"
+    for request_id, invalid_module, invalid_method in ((3, 9999, 9999), (4, MOD_PLAYER, 9999)):
+        sock.sendall(client_frame(KIND_REQUEST, invalid_module, invalid_method, request_id))
+        for _ in range(8):
+            f = read_frame(sock)
+            if f is None:
+                print("FAIL: 无效路由回包前连接被关闭")
+                return 1
+            kind, module, method, rid, body = f
+            if rid == request_id:
+                if (kind, module, method, body) != (KIND_RESPONSE, invalid_module, invalid_method, tip):
+                    print("FAIL: 无效路由的响应头或 RetTip 内容错误: %s" % (f,))
+                    return 1
+                print("invalid route ok: module=%d method=%d requestId=%d body=%s" %
+                      (module, method, rid, body.hex()))
+                break
+        else:
+            print("FAIL: 没等到无效路由的响应")
+            return 1
+
+    return 0
 
 
 if __name__ == "__main__":

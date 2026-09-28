@@ -171,4 +171,10 @@ grep -q "response ok: module=3 method=2 body=100a1814" client.out \
     || fail "响应体不是预期的 WalkAck（期望 100a1814 = x:10,y:20；code/dir 为 0 被 proto3 省略）"
 echo "OK: 真实链路 WalkAck 字节完全符合预期（x=10, y=20）"
 
+grep -q "invalid route ok: module=9999 method=9999 requestId=3 body=08e907120f" client.out \
+    || fail "未知模块的 RetTip 未沿原请求返回"
+grep -q "invalid route ok: module=3 method=9999 requestId=4 body=08e907120f" client.out \
+    || fail "已知模块的未知方法未沿原请求返回"
+echo "OK: 无效路由 RetTip 通过网关恢复客户端 requestId"
+
 exit 0

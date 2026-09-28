@@ -488,18 +488,19 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     Buffer out;
     std::string backendBody = body;
     if (dst == ServerID::kChat && h.module == ServiceModule::kChat &&
-        h.method == ServiceMethod::kPrivateChat)
+        (h.method == ServiceMethod::kPrivateChat || h.method == ServiceMethod::kZoneShout))
     {
         // Chat 请求的 body 原为 targetId(u64 BE)+text；仅在网关可信边界
         // 注入客户端角色名，聊天服务不需要也无法解析公网 ClientFrame。
-        if (body.size() < 8)
+        if (h.method == ServiceMethod::kPrivateChat && body.size() < 8)
         {
             routes_.Take(internalSeq, r);
             RejectClient(conn, h.requestId, h.method, "invalid chat message");
             return;
         }
-        backendBody = body.substr(0, 8) + h.roleName +
-                      std::string(kRoleNameSize - h.roleName.size(), '\0') + body.substr(8);
+        const size_t prefix = h.method == ServiceMethod::kPrivateChat ? 8 : 0;
+        backendBody = body.substr(0, prefix) + h.roleName +
+                      std::string(kRoleNameSize - h.roleName.size(), '\0') + body.substr(prefix);
     }
     EncodeFrame(out,
                 MakeHeader(LinkTypeOf(dst), h.module, h.method, internalSeq, s.playerId,
@@ -641,6 +642,36 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
     }
 
     // 回程路径 2：seq==0 才是推送；非零未知 seq 是重复/超时响应，不得投给当前玩家。
+    if (h.seq == 0 && h.module == ServiceModule::kChat &&
+        h.method == ServiceMethod::kZoneShout && self.serviceId == ServerID::kChat &&
+        h.playerId == 0)
+    {
+        if (body.size() < 8 + kRoleNameSize + 1 || body.size() > 8 + kRoleNameSize + 1024)
+        {
+            backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        size_t n = 0;
+        while (n < kRoleNameSize && body[8 + n] != '\0') ++n;
+        bool padded = n != 0;
+        for (size_t i = n; i < kRoleNameSize; ++i)
+            if (body[8 + i] != '\0') padded = false;
+        const std::string name = body.substr(8, n);
+        if (!padded || !ValidRoleName(name))
+        {
+            backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const std::string payload = body.substr(0, 8) + body.substr(8 + kRoleNameSize);
+        for (const ClientSession& s : sessions_.AuthedSessions())
+        {
+            ClientSession cur;
+            if (sessions_.Get(s.sessionId, cur) && cur.authed && cur.epoch == s.epoch &&
+                cur.conn == s.conn)
+                SendToClient(s.conn, ClientKind::kPush, h.module, h.method, 0, payload, name);
+        }
+        return;
+    }
     if (h.seq == 0 && h.playerId != 0)
     {
         // 聊天推送只能来自聊天服务，不能让其它后端伪造聊天内容。

@@ -25,16 +25,17 @@ Client <-- ClientFrame <-- GatewayDispatcher <-- 后端响应/推送
 
 ### 消息定义
 
-客户端帧固定头 **20 B**，魔数 `0xC1EB`、版本 `1`：
+客户端帧 v2 固定头 **32 B**，魔数 `0xC1EB`、版本 `2`（不兼容旧 v1 客户端）：
 
 | 字段 | 长度 | 含义 |
 | --- | ---: | --- |
 | magic / version / kind | 2 / 1 / 1 B | `ClientKind`：Request=1、Response=2、Push=3、Error=4、Control=5 |
 | module / method | 2 / 2 B | 模块与方法；`module=1` 为客户端 SYS 控制通道 |
-| requestId / totalLen | 8 / 4 B | 会话内请求号；总长度包含 20 B 头 |
+| requestId / totalLen | 8 / 4 B | 会话内请求号；总长度包含 32 B 头 |
+| roleName | 12 B | UTF-8 角色名、右侧补零；最长 12 字节，不能用于鉴权 |
 | body | 可变 | 控制体或业务体；整帧上限 64 KiB |
 
-头部多字节整数使用**网络序（大端）**，定长控制体使用**小端**。权威定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/clientProto.h`，详细偏移见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`。客户端只可发送 `Control(module=1)` 或 `Request(module!=1)`；不能自行发送 Response、Push 或 Error。
+头部多字节整数使用**网络序（大端）**，定长控制体使用**小端**。权威定义见 `GameServer/Zone/zone_common/base/clientProto.h`，详细偏移见 `GameServer/Zone/PROTOCOL.md`。客户端只可发送 `Control(module=1)` 或 `Request(module!=1)`；不能自行发送 Response、Push 或 Error。
 
 | 控制方法（`ClientSysMethod`） | 方向 | 内容 |
 | --- | --- | --- |
@@ -44,6 +45,11 @@ Client <-- ClientFrame <-- GatewayDispatcher <-- 后端响应/推送
 | `kAuthFail=3` / `kError` | G→C | 鉴权失败或拒绝，错误体为文本；通用拒绝沿用原请求方法号 |
 
 业务请求须先鉴权且 `requestId` 非零。鉴权失败、未鉴权访问、后端不可用或容量耗尽时发送 `kError`；同一玩家重新登录会顶掉旧会话并清理旧路由。
+
+聊天模块 `100/1`（私聊）和 `100/2`（全区喊话）要求请求头提供非空角色名；网关将该字段插入发往聊天服的业务体。
+聊天服回推时网关从推送体读取名字并填入客户端 Push 帧头。名字仅由客户端提供，
+**可以伪造，不能用于鉴权或权限判断**。全局服务模块 `101/1` 仍回显 body，不使用名字。
+聊天服 `100/2` 的广播推送使用 `seq=0,playerId=0`；网关仅对本地已鉴权会话分发。管理员方法 `100/3` 当前无可信权限来源，只能收到拒绝响应。
 
 ### 网关将结果返回给客户端
 
@@ -60,7 +66,7 @@ Request(requestId) --> 会话获取 playerId/目标服务 --> 分配 internalSeq
 
 ## 与 BackendServer 的消息流
 
-后端启动后**主动连接网关内网端口**，先发送 `GateFrame(module=SYS, method=kHandshake)` 注册。服务间帧固定头 **32 B**、魔数 `0xC1EA`、版本 `1`；包含 `msgType/retrFlag/module/method/seq/playerId/totalLen/srcServiceID/dstServiceID`，整帧上限 10 MiB。`msgType` 是链路标识，**不是**请求/响应/推送类别。定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/proto.h`。
+后端启动后**主动连接网关内网端口**，先发送 `GateFrame(module=SYS, method=kHandshake)` 注册。服务间帧固定头 **32 B**、魔数 `0xC1EA`、版本 `1`；包含 `msgType/retrFlag/module/method/seq/playerId/totalLen/srcServiceID/dstServiceID`，整帧上限 10 MiB。`msgType` 是链路标识，**不是**请求/响应/推送类别。定义见 `GameServer/Zone/zone_common/base/proto.h`。
 
 ```text
 Backend -- 握手 GateFrame --> privateConfig 端口 / bAcceptor_
@@ -95,17 +101,17 @@ Client <-- ClientFrame <-- 网关回程路由 <-- GateFrame 响应/主动推送 
 
 ## 配置、构建与运行
 
-网关配置为 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/config/gatewayConfig.yaml`。`publicConfig` 只接客户端，`privateConfig` 只接后端；`allowedServices` 必须显式配置，`defaultServiceId` 也必须位于白名单中。`maxClientSessions`、`maxPendingRoutes`、`routeTtlMs` 控制容量与清理。
+网关配置为 `GameServer/Zone/gatewayServer/config/gatewayConfig.yaml`。`publicConfig` 只接客户端，`privateConfig` 只接后端；`allowedServices` 必须显式配置，`defaultServiceId` 也必须位于白名单中。`maxClientSessions`、`maxPendingRoutes`、`routeTtlMs` 控制容量与清理。
 
-**启动前请对齐网关地址：**目前示例 `privateConfig.listenPort=13145`，但共享配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml` 的 `ZoneServer.gateways` 是 `127.0.0.1:10000`（恰好是网关**公网**端口）。应将其改为实际的**内网**地址（本机示例 `127.0.0.1:13145`）；跨机器部署还需设置可达的监听地址并限制内网访问。本文不直接修改这些配置。
+默认本机配置已对齐：`publicConfig` 的客户端入口为 `127.0.0.1:10000`，`privateConfig` 的后端入口为 `127.0.0.1:13145`；共享配置 `GameServer/Zone/config/zoneConfig.yaml` 的 `ZoneServer.gateways` 指向后者。跨机器部署仍需将内网监听和网关列表改为可达的内网地址，并限制内网访问。
 
 从网关目录执行，默认配置路径是相对当前工作目录的 `./config/gatewayConfig.yaml`：
 
 ```bash
-cmake -S /home/lanxiyuan/Project_Cpp/GameServer/Zone -B /home/lanxiyuan/Project_Cpp/GameServer/Zone/build -DSCENE_BUILD_TESTS=ON
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build --target gatewayServer -j 4
-cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build/bin/gatewayServer
+cmake -S GameServer/Zone -B GameServer/Zone/build -DSCENE_BUILD_TESTS=ON
+cmake --build GameServer/Zone/build --target gatewayServer -j 4
+cd GameServer/Zone/gatewayServer
+GameServer/Zone/build/bin/gatewayServer
 ```
 
 可以把配置文件绝对路径作为第一个参数传入。日志固定输出到运行目录的 `./logs`；当前 `SIGTERM` 直接终止网关进程，**不是**优雅停服。
@@ -113,6 +119,6 @@ cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer
 测试（需构建测试目标，端到端用例依赖相应后端目标及 `python3`）：
 
 ```bash
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build -j 4
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build --output-on-failure -R '^gateway_'
+cmake --build GameServer/Zone/build -j 4
+ctest --test-dir GameServer/Zone/build --output-on-failure -R '^gateway_'
 ```

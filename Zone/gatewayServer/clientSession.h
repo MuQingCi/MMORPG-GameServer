@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 /**
  * @brief 客户端会话
@@ -61,6 +62,7 @@ public:
     bool Erase(uint64_t sessionId);
 
     size_t Size() const;
+    std::vector<ClientSession> AuthedSessions() const;
 
 private:
     mutable std::mutex mtx_;

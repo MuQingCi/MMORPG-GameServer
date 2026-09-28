@@ -113,3 +113,14 @@ size_t ClientSessionTable::Size() const
     std::lock_guard<std::mutex> lk(mtx_);
     return sessions_.size();
 }
+
+std::vector<ClientSession> ClientSessionTable::AuthedSessions() const
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<ClientSession> result;
+    result.reserve(sessions_.size());
+    for (const auto& entry : sessions_)
+        if (entry.second.authed && entry.second.conn)
+            result.push_back(entry.second);
+    return result;
+}

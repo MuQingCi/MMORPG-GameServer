@@ -3,6 +3,7 @@
 #include "test_util.h"
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -35,17 +36,19 @@ TEST(ClientFrameGoldenBytes)
     h.module = 3;      // PLAYER
     h.method = 2;      // PLAYER_MOVE
     h.requestId = 0x0102030405060708ULL;
+    h.roleName = "hero";
     EncodeClientFrame(out, h, "hi");
 
-    // 头 20B + body 2B = 22
+    // v2 头 32B + body 2B = 34
     const std::string expect = Bytes({
         0xC1, 0xEB,                                            // magic（大端）
-        0x01,                                                  // version
+        0x02,                                                  // version
         0x01,                                                  // kind = Request
         0x00, 0x03,                                            // module
         0x00, 0x02,                                            // method
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,        // requestId
-        0x00, 0x00, 0x00, 0x16,                                // totalLen = 22
+        0x00, 0x00, 0x00, 0x22,                                // totalLen = 34
+        'h', 'e', 'r', 'o', 0, 0, 0, 0, 0, 0, 0, 0,              // roleName
         'h',  'i',
     });
 
@@ -137,7 +140,7 @@ TEST(ClientFrameStickyPackets)
 TEST(ClientFrameIllegalLengthSkipsCandidate)
 {
     Buffer buf;
-    // 伪造一帧：totalLen = 4（< 头长 20）
+    // 伪造一帧：totalLen = 4（< v2 头长 32）
     const std::string bad = Bytes({
         0xC1, 0xEB, 0x01, 0x01, 0x00, 0x03, 0x00, 0x02,
         0, 0, 0, 0, 0, 0, 0, 1,
@@ -164,7 +167,7 @@ TEST(ClientFrameBadVersionSkipsCandidate)
 {
     Buffer buf;
     const std::string bad = Bytes({
-        0xC1, 0xEB, 0x02,        // version = 2（当前只支持 1）
+        0xC1, 0xEB, 0x01,        // version = 1（v2 不兼容）
         0x01, 0x00, 0x03, 0x00, 0x02,
         0, 0, 0, 0, 0, 0, 0, 1,
         0x00, 0x00, 0x00, 0x14,
@@ -190,7 +193,8 @@ TEST(ClientFrameBadVersionSkipsCandidate)
 TEST(ClientFrameGarbageDropped)
 {
     Buffer buf;
-    buf.append("GET / HTTP/1.1\r\nHost: x\r\n\r\n", 27);
+    const std::string garbage = "GET / HTTP/1.1\r\nHost: x\r\n\r\n" + std::string(32, 'x');
+    buf.append(garbage.data(), garbage.size());
 
     ClientHeader got;
     std::string body;
@@ -231,13 +235,7 @@ TEST(TwoProtocolsDoNotCrossDecode)
     Header sh;
     std::string sbody;
     CHECK(DecodeFrame(clientFrame, sh, ServerID::kGateway, sbody) != DecodeStatus::kOk);
-
-    // 注意这里**不**断言"缓冲一定被清空"：客户端帧只有 25 字节 < 服务间头长 32，
-    // 解码器无法判断这是垃圾还是半包，因此它会原样等待（kNeedMore）。
-    // 真正拦住"两套协议混用"的是网关的魔数交叉校验（见下 + e2e 用例 1.5/1.6）。
-    // 补足到 ≥32 字节后，服务间解码器就会把它当垃圾丢掉。
-    clientFrame.append(std::string(16, 'x').data(), 16);
-    CHECK(DecodeFrame(clientFrame, sh, ServerID::kGateway, sbody) != DecodeStatus::kOk);
+    // 魔数隔离由网关的交叉校验和两个解码器共同保证。
     CHECK(clientFrame.readableBytes() <= 1);
 
     // 2) 服务间帧喂给客户端解码器：同样不能解出 kOk，且脏数据被丢弃
@@ -253,6 +251,43 @@ TEST(TwoProtocolsDoNotCrossDecode)
 
     // 3) 两套协议的魔数互不相同（网关靠它做端口级交叉校验）
     CHECK(kMagic != kClientMagic);
+}
+
+TEST(ClientFrameRoleNameAndBounds)
+{
+    CHECK(ValidRoleName(""));
+    CHECK(ValidRoleName("123456789012"));
+    CHECK(ValidRoleName("\xe4\xb8\xad\xe6\x96\x87"));
+    CHECK(!ValidRoleName("1234567890123"));
+    CHECK(!ValidRoleName(std::string("a\0b", 3)));
+    CHECK(!ValidRoleName("\xe4\xb8"));
+    CHECK(!ValidRoleName("\xc0\x80"));
+    CHECK(!ValidRoleName("\xed\xa0\x80"));
+    Buffer b;
+    ClientHeader h;
+    h.roleName = "123456789012";
+    EncodeClientFrame(b, h, "msg");
+    ClientHeader got;
+    std::string body;
+    CHECK(DecodeClientFrame(b, got, body) == DecodeStatus::kOk);
+    CHECK(got.roleName == h.roleName);
+    CHECK(body == "msg");
+    Buffer invalid;
+    h.roleName = "x";
+    EncodeClientFrame(invalid, h, "");
+    // NUL 后面不允许藏非零字节。
+    std::string corrupt(invalid.peek(), invalid.readableBytes());
+    corrupt[22] = 'z';
+    Buffer bad;
+    bad.append(corrupt.data(), corrupt.size());
+    CHECK(DecodeClientFrame(bad, got, body) == DecodeStatus::kError);
+    Buffer tooLong;
+    h.roleName = "1234567890123";
+    bool rejected = false;
+    try { EncodeClientFrame(tooLong, h, ""); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK_EQ(tooLong.readableBytes(), (size_t)0);
 }
 
 // 定长控制体的边界：短包必须被拒（不能读越界）

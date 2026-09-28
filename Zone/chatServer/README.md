@@ -1,6 +1,6 @@
 # 聊天服务器
 
-> 当前实现复用服务间 `GateFrame`（32 字节头，魔数 `0xC1EA`，版本 1），不另设聊天专用帧头。实现在线跨网关私聊和普通玩家全区喊话；管理员广播仍不可用。协议以 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md` 为准。
+> 当前实现复用服务间 `GateFrame`（32 字节头，魔数 `0xC1EA`，版本 1），不另设聊天专用帧头。实现在线跨网关私聊和普通玩家全区喊话；管理员广播仍不可用。协议以 `GameServer/Zone/PROTOCOL.md` 为准。
 ## 内部支持功能
 - 1.场景服内部私聊  
 - 2.跨场景服私聊  
@@ -26,7 +26,7 @@ ChatServer ↔ GatewayServer 使用 32 字节 `GateFrame`（魔数 `0xC1EA`，�
 头部含 `module/method/seq/playerId/totalLen/srcServiceID/dstServiceID`，服务号为
 `ServerID::kChat=3`；请求与响应使用相同 `module=100/method=1` 和非零 `seq`，
 推送使用 `seq=0`，头部 `playerId` 为目标玩家。字节偏移见
-`/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`。
+`GameServer/Zone/PROTOCOL.md`。
 
 # 在线聊天服务
 
