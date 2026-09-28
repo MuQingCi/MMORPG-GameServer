@@ -26,6 +26,8 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 add_subdirectory(proto)        # 生成 gs.* 消息（协议是路由表与 Lua 的共同地基）
 add_subdirectory(sceneServer)
 add_subdirectory(gatewayServer)  # 网关：场景服/全局服/聊天服的反向连接目标
+add_subdirectory(chatServer)
+add_subdirectory(globalServer)
 
 option(SCENE_BUILD_TESTS "build unit tests (sceneServer + gatewayServer)" ON)
 if(SCENE_BUILD_TESTS)
