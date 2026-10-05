@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 using workerId = uint32_t;
 /**
@@ -81,7 +82,9 @@ struct AoiEvent
 
 struct AoiOwnerSnapshot
 {
-
+    uint64_t seq;
+    workerId ownerWokerId;
+    std::vector<AoiEntity> ents;
 };
 
 struct AoiBatchEvent
