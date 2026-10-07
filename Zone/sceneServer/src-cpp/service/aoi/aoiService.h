@@ -6,7 +6,6 @@
 #include "config/aoiConfig.h"
 #include "aoiViewSet.h"
 #include "aoiReplica.h"
-#include "service/aoi/aoiGrid.h"
 #include "service/aoi/aoiTypes.h"
 
 #include <cstdint>
@@ -45,7 +44,7 @@ public:
 
     // ---- 只读查询与统计 ----
     bool ViewOf(EntityId observer, std::vector<AoiEntity>& out) const;  // scene.view
-    AoiStats Snapshot() const;                                          // stats()（原子快照）
+    AoiStats Snapshot() const;
 
 private:
     workerId wId_;

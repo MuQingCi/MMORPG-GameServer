@@ -101,5 +101,4 @@ bool AoiService::ViewOf(EntityId observer, std::vector<AoiEntity>& out) const
 AoiStats AoiService::Snapshot() const
 {
 
-}   
-                                       // stats()（原子快照）
+}

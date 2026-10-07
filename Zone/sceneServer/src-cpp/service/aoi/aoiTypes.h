@@ -2,7 +2,6 @@
 #define CLEARMOON_ZONE_SCENESERVER_SERVICE_AOITYPES_H
 
 #include <cstdint>
-#include <functional>
 #include <vector>
 
 using workerId = uint32_t;
@@ -108,6 +107,13 @@ enum AoiStats : uint8_t
 {
 
 };
+
+enum vieSetResult : uint8_t
+{
+    
+};
+
+
 
 inline void updateEntity(AoiEntity& ent, const AoiEvent& ev, uint32_t cellIdx)
 {

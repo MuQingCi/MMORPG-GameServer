@@ -143,42 +143,61 @@ void AoiReplica::ForEachOwned(const std::function<void(const AoiEntity&)>& fn) c
 
 AoiReplica::ApplyResult AoiReplica::ApplyOwnerSnapshot(const AoiOwnerSnapshot& snap, std::unordered_set<uint64_t>& dirtyObservers)
 {
+    //确保快照来自其他线程
     if (snap.ownerWokerId == wId_) return ApplyResult::kBadSource;
+
+    //查询快照拥有线程id在本线程内是否拥有快照且快照版本小于当前快照
     const auto water = ownerSnapshotSeq_.find(snap.ownerWokerId);
     if (water != ownerSnapshotSeq_.end() && snap.seq <= water->second)
         return ApplyResult::kIgnored;
 
+    //实例Id->实例
     std::unordered_map<EntityId, AoiEntity> incoming;
     const auto size = map_.getSize();
-    for (const auto& ent : snap.ents) {
+    //遍历快照实例
+    for (const auto& ent : snap.ents) 
+    {
+        //1.先对实体进行身份校验
+        //若当前实例未知 | 实例类型不合法 | 实例线程Id与快照不符 | 快照实例seq版本大于快照seq | incoming内部存在当前实例 则抛出非法
         if (ent.entityId == 0 || !ValidEntityKind(ent.kind) ||
             ent.ownerWorker != snap.ownerWokerId || ent.ownerSeq > snap.seq ||
             incoming.count(ent.entityId) != 0)
             return ApplyResult::kInvalid;
+
+        //当前快照实例位置越界
         if (ent.x >= size.first || ent.y >= size.second)
             return ApplyResult::kOutOfBounds;
+
+        //算出快照实例所处格子索引
         const auto cellIdx = grid_->TryCellOf(ent.x, ent.y);
         if (!cellIdx) return ApplyResult::kOutOfBounds;
+
+        //若该实例Id存在旧副本、墓碑 则先获取二者引用
+        //核实当前快照与前二者内部拥有线程id是否相符
         const auto old = ents_.find(ent.entityId);
         const auto tomb = tombstones_.find(ent.entityId);
         if ((old != ents_.end() && old->second.ownerWorker != snap.ownerWokerId) ||
             (tomb != tombstones_.end() && tomb->second.ownerWorker != snap.ownerWokerId))
             return ApplyResult::kBadSource;
+        //确保当前快照内部实例的 seq >= 副本seq 且 (当前实例世代 > 副本世代 | 当前实例世代 = 副本世代且 (空间世代更高、实例种类相同、实例对应基本Id相同)) 
         if (old != ents_.end() && old->second.ownerSeq <= snap.seq &&
             (old->second.entityGeneration > ent.entityGeneration ||
              (old->second.entityGeneration == ent.entityGeneration &&
               (old->second.spatialVersion > ent.spatialVersion ||
                old->second.kind != ent.kind || old->second.businessId != ent.businessId))))
             return ApplyResult::kInvalid;
+        //确保快照实例世代 > 墓碑世代
         if (tomb != tombstones_.end() && tomb->second.ownerSeq <= snap.seq &&
             tomb->second.generation >= ent.entityGeneration)
             return ApplyResult::kInvalid;
+
+        //2.将实体信息标准化且更新实体格子索引并压入incoming;
         AoiEntity normalized = ent;
         normalized.cellIdx = *cellIdx;
-        incoming.emplace(ent.entityId, normalized);
+        incoming.emplace(ent.entityId, normalized); //?用移动语义可以减少一次构造和析构？
     }
 
-    // 所有分配和修改在临时状态进行；异常或验证失败不改变活动副本及水位。
+    // 所有分配和修改在临时状态进行；异常或验证失败不改变活动副本及水位 —— 下列操作均在临时副本内操作
     auto nextEnts = ents_;
     auto nextGrid = std::make_unique<AoiGrid>(*grid_);
     auto nextWater = ownerSnapshotSeq_;
@@ -187,33 +206,43 @@ AoiReplica::ApplyResult AoiReplica::ApplyOwnerSnapshot(const AoiOwnerSnapshot& s
         const auto& watchers = nextGrid->watchers(idx);
         nextDirty.insert(watchers.begin(), watchers.end());
     };
-    for (auto it = nextEnts.begin(); it != nextEnts.end();) {
+    //遍历临时副本，对已从快照中移除的临时实例副本所处格子内观察者打上标记，在对应格子内移除实体且从临时副本内清除
+    for (auto it = nextEnts.begin(); it != nextEnts.end();) 
+    {
         const auto& ent = it->second;
         if (ent.ownerWorker == snap.ownerWokerId && ent.ownerSeq <= snap.seq &&
-            incoming.count(ent.entityId) == 0) {
+            incoming.count(ent.entityId) == 0) 
+        {
             markCell(ent.cellIdx);
             nextGrid->removeEntity(ent.entityId, ent.cellIdx);
             it = nextEnts.erase(it);
-        } else {
+        } 
+        else 
             ++it;
-        }
     }
-    for (const auto& kv : incoming) {
+    
+    for (const auto& kv : incoming) 
+    {
         const auto& ent = kv.second;
         const auto old = nextEnts.find(ent.entityId);
         const auto tomb = tombstones_.find(ent.entityId);
+        //若incoming中的实例其对应的临时副本内的实例 seq大于快照seq 或者 incoming中的实例其对应的墓碑seq > 快照seq 则不操作
         if ((old != nextEnts.end() && old->second.ownerSeq > snap.seq) ||
             (tomb != tombstones_.end() && tomb->second.ownerSeq > snap.seq))
             continue;
-        if (old != nextEnts.end()) {
+
+        //存在对应的旧实例
+        if (old != nextEnts.end()) 
+        {
             markCell(old->second.cellIdx);
             nextGrid->removeEntity(ent.entityId, old->second.cellIdx);
         }
+        //更新副本内的实例
         nextEnts[ent.entityId] = ent;
         nextGrid->addEntity(ent.entityId, ent.cellIdx);
         markCell(ent.cellIdx);
     }
-    // 暂不回收墓碑：发送基线的引用检查尚未接入，不使用 TTL 代替正确性条件。
+    // 暂不回收墓碑：发送基线的引用检查尚未接入，不使用 TTL 代替正确性条件
     nextWater[snap.ownerWokerId] = snap.seq;
     ents_.swap(nextEnts);
     grid_.swap(nextGrid);
@@ -335,7 +364,7 @@ void AoiReplica::onLocalMove(const AoiEvent& ev, uint32_t cellIdx, std::unordere
         for(auto idx : oldWatch)
             grid_->removeWatcher(ev.eId, idx);
         
-            grid_->removeEntity(ev.eId, oldCellIdx);
+        grid_->removeEntity(ev.eId, oldCellIdx);
 
         //获取旧Cell中所有观察者ID并将其id添加到藏标记集合中
         auto& vec = grid_->watchers(oldCellIdx);

@@ -5,9 +5,7 @@
 #include "service/aoi/aoiTypes.h"
 
 #include <cstdint>
-#include <unordered_map>
 #include <optional>
-#include <utility>
 #include <vector>
 
 
