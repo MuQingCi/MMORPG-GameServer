@@ -118,6 +118,29 @@ void AoiReplica::removeWatcher(uint64_t observerId, uint32_t cell)
     grid_->removeWatcher(observerId, cell);
 }
 
+//------------------查询相关------------------
+//获取该观察者可以看见的所有实例Id数组
+bool AoiReplica::getVisibleEntity(EntityId observerId, std::vector<AoiEntity>& out, bool includeSelf) const
+{
+    out.clear();
+    auto obEntPtr = findById(observerId);
+    if(obEntPtr == nullptr)
+        return false;
+    std::unordered_set<EntityId> seen;
+    std::vector<uint32_t> watchCellIdx = grid_->getWatchCellIdx(obEntPtr->x, obEntPtr->y);
+    for(auto idx : watchCellIdx)
+    {
+        for(auto eId : grid_->entities(idx))
+        {
+            if((!includeSelf && eId == observerId) || !seen.insert(eId).second)
+                continue;
+            const auto ent = ents_.find(eId);
+            if(ent != ents_.end() && ent->second.cellIdx == idx)
+                out.push_back(ent->second);
+        }
+    }
+    return true;
+}
 
 const AoiCell& AoiReplica::cell(uint32_t cellIdx) const
 {

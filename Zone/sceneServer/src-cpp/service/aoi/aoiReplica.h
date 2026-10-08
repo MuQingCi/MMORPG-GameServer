@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
+#include <vector>
 
 
 /**
@@ -30,7 +31,11 @@ public:
     void addWatcher(uint64_t observerId, uint32_t cell);
     void removeWatcher(uint64_t observerId, uint32_t cell);
 
+    bool getVisibleEntity(EntityId observerId, std::vector<AoiEntity>& out, bool includeSelf = false) const;
+
+    //获取格子索引对应的视野格
     const AoiCell& cell(uint32_t cellIdx) const;
+    //根据实例Id查询对应实例信息
     const AoiEntity* findById(uint64_t id) const;
 
     void ForEachOwned(const std::function<void(const AoiEntity&)>& fn) const;
