@@ -68,7 +68,7 @@ struct AoiEvent
     Position target_x  = 0;
     Position target_y  = 0;
     int32_t target_dir = 0;
-    uint32_t cellIdx   = 0;
+    // uint32_t cellIdx   = 0;
 
     // ---- 三个世代，职责不同，不可混用 ----
     uint32_t entityGeneration = 0;
@@ -88,32 +88,26 @@ struct AoiOwnerSnapshot
 
 struct AoiBatchEvent
 {
-
+    AoiEvent ev;
+    //? 依据这个字段还是依据ev中的ownerSeq较好
+    uint32_t version;
 };
 
 
-struct SessionEntry
-{
+// struct SessionEntry
+// {
 
-};
+// };
 
-struct AoiPushSink
-{
+// enum AoiStats : uint8_t
+// {
 
-};
+// };
 
-
-enum AoiStats : uint8_t
-{
-
-};
-
-enum vieSetResult : uint8_t
-{
+// enum viewSetResult : uint8_t
+// {
     
-};
-
-
+// };
 
 inline void updateEntity(AoiEntity& ent, const AoiEvent& ev, uint32_t cellIdx)
 {
