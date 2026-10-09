@@ -37,7 +37,11 @@ function move.c2s_walk(session, pid, req)
         return
     end
 
-    player.move(pid, dx, dy, 0)
+    local ok, err = player.move(pid, dx, dy, 0)
+    if not ok then
+        net.send(session, "RetTip", { code = 1003, text = err or "move rejected" })
+        return
+    end
 
     net.send(session, "WalkAck", { code = 0, x = dx, y = dy, dir = 0 })
 

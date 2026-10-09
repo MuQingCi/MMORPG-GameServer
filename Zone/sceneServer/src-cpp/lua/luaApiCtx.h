@@ -9,6 +9,7 @@ class LuaEnv;
 class lua_State;
 class MsgBus;
 class ITimerService;
+class PlayerService;
 struct TimerOp;
 
 /**
@@ -33,6 +34,7 @@ struct LuaApiCtx
     LuaEnv*        env = nullptr;
     MsgBus*        bus = nullptr;
     PlayerManager* players = nullptr;
+    PlayerService* playerService = nullptr; // 进场/移动/离场的权威变更与 AOI 通知收口
     ITimerService* timer = nullptr;
 
     lua_State*      state = nullptr;    //协程句柄

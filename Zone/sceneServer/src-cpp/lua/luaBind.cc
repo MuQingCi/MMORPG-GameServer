@@ -22,6 +22,7 @@
 #include "db/redisKey.h"
 #include "log/logger.h"
 #include "player/playerManager.h"
+#include "player/playerService.h"
 #include "proto/pb_lua.h"
 #include "routeTable.h"
 
@@ -29,6 +30,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <limits>
 
 namespace
 {
@@ -352,18 +354,54 @@ static int l_player_info(lua_State* L)
     return 1;
 }
 
-static int l_player_move(lua_State* L)
+static int PlayerActionResult(lua_State* L, PlayerService::Result result)
 {
-    Player* p = LocalPlayer(L, 1, nullptr);
+    switch(result) {
+    case PlayerService::Result::kOk: return PushOk(L);
+    case PlayerService::Result::kNotFound: return PushFail(L,"player not in this worker");
+    case PlayerService::Result::kNotInScene: return PushFail(L,"player not in scene");
+    case PlayerService::Result::kAlreadyInScene: return PushFail(L,"player already in scene");
+    case PlayerService::Result::kOutOfBounds: return PushFail(L,"position out of bounds");
+    default: return PushFail(L,"AOI state change rejected");
+    }
+}
+
+static bool ReadPosition(lua_State* L, int index, int32_t& value, bool optional = false)
+{
+    if(optional && lua_isnoneornil(L,index)) { value = 0; return true; }
+    int ok = 0;
+    const auto input = lua_tointegerx(L,index,&ok);
+    if(!ok || input < std::numeric_limits<int32_t>::min() || input > std::numeric_limits<int32_t>::max())
+        return false;
+    value = static_cast<int32_t>(input);
+    return true;
+}
+
+static int PlayerPositionAction(lua_State* L, bool enter)
+{
+    LuaApiCtx* ctx = nullptr;
+    Player* p = LocalPlayer(L, 1, &ctx);
     if (p == nullptr)
         return PushFail(L, "player not in this worker");
+    if(ctx->playerService == nullptr) return PushFail(L,"player service unavailable");
+    int32_t x, y, dir;
+    if(!ReadPosition(L,2,x) || !ReadPosition(L,3,y) || !ReadPosition(L,4,dir,true))
+        return PushFail(L,"position and direction must be signed 32-bit integers");
+    const auto result = enter ? ctx->playerService->EnterScene(p->id(),x,y,dir)
+                              : ctx->playerService->Move(p->id(),x,y,dir);
+    if(result == PlayerService::Result::kOk) p->touch(NowMs());
+    return PlayerActionResult(L,result);
+}
 
-    const int32_t x = (int32_t)luaL_checkinteger(L, 2);
-    const int32_t y = (int32_t)luaL_checkinteger(L, 3);
-    const int32_t dir = (int32_t)luaL_optinteger(L, 4, 0);
-    p->setPos(x, y, dir);
-    p->touch(NowMs());
-    return PushOk(L);
+static int l_player_move(lua_State* L) { return PlayerPositionAction(L,false); }
+static int l_player_enter_scene(lua_State* L) { return PlayerPositionAction(L,true); }
+static int l_player_leave_scene(lua_State* L)
+{
+    LuaApiCtx* ctx = nullptr;
+    Player* p = LocalPlayer(L,1,&ctx);
+    if(!p) return PushFail(L,"player not in this worker");
+    if(!ctx->playerService) return PushFail(L,"player service unavailable");
+    return PlayerActionResult(L,ctx->playerService->LeaveScene(p->id()));
 }
 
 static int l_player_modify_hp(lua_State* L)
@@ -523,6 +561,8 @@ bool RegisterAll(lua_State* L, LuaApiCtx* ctx)
                                          {"info", l_player_info},
                                          {"session", l_player_session},
                                          {"move", l_player_move},
+                                         {"enter_scene", l_player_enter_scene},
+                                         {"leave_scene", l_player_leave_scene},
                                          {"modify_hp", l_player_modify_hp},
                                          {"modify_mp", l_player_modify_mp},
                                          {"add_gold", l_player_add_gold},

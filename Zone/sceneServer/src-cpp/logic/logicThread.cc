@@ -54,7 +54,8 @@ LogicThread::LogicThread(uint32_t threadId,
                          players_(threadId),
                          workerPushSink_(bus, players_),
                           aoiService_(threadId,aoiCfg,workerPushSink_,map,
-                              AoiServiceRouter::PublishHooks(threadId, bus.numWorker()))
+                              AoiServiceRouter::PublishHooks(threadId, bus.numWorker())),
+                          playerService_(players_, aoiService_, map)
 {
 }
 
@@ -82,6 +83,7 @@ bool LogicThread::start()
     apiCtx_.env = nullptr;
     apiCtx_.bus = m_bus_;
     apiCtx_.players = &players_;
+    apiCtx_.playerService = &playerService_;
     apiCtx_.timer = timer_;
     apiCtx_.workerId = threadId_;
     apiCtx_.redisNs = cfg_.redisNs;   // 脚本的 Redis 命令按此命名空间校验/分片
@@ -229,6 +231,8 @@ void LogicThread::onConnClose(Msg& m)
     Player* p = players_.get(playerId);
     if (p == nullptr)
         return;   // 该玩家不在本分片（或已下线）：与本线程无关
+    if(p->session() != m.head.session)
+        return; // 旧网关连接关闭，不能删除已经换绑的新 Actor。
 
     // 顺序很重要：先落盘 -> 再取消定时器 -> 最后销毁 Actor
     if (p->dirty())
@@ -259,6 +263,11 @@ void LogicThread::onConnClose(Msg& m)
     if (lua_)
         lua_->OnPlayerLogout(playerId);
 
+    // 脚本钩子执行完仍需兜底离场。不能销毁 Player 后才生成 LEAVE。
+    if(playerService_.LeaveScene(playerId) != PlayerService::Result::kOk) {
+        LOG_ERROR << "AOI leave failed; preserving actor, pid=" << playerId;
+        return;
+    }
     players_.remove(playerId);
 }
 

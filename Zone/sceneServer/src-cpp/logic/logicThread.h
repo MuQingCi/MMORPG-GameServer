@@ -7,6 +7,7 @@
 #include "lua/luaApiCtx.h"
 #include "service/aoi/aoiService.h"
 #include "logic/workerPushSink.h"
+#include "player/playerService.h"
 
 #include <atomic>
 #include <cstdint>
@@ -120,6 +121,7 @@ private:
     
     WorkerPushSink workerPushSink_;
     AoiService aoiService_;
+    PlayerService playerService_;
 
     // 完整 owner 快照回复：每目标最多保留一个待重投包。
     std::unordered_map<workerId, AoiWorkerPublishRequest> pendingAoiSnapshots_;
