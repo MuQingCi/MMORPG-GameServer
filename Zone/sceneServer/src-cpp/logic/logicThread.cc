@@ -221,18 +221,14 @@ void LogicThread::onConnNew(Msg& m)
 
 void LogicThread::onConnClose(Msg& m)
 {
-    const uint64_t playerId = m.head.playerId;
-    LOG_INFO << "worker " << threadId_ << " conn closed, session=" << m.head.session
-             << " playerId=" << playerId;
+    LOG_INFO << "internal server connection closed, session=" << m.head.session;
+    // 玩家离线由带完整绑定的 onNetMsg 通知处理，绝不根据 ConnClose 删除单个玩家。
+}
 
-    if (playerId == 0)
-        return;   // 会话级连接（尚未绑定玩家）：无 Actor 需要清理
-
+bool LogicThread::logoutPlayer(uint64_t playerId)
+{
     Player* p = players_.get(playerId);
-    if (p == nullptr)
-        return;   // 该玩家不在本分片（或已下线）：与本线程无关
-    if(p->session() != m.head.session)
-        return; // 旧网关连接关闭，不能删除已经换绑的新 Actor。
+    if(!p) return true;
 
     // 顺序很重要：先落盘 -> 再取消定时器 -> 最后销毁 Actor
     if (p->dirty())
@@ -266,9 +262,60 @@ void LogicThread::onConnClose(Msg& m)
     // 脚本钩子执行完仍需兜底离场。不能销毁 Player 后才生成 LEAVE。
     if(playerService_.LeaveScene(playerId) != PlayerService::Result::kOk) {
         LOG_ERROR << "AOI leave failed; preserving actor, pid=" << playerId;
-        return;
+        return false;
     }
     players_.remove(playerId);
+    return true;
+}
+
+void LogicThread::onPlayerBinding(Msg& m)
+{
+    if(!m.head.hasClientBinding || !GatewayPlayer::Valid(m.head.clientBinding) ||
+       m.head.clientBinding.playerId != m.head.playerId || m.head.session==0 || !m.body.empty()) 
+        return;
+    
+    const auto& d=m.head.clientBinding;
+    auto* p=players_.get(d.playerId);
+    const auto latest=latestClientBindings_.find(d.playerId);
+    if(m.head.Method==GatewayPlayer::kOnline) 
+    {
+        if(latest!=latestClientBindings_.end()) 
+        {
+            const auto& old=latest->second;
+            if(d.gatewayId!=old.gatewayId || d.sceneId!=old.sceneId || d.clientEpoch<old.clientEpoch) 
+                return;
+            if(d.clientEpoch==old.clientEpoch) 
+            {
+                if(!p || !SameClientBinding(d,p->clientBinding()) || p->session()!=m.head.session) 
+                    return;
+                return; // 重复上线不清空基线、不提升 Actor epoch。
+            }
+        }
+        const auto oldEpoch=p ? p->clientBinding().clientEpoch : 0;
+        uint32_t actorEpoch;
+        p=players_.getOrCreate(d.playerId,m.head.session,actorEpoch);
+        if(!p) 
+            return;
+        // 同一网关连接内客户端换绑也须使旧 Actor 异步任务失效。
+        if(oldEpoch && p->clientBinding().clientEpoch!=d.clientEpoch)
+            players_.renewEpoch(d.playerId);
+        p->set_clientBinding(d); latestClientBindings_[d.playerId]=d;
+        const auto id=aoiService_.EntityOf(d.playerId);
+        if(id && aoiService_.IsEntityActive(*id)) 
+        {
+            if(aoiService_.views().findObserver(*id)) 
+                aoiService_.OnPlayerRebind(d.playerId,oldEpoch,d.clientEpoch);
+            else 
+                aoiService_.OnPlayerOnline(d.playerId,d.gatewayId,d.clientEpoch);
+        }
+    } else if(m.head.Method==GatewayPlayer::kOffline) 
+    {
+        if(!p || p->session()!=m.head.session || !SameClientBinding(d,p->clientBinding())) 
+            return;
+        latestClientBindings_[d.playerId]=d;
+        aoiService_.OnPlayerOffline(d.playerId,d.clientEpoch,0);
+        logoutPlayer(d.playerId);
+    }
 }
 
 Player* LogicThread::ensureActor(uint64_t playerId, uint64_t session, uint32_t& epochOut)
@@ -314,6 +361,7 @@ void LogicThread::sendToSession(uint64_t session, const RouteTable::Route* route
 
 void LogicThread::onNetMsg(Msg& m)
 {
+    if(m.head.Module==GatewayPlayer::kModule) { onPlayerBinding(m); return; }
     const RouteTable::Route* route = RouteTable::FindC2S(m.head.Module, m.head.Method);
 
     // 顺序要求：先做路由校验，再创建 Actor
@@ -328,21 +376,72 @@ void LogicThread::onNetMsg(Msg& m)
         return;
     }
 
-    // 懒创建/更新 Actor：带 playerId 的消息就是"该玩家在本场景的一条指令"，由它来保证"同一个玩家的所有消息落在同一个线程、串行处理"
-
-    // 落点说明：这里仍在 lua_fn / lua ready 校验之前，即"路由存在"就会创建 Actor
-    //若希望更严格（只有确实能分发出去才创建），
-    // 把这一段整体下移到下面的"lua env not ready"校验之后即可 —— 行为差异仅出现在「路由存在但处理器未实现 / Lua 未就绪」这两种情况
+    // 普通业务只使用已上线的当前绑定，不能隐式创建或重绑 Actor。
     if (m.head.playerId != 0)
     {
-        Player* p = ensureActor(m.head.playerId, m.head.session, epoch);
-        if (p != nullptr)
-            p->touch(NowMs());
+        Player* p = players_.get(m.head.playerId);
+        if(!p || !m.head.hasClientBinding || p->session()!=m.head.session ||
+           !SameClientBinding(p->clientBinding(),m.head.clientBinding)) {
+            sendRetTip(m,1006,"player session is not online");
+            return;
+        }
+        epoch=p->epoch();
+        p->touch(NowMs());
     }
 
     if (route->lua_fn == nullptr || route->lua_fn[0] == '\0')
     {
-        // TODO C++ 处理的路由（例如内部系统方法），当前未实现
+        if(m.head.Module == Module::PLAYER && m.head.Method == Method::PLAYER_ENTER_SCENE) 
+        {
+            gs::EnterSceneReq request;
+            if(!request.ParseFromString(m.body)) 
+            { 
+                sendRetTip(m,1007,"invalid enter scene request"); return; 
+            }
+
+            auto* p = players_.get(m.head.playerId);
+            if(!p) 
+            { 
+                sendRetTip(m,1006,"player session is not online"); return; 
+            }
+
+            const auto id = aoiService_.EntityOf(p->id());
+            PlayerService::Result result = PlayerService::Result::kOk;
+            if(!id || !aoiService_.IsEntityActive(*id))
+                result = playerService_.EnterScene(p->id(),0,0,0);
+
+            gs::EnterSceneAck ack;
+            if(result != PlayerService::Result::kOk) 
+                ack.set_code(1008);
+            else 
+            {
+                const auto entityId = aoiService_.EntityOf(p->id());
+                ack.set_entity_id(*entityId);
+                for(const auto& ent : aoiService_.BuildOwnerSnapshot().ents)
+                    if(ent.entityId == *entityId) 
+                        ack.set_generation(ent.entityGeneration);
+                ack.set_x(p->x()); ack.set_y(p->y()); ack.set_dir(p->dir());
+            }
+            sendToSession(m.head.session,route,m.head.seq,m.head.playerId,ack.SerializeAsString());
+            return;
+        }
+        if(m.head.Module == Module::PLAYER && m.head.Method == Method::PLAYER_LOGOUT) 
+        {
+            gs::LogoutReq request;
+            if(!request.ParseFromString(m.body)) 
+            { 
+                sendRetTip(m,1007,"invalid logout request"); return; 
+            }
+
+            gs::LogoutAck ack;
+            const auto* p=players_.get(m.head.playerId);
+            if(p) 
+                aoiService_.OnPlayerOffline(p->id(),p->clientBinding().clientEpoch,0);
+            if(!logoutPlayer(m.head.playerId)) 
+                ack.set_code(1008);
+            sendToSession(m.head.session,route,m.head.seq,m.head.playerId,ack.SerializeAsString());
+            return;
+        }
         sendRetTip(m, 1002, "handler not implemented");
         return;
     }

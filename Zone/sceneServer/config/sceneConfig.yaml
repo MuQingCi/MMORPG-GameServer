@@ -28,5 +28,17 @@ SceneServer:
     timerTickMs: 50         # 时间轮步长 = 定时器精度
     timerWheelSlots: 256    # 槽数：覆盖范围 = 256 × 50ms = 12.8s
 
+    aoi:                      #当前采用九宫格
+        tickMs: 50            #tick周期（Ms）
+        aoiKind: nineGrid     #采用的AOI算法种类
+
+        nineGrid:     #九宫格
+            cellSize: 50          #单个格子直径
+            cellPerLogicThread:0  #每个逻辑线程管理的格子 —— 若采用各个逻辑线程分别关注一定格子方案
+            viewRange: 50
+
+        crossLinkedList:  #十字链表
+            
+            
 
 

@@ -57,7 +57,6 @@ public:
         RedisNamespace redisNs;
     };
 
-    LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg);
     LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg, const AoiConfig& aoiCfg, const Map& map);
 
     ~LogicThread();
@@ -86,6 +85,8 @@ private:
     void onConnNew(Msg& m);
     void onConnClose(Msg& m);
     void onNetMsg(Msg& m);
+    void onPlayerBinding(Msg& m);
+    bool logoutPlayer(uint64_t playerId);
     void onDbResult(Msg& m);
     void onTimer(Msg& m);
     void onReload(Msg& m);
@@ -122,6 +123,8 @@ private:
     WorkerPushSink workerPushSink_;
     AoiService aoiService_;
     PlayerService playerService_;
+    // 离线后保留绑定水位，拒绝延迟上线通知重新创建旧会话。
+    std::unordered_map<uint64_t, ClientData> latestClientBindings_;
 
     // 完整 owner 快照回复：每目标最多保留一个待重投包。
     std::unordered_map<workerId, AoiWorkerPublishRequest> pendingAoiSnapshots_;

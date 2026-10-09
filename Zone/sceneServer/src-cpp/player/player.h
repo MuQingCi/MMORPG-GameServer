@@ -2,6 +2,7 @@
 #define CLEARMOON_PLAYER_H
 
 #include "player/bag.h"
+#include "base/gatewayPlayer.h"
 
 #include <cstdint>
 #include <memory>
@@ -40,6 +41,8 @@ public:
 
     uint64_t session() const { return session_; }
     void set_session(uint64_t v) { session_ = v; }
+    const ClientData& clientBinding() const { return clientBinding_; }
+    void set_clientBinding(const ClientData& v) { clientBinding_ = v; }
 
     // ---- 数值 ----
     uint16_t hp() const { return hp_; }
@@ -76,6 +79,7 @@ private:
     uint64_t playerId_ = 0;
     uint32_t epoch_ = 0;
     uint64_t session_ = 0;
+    ClientData clientBinding_;
 
     uint16_t hp_ = 100;
     uint16_t mp_ = 50;

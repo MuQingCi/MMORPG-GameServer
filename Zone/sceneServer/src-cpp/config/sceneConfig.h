@@ -2,6 +2,7 @@
 #define CLEARMOON_CONFIG_SCENECONFIG_H
 
 #include "config/zoneConfig.h"
+#include "config/aoiConfig.h"
 #include "db/redisKey.h"
 #include "logic/logicThread.h"
 #include "net/net_server.h"
@@ -30,6 +31,8 @@ struct SceneConfig
     uint8_t  serviceId = 8;                 // ServerID::kScene_1
     uint32_t logicThreadNum = 4;            // 建议 2~4：每个 Lua VM 都加载全套脚本，内存 × N
     std::string luaDir = "./lua_script";
+    // 默认相对配置文件目录，不依赖进程工作目录。
+    std::string mapPath;
     uint64_t luaInstructionLimit = 10000000;  // 0 = 关闭 Lua 指令预算
 
     // ---------------- 逻辑线程 ----------------
@@ -40,6 +43,9 @@ struct SceneConfig
     // ---------------- 定时器 ----------------
     uint64_t timerTickMs = 50;
     uint32_t timerWheelSlots = 256;
+
+    // 仅保存已校验配置；逻辑线程注入由后续 AOI 接入完成。
+    AoiConfig aoi;
 
     // ---------------- 网络（场景服自己的接入/上限参数）----------------
     NetConfig net;

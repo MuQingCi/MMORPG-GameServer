@@ -36,6 +36,12 @@ set(SCENE_CORE_SOURCES
     src-cpp/db/redisKey.cc
 
     src-cpp/logic/logicThread.cc
+    src-cpp/logic/workerPushSink.cc
+    src-cpp/service/aoi/aoiService.cc
+    src-cpp/service/aoi/aoiReplica.cc
+    src-cpp/service/aoi/aoiViewSet.cc
+    src-cpp/service/aoi/aoiGrid.cc
+    src-cpp/service/aoi/map.cc
 
     src-cpp/lua/luaBind.cc
     src-cpp/lua/luaEnv.cc
@@ -80,11 +86,11 @@ find_package(PkgConfig QUIET)
 
 # ---- Lua ----
 if(PkgConfig_FOUND)
-    pkg_check_modules(LUA QUIET lua5.5 lua5.4 lua5.3 lua)
+    pkg_search_module(LUA QUIET lua5.4 lua5.3)
 endif()
 if(NOT LUA_FOUND)
-    find_path(LUA_INCLUDE_DIR lua.hpp PATH_SUFFIXES lua5.5 lua5.4 lua5.3)
-    find_library(LUA_LIBRARY NAMES lua5.5 lua5.4 lua5.3 lua)
+    find_path(LUA_INCLUDE_DIR lua.hpp PATH_SUFFIXES lua5.4 lua5.3)
+    find_library(LUA_LIBRARY NAMES lua5.4 lua5.3)
 else()
     set(LUA_INCLUDE_DIR ${LUA_INCLUDE_DIRS})
     set(LUA_LIBRARY ${LUA_LINK_LIBRARIES})

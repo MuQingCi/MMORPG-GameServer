@@ -16,6 +16,18 @@ message RetTip
 // ---------------------------------------------------------------------------
 // 移动（Module::PLAYER）
 // ---------------------------------------------------------------------------
+message EnterSceneReq {}
+message EnterSceneAck {
+    int32 code = 1;
+    uint64 entity_id = 2;
+    uint32 generation = 3;
+    int32 x = 4;
+    int32 y = 5;
+    int32 dir = 6;
+}
+message LogoutReq {}
+message LogoutAck { int32 code = 1; }
+
 message WalkReq
 {
     int32 sx = 1;

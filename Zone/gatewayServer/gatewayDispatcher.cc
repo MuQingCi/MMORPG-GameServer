@@ -1,6 +1,7 @@
 #include "gatewayDispatcher.h"
 
 #include "base/proto.h"
+#include "base/gatewayPlayer.h"
 #include "base/utils.h"
 #include "log/logger.h"
 #include "tcpConnection.h"   // TrafficGuard / role：每连接的流量守卫
@@ -86,6 +87,7 @@ void GatewayDispatcher::OnClientClosed(uint64_t sessionId)
 {
     ClientSession s;
     const bool existed = sessions_.Get(sessionId, s);
+    if(existed) NotifySceneBinding(s,false);
     sessions_.Erase(sessionId);
 
     // 会话销毁必须同时清掉它的在途回程路由：否则后端迟到的响应会命中一条"指向已死会话"的记录
@@ -96,6 +98,19 @@ void GatewayDispatcher::OnClientClosed(uint64_t sessionId)
         LOG_INFO << "client session closed: session=" << sessionId
                  << " playerId=" << s.playerId << " droppedRoutes=" << dropped;
     }
+}
+
+void GatewayDispatcher::NotifySceneBinding(const ClientSession& s, bool online)
+{
+    if(!s.authed || s.playerId==0 || s.dstService!=ServerID::kScene_1) return;
+    ServiceEndpoint ep;
+    if(!services_.GetByService(s.dstService,ep) || !ep.conn || ep.sceneId==0) return;
+    ClientData d{s.playerId,s.sessionId,s.epoch,cfg_.gatewayId,ep.sceneId};
+    Buffer out;
+    EncodeFrame(out,MakeHeader(LinkTypeOf(ep.serviceId),GatewayPlayer::kModule,
+        online ? GatewayPlayer::kOnline : GatewayPlayer::kOffline,0,s.playerId,
+        cfg_.selfServiceId,ep.serviceId),GatewayPlayer::Pack(d));
+    ep.conn->send(&out);
 }
 
 void GatewayDispatcher::OnBackendConnected(const TcpConnectionPtr& conn)
@@ -374,6 +389,8 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
                 if (!sessions_.Get(sessionId, cur))
                     return;
 
+                NotifySceneBinding(cur,true);
+
                 SendToClient(conn, ClientKind::kControl, kClientSysModule, ClientSysMethod::kAuthAck,
                              h.requestId,
                              MakeAuthAckBody(playerId, sessionId, cur.epoch, cfg_.zoneId, cur.dstService));
@@ -398,7 +415,13 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
                     return;
                 }
 
-                sessions_.SetDstService(sessionId, serviceId);
+                if(!sessions_.SetDstService(sessionId, serviceId)) {
+                    RejectClient(conn,h.requestId,h.method,"cannot update service binding");
+                    return;
+                }
+                if(serviceId!=s.dstService) NotifySceneBinding(s,false);
+                ClientSession current;
+                if(sessions_.Get(sessionId,current)) NotifySceneBinding(current,true);
                 SendToClient(conn, ClientKind::kControl, kClientSysModule, ClientSysMethod::kBindServiceAck,
                              h.requestId, MakeServiceBody(serviceId));
                 LOG_INFO << "client " << sessionId << " bind service -> " << ServerIdName(serviceId);
@@ -487,6 +510,18 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     // 转发：src=网关，dst=目标服务，playerId 用**会话绑定的**玩家，seq 换成 internalSeq
     Buffer out;
     std::string backendBody = body;
+    if(dst == ServerID::kScene_1) {
+        ClientData d{s.playerId,s.sessionId,s.epoch,cfg_.gatewayId,ep.sceneId};
+        if(!GatewayPlayer::Valid(d) || h.module == GatewayPlayer::kModule) {
+            routes_.Take(internalSeq,r);
+            RejectClient(conn,h.requestId,h.method,"invalid scene binding or reserved gateway route");
+            return;
+        }
+        // 每个请求前幂等声明当前绑定；后端重新连接后也能重新建立路由。
+        EncodeFrame(out,MakeHeader(LinkTypeOf(dst),GatewayPlayer::kModule,GatewayPlayer::kOnline,
+            0,s.playerId,cfg_.selfServiceId,dst),GatewayPlayer::Pack(d));
+        backendBody = GatewayPlayer::Pack(d,body);
+    }
     if (dst == ServerID::kChat && h.module == ServiceModule::kChat &&
         (h.method == ServiceMethod::kPrivateChat || h.method == ServiceMethod::kZoneShout))
     {

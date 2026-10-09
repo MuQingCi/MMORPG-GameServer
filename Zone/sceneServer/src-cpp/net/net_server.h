@@ -85,7 +85,7 @@ private:
     {
         int      fd = -1;
         uint64_t session = 0;
-        uint64_t playerId = 0;               // 最近一次在该连接上出现的玩家（仅用于日志/关闭通知）
+        uint32_t gatewayId = 0;
         uint8_t  peerServiceID = ServerID::kServiceAny;
         uint8_t  linkType = NetMessageType::kSceneMsg;  // 出站帧的链路标识
         bool     outbound = false;           // 本端主动发起的连接
@@ -134,6 +134,9 @@ private:
 
     // 以下成员只允许网络线程访问
     std::unordered_map<uint64_t, Conn> conns_;
+    GatewayClientIndex clients_;
+    std::vector<Msg> pendingClientNotifications_;
+    void retryClientNotifications();
     std::unordered_map<uint64_t, MsgBus::WorkerId> sessionWorker_;
 };
 

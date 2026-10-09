@@ -28,6 +28,9 @@ public:
             if(!dirty) p->clearDirty();
             return Result::kAoiRejected;
         }
+        const auto& binding=p->clientBinding();
+        if(GatewayPlayer::Valid(binding))
+            aoi_.OnPlayerOnline(pid,binding.gatewayId,binding.clientEpoch);
         return Result::kOk;
     }
 

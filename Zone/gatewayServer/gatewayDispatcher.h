@@ -122,6 +122,7 @@ private:
     bool CheckProtocolMagic(const TcpConnectionPtr& conn, Buffer* buf, bool clientLink);
 
     bool IsAllowedService(uint8_t serviceId) const;
+    void NotifySceneBinding(const ClientSession& session, bool online);
 
     DispatcherConfig cfg_;
 

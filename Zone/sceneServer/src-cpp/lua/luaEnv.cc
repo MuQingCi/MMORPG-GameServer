@@ -326,6 +326,8 @@ LuaEnv::DispatchResult LuaEnv::DispatchC2S(const RouteTable::Route* route,
         ctx_->currentPlayerId = playerId;
         ctx_->currentSeq = currentSeq;
         ctx_->currentEpoch = epoch;
+        ctx_->currentModule = route->Module;
+        ctx_->currentMethod = route->Method;
     }
 
     const bool ok = Call(3, 0);
@@ -336,6 +338,8 @@ LuaEnv::DispatchResult LuaEnv::DispatchC2S(const RouteTable::Route* route,
         ctx_->currentPlayerId = 0;
         ctx_->currentSeq = 0;
         ctx_->currentEpoch = 0;
+        ctx_->currentModule = 0;
+        ctx_->currentMethod = 0;
     }
 
     lua_settop(L_, top);

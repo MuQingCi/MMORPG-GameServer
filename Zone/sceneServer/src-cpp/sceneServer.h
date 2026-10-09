@@ -3,6 +3,7 @@
 
 #include "config/sceneConfig.h"
 #include "common/msgBus.h"
+#include "service/aoi/map.h"
 
 #include <atomic>
 #include <cstdint>
@@ -56,6 +57,7 @@ public:
 
 private:
     SceneConfig cfg_;
+    Map map_; // 声明在 workers 前，销毁时比所有 worker 更晚。
 
     std::unique_ptr<MsgBus> bus_;
     std::unique_ptr<NetServer> netServer_;

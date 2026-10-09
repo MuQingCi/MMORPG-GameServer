@@ -114,6 +114,11 @@ static int l_net_send(lua_State* L)
     m.head.seq      = (uint64_t)luaL_optinteger(L, 4, (lua_Integer)c->currentSeq);
     m.head.playerId = (uint64_t)luaL_optinteger(L, 5, (lua_Integer)c->currentPlayerId);
     m.head.session  = session;
+    // 请求处理中的 RetTip 也是关联响应，必须沿原请求路由返回。
+    if(m.head.seq != 0 && std::string(msgName) == "RetTip" && c->currentPlayerId != 0) {
+        m.head.Module = c->currentModule;
+        m.head.Method = c->currentMethod;
+    }
     m.body          = std::move(body);
 
     // 只入队 + 唤醒网络线程；实际发送由网络线程完成（异步语义）

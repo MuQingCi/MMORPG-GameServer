@@ -87,8 +87,10 @@ EOF
 sed -e "s#^\( *\)listenPort: .*#\1listenPort: ${SCENE_PORT}#" \
     -e "s#^\( *\)luaDir: .*#\1luaDir: ${SCENE_SRC}/lua_script#" \
     "$SCENE_SRC/config/sceneConfig.yaml" > scene.tmp.yaml
+printf '\n    mapPath: %s/config/map.yaml\n' "$SCENE_SRC" >> scene.tmp.yaml
 
 sed -e "s#^\( *\)- 127.0.0.1:.*#\1- 127.0.0.1:${PRIV}#" \
+    -e 's/enable: true/enable: false/' \
     -e "s#^\( *\)dir: .*#\1dir: ./logs#" \
     -e "s#^\( *\)name: .*#\1name: scene_real_e2e#" \
     "$GW_SRC/../config/zoneConfig.yaml" > zone.tmp.yaml
@@ -176,5 +178,16 @@ grep -q "invalid route ok: module=9999 method=9999 requestId=3 body=08e907120f" 
 grep -q "invalid route ok: module=3 method=9999 requestId=4 body=08e907120f" client.out \
     || fail "已知模块的未知方法未沿原请求返回"
 echo "OK: 无效路由 RetTip 通过网关恢复客户端 requestId"
+
+# 两次退出（主动退出、最终 TCP 断开）均须在场景服产生 Actor 清理日志。
+for _ in $(seq 1 40); do
+    COUNT=$(grep -h 'player offline, pid=4242' logs/*/scene_real_e2e*.log 2>/dev/null | wc -l)
+    [ "$COUNT" -ge 2 ] && break
+    sleep 0.1
+done
+[ "$COUNT" -ge 2 ] || fail "场景服未完成主动退出和客户端断开清理"
+grep -q 'enter scene ok:' client.out || fail "缺少场景登录确认"
+grep -q 'logout ok:' client.out || fail "缺少主动退出验证"
+echo "OK: 玩家登录进场、移动、主动退出和断开清理均通过"
 
 exit 0

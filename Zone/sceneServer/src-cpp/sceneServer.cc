@@ -30,6 +30,12 @@ bool SceneServer::start()
     if (started_.load(std::memory_order_acquire))
         return true;
 
+    std::string mapError;
+    if(!Map::Load(cfg_.mapPath, cfg_.aoi.cellSize, map_, mapError)) {
+        LOG_ERROR << "map load failed: " << mapError;
+        return false;
+    }
+
     // 从这里开始就算"已启动"：任何中途失败都保证析构/stop() 能把已创建的部分停干净
     started_.store(true, std::memory_order_release);
 
@@ -72,7 +78,7 @@ bool SceneServer::start()
     logicThreads_.reserve(cfg_.logicThreadNum);
     for (uint32_t i = 0; i < cfg_.logicThreadNum; ++i)
     {
-        auto lt = std::make_unique<LogicThread>(i, *bus_, logicCfg);
+        auto lt = std::make_unique<LogicThread>(i, *bus_, logicCfg, cfg_.aoi, map_);
         // ★ 必须注入定时器服务：否则 Lua 里的 timer.after 会拿到空服务
         //   （旧实现里 timer_ 既无默认值又无人 bindTimer -> 野指针崩溃）
         lt->bindTimer(timerThread_.get());

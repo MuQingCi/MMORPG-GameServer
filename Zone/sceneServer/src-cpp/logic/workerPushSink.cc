@@ -23,11 +23,14 @@ AoiPushResult WorkerPushSink::sendToClient(const AoiClientPushRequest& request)
     auto playerPtr = playerManager_.get(id);
     if(playerPtr == nullptr)
         return AoiPushResult::kObserverOffline;
-    if(epoch < playerPtr->epoch())
+    if(!GatewayPlayer::Valid(playerPtr->clientBinding()))
+        return AoiPushResult::kObserverOffline;
+    if(epoch != playerPtr->clientBinding().clientEpoch)
         return AoiPushResult::kSessionChanged;
     
     auto session = playerPtr->session();
     Msg msg;
+    msg.head.msgType=MSGTYPE_SEND;
     msg.head.playerId = playerPtr->id();
     msg.head.session = session;
     

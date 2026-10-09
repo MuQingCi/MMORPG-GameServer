@@ -1,4 +1,5 @@
 #include "clientSession.h"
+#include <limits>
 
 uint64_t ClientSessionTable::Create(const TcpConnectionPtr& conn, uint8_t defaultDstService, int64_t nowMs)
 {
@@ -21,6 +22,7 @@ bool ClientSessionTable::Get(uint64_t sessionId, ClientSession& out) const
     auto it = sessions_.find(sessionId);
     if (it == sessions_.end())
         return false;
+
     out = it->second;
     return true;
 }
@@ -54,6 +56,7 @@ bool ClientSessionTable::Bind(uint64_t sessionId, uint64_t playerId, uint8_t dst
     if (it == sessions_.end())
         return false;
 
+    if(playerEpoch_[playerId] == std::numeric_limits<uint32_t>::max()) return false;
     // 顶号：同一玩家的旧会话必须让位，否则旧连接会继续收到推送
     auto pit = playerIndex_.find(playerId);
     if (pit != playerIndex_.end() && pit->second != sessionId)
@@ -86,6 +89,11 @@ bool ClientSessionTable::SetDstService(uint64_t sessionId, uint8_t dstService)
     auto it = sessions_.find(sessionId);
     if (it == sessions_.end())
         return false;
+    if(it->second.dstService != dstService && it->second.authed) {
+        auto& epoch=playerEpoch_[it->second.playerId];
+        if(epoch==std::numeric_limits<uint32_t>::max()) return false;
+        it->second.epoch=++epoch;
+    }
     it->second.dstService = dstService;
     return true;
 }

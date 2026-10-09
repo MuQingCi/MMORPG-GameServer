@@ -50,6 +50,8 @@ struct LuaApiCtx
     uint64_t currentSession = 0;
     uint64_t currentSeq = 0;
     uint32_t currentEpoch = 0;
+    uint16_t currentModule = 0;
+    uint16_t currentMethod = 0;
 };
 
 #endif

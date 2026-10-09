@@ -111,3 +111,11 @@ uint64_t PlayerManager::sessionOf(uint64_t playerId) const
     auto it = actors_.find(playerId);
     return it == actors_.end() ? 0 : it->second.session();
 }
+
+bool PlayerManager::renewEpoch(uint64_t playerId)
+{
+    auto* p=get(playerId);
+    if(!p) return false;
+    p->set_epoch(nextEpoch_++);
+    return true;
+}

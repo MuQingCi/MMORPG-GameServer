@@ -88,6 +88,16 @@ def main():
         pid, sid, epoch = struct.unpack("<QQI", body[:20])
         print("auth ok: playerId=%d sessionId=%d epoch=%d dstService=%d" % (pid, sid, epoch, body[24]))
 
+    # 鉴权只建立会话；显式场景登录成功后才允许移动。
+    sock.sendall(client_frame(KIND_REQUEST, MOD_PLAYER, 4, 10))
+    f = read_frame(sock)
+    if f and f[0] == KIND_ERROR and b"unavailable" in f[4]:
+        sock.close()
+        return 2
+    if not f or f[:4] != (KIND_RESPONSE, MOD_PLAYER, 4, 10) or not f[4] or f[4][0] != 0x10:
+        raise AssertionError("scene login failed: %r" % (f,))
+    print("enter scene ok: body=" + f[4].hex())
+
     # ---- 2. 真实业务请求：PLAYER/PLAYER_MOVE + gs.WalkReq ----
     sock.sendall(client_frame(KIND_REQUEST, MOD_PLAYER, METHOD_MOVE, 2, walk_req(0, 0, 10, 20)))
 
@@ -118,6 +128,27 @@ def main():
         print("FAIL: 没等到 requestId=2 的响应")
         return 1
 
+    sock.sendall(client_frame(KIND_REQUEST,MOD_PLAYER,METHOD_MOVE,20,walk_req(0,0,11,20)))
+    f=read_frame(sock)
+    assert f and f[:4] == (KIND_RESPONSE,MOD_PLAYER,METHOD_MOVE,20) and b"position mismatch" in f[4], f
+    sock.sendall(client_frame(KIND_REQUEST,MOD_PLAYER,METHOD_MOVE,21,walk_req(10,20,11,20)))
+    f=read_frame(sock)
+    assert f == (KIND_RESPONSE,MOD_PLAYER,METHOD_MOVE,21,bytes.fromhex('100b1814')), f
+    print("invalid move ok: error preserves route and authoritative position")
+
+    second=socket.create_connection(('127.0.0.1',port),timeout=5)
+    second.settimeout(5)
+    second.sendall(client_frame(KIND_CONTROL,SYS_MODULE,SYS_AUTH,1,struct.pack('<QQ',player_id+1,ticket)))
+    assert read_frame(second)[0] == KIND_CONTROL
+    second.sendall(client_frame(KIND_REQUEST,MOD_PLAYER,4,2))
+    f=read_frame(second)
+    assert f and f[:4] == (KIND_RESPONSE,MOD_PLAYER,4,2) and f[4][0] == 0x10, f
+    second.close()
+    # 同一后端网关连接复用的另一个玩家断开，不应影响第一个玩家。
+    sock.sendall(client_frame(KIND_REQUEST,MOD_PLAYER,METHOD_MOVE,22,walk_req(11,20,12,20)))
+    assert read_frame(sock) == (KIND_RESPONSE,MOD_PLAYER,METHOD_MOVE,22,bytes.fromhex('100c1814'))
+    print("multiplex ok: another client disconnect does not remove this player")
+
     # RetTip {code=1001, text="route not found"}，响应仍必须沿用无效请求的头。
     tip = bytes.fromhex("08e907120f") + b"route not found"
     for request_id, invalid_module, invalid_method in ((3, 9999, 9999), (4, MOD_PLAYER, 9999)):
@@ -139,6 +170,23 @@ def main():
             print("FAIL: 没等到无效路由的响应")
             return 1
 
+    # 主动退出之后不能再移动，不能被每请求的幂等 ONLINE 复活。
+    sock.sendall(client_frame(KIND_REQUEST, MOD_PLAYER, 5, 11))
+    f = read_frame(sock)
+    assert f == (KIND_RESPONSE, MOD_PLAYER, 5, 11, b""), f
+    sock.sendall(client_frame(KIND_REQUEST, MOD_PLAYER, METHOD_MOVE, 12, walk_req(10,20,11,20)))
+    f = read_frame(sock)
+    assert f and f[:4] == (KIND_RESPONSE,MOD_PLAYER,METHOD_MOVE,12) and b"not online" in f[4], f
+    print("logout ok: subsequent move rejected")
+    # 再鉴权产生新 epoch，重新进场；最终由客户端断开触发 OFFLINE。
+    sock.sendall(client_frame(KIND_CONTROL,SYS_MODULE,SYS_AUTH,13,auth_body))
+    f = read_frame(sock)
+    assert f and f[:4] == (KIND_CONTROL,SYS_MODULE,SYS_AUTH_ACK,13), f
+    sock.sendall(client_frame(KIND_REQUEST,MOD_PLAYER,4,14))
+    f = read_frame(sock)
+    assert f and f[:4] == (KIND_RESPONSE,MOD_PLAYER,4,14) and f[4][0] == 0x10, f
+    sock.close()
+    print("disconnect sent: final client session closed")
     return 0
 
 

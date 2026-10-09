@@ -52,6 +52,7 @@ public:
     bool validateEpoch(uint64_t playerId, uint32_t epoch) const;
 
     uint32_t epochOf(uint64_t playerId) const;
+    bool renewEpoch(uint64_t playerId);
     uint64_t sessionOf(uint64_t playerId) const;
 
     // 跨线程可读的规模快照（阶段 1 任务 1.18）。

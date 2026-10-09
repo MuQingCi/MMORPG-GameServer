@@ -233,7 +233,7 @@ void NetServer::run()
     while (started_.load(std::memory_order_acquire))
     {
         // -1：纯阻塞等待。已有 eventfd 唤醒机制，不需要超时轮询
-        const int n = ::epoll_wait(epFd_, events, 256, -1);
+        const int n = ::epoll_wait(epFd_, events, 256, pendingClientNotifications_.empty() ? -1 : 50);
         if (n < 0)
         {
             if (errno == EINTR)
@@ -519,8 +519,6 @@ void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
         return;
     }
 
-    conn.playerId = head.playerId;
-
     Msg m;
     m.head.msgType = MsgType::MSGTYPE_CONN_DATA;
     m.head.Module = head.module;
@@ -529,6 +527,41 @@ void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
     m.head.playerId = head.playerId;
     m.head.session = conn.session;
     m.body = body;
+    if(head.playerId != 0) 
+    {
+        ClientData d; std::string payload;
+        if(conn.peerServiceID != ServerID::kGateway || head.srcServiceID != ServerID::kGateway ||
+           !GatewayPlayer::Unpack(body,d,payload) || d.playerId != head.playerId ||
+           d.sceneId != cfg_.sceneId || (conn.gatewayId != 0 && conn.gatewayId != d.gatewayId)) 
+        {
+            LOG_WARNING << "reject invalid gateway player envelope, session=" << conn.session;
+            return;
+        }
+
+        conn.gatewayId = d.gatewayId;
+        const bool online = head.module == GatewayPlayer::kModule && head.method == GatewayPlayer::kOnline;
+        const bool offline = head.module == GatewayPlayer::kModule && head.method == GatewayPlayer::kOffline;
+        
+        if(head.module == GatewayPlayer::kModule && (!payload.empty() || (!online && !offline))) 
+            return;
+        
+        if(online ? !clients_.Bind(conn.session,d) : !clients_.Matches(conn.session,d)) 
+            return;
+
+        if(offline) 
+            clients_.Unbind(conn.session,d);
+
+        m.head.clientBinding=d; m.head.hasClientBinding=true; m.body=std::move(payload);
+        // 生命周期不得因 worker 队列满而静默丢弃；普通玩法允许明确丢弃/告警。
+        if(!pendingClientNotifications_.empty() || !m_bus_->sendToWorkerByPlayerId(head.playerId,m)) 
+        {
+            if(online || offline) 
+                pendingClientNotifications_.push_back(std::move(m));
+            else 
+                LOG_WARNING << "drop player request: worker queue full, pid=" << head.playerId;
+        }
+        return;
+    }
 
     if (head.playerId != 0)
     {
@@ -561,6 +594,7 @@ void NetServer::handleHandshake(Conn& conn, const std::string& body)
 
 void NetServer::processBusMsg()
 {
+    retryClientNotifications();
     Msg m;
     while (m_bus_->tryPopNet(m))
     {
@@ -662,7 +696,6 @@ void NetServer::handleClose(Conn& conn)
 {
     const uint64_t session = conn.session;
     const int fd = conn.fd;
-    const uint64_t playerId = conn.playerId;
     const uint8_t peer = conn.peerServiceID;
 
     auto it = conns_.find(session);
@@ -685,19 +718,35 @@ void NetServer::handleClose(Conn& conn)
         sessionWorker_.erase(wit);
     }
 
-    // 连接关闭是"玩家下线的唯一入口"，必须通知到持有该 Actor 的线程：
-    // 否则 Actor 不销毁（内存泄漏）、玩家定时器不取消（回调打到已下线玩家）、不触发存档（丢数据）
+    // 内部连接失效逐绑定通知；不再用连接上最后一个 playerId 代表全部玩家。
+    for(const auto& d : clients_.Close(session)) 
+    {
+        Msg offline;
+        offline.head.msgType=MSGTYPE_CONN_DATA;
+        offline.head.Module=GatewayPlayer::kModule;
+        offline.head.Method=GatewayPlayer::kOffline;
+        offline.head.playerId=d.playerId; offline.head.session=session;
+        offline.head.clientBinding=d; offline.head.hasClientBinding=true;
+        if(!pendingClientNotifications_.empty() || !m_bus_->sendToWorkerByPlayerId(d.playerId,offline))
+            pendingClientNotifications_.push_back(std::move(offline));
+    }
     Msg m;
     m.head.msgType = MsgType::MSGTYPE_CONN_CLOSE;
     m.head.session = session;
-    m.head.playerId = playerId;
     m.head.ctx = peer;
 
-    if (playerId != 0)
-        m_bus_->sendToWorkerByPlayerId(playerId, std::move(m));
-    else
-        m_bus_->sendToWorker(wid, std::move(m));
+    m_bus_->sendToWorker(wid, std::move(m));
 
-    LOG_INFO << "close conn, session=" << session << " playerId=" << playerId
+    LOG_INFO << "close conn, session=" << session
              << " peer=" << ServerIdName(peer);
+}
+
+void NetServer::retryClientNotifications()
+{
+    for(auto it=pendingClientNotifications_.begin();it!=pendingClientNotifications_.end();) 
+    {
+        if(m_bus_->sendToWorkerByPlayerId(it->head.playerId,*it))
+            it=pendingClientNotifications_.erase(it);
+        else break; // 生命周期顺序不允许 OFFLINE 越过待补 ONLINE
+    }
 }

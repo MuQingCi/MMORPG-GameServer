@@ -2,6 +2,7 @@
 #define CLEARMOON_COMMON_MSG_H
 
 #include "base/proto.h"   // 服务间 SYS 通道常量（握手方法号由公共协议层唯一定义）
+#include "base/gatewayPlayer.h"
 
 #include <chrono>
 #include <cstdint>
@@ -141,6 +142,8 @@ namespace Method
     constexpr uint16_t PLAYER_PUSH_STATE = 1;    // 推送状态
     constexpr uint16_t PLAYER_MOVE       = 2;    // 移动
     constexpr uint16_t PLAYER_PATH       = 3;    // 寻路
+    constexpr uint16_t PLAYER_ENTER_SCENE = 4;   // 已绑定玩家的场景准入
+    constexpr uint16_t PLAYER_LOGOUT      = 5;   // 主动退出场景（网络会话保持，需重新鉴权）
     constexpr uint16_t PLAYER_OPEN_BAG   = 10;   // 打开背包
 
     //------------------敌人模块--------------
@@ -158,6 +161,8 @@ namespace Method
 
 struct MsgHead
 {
+    ClientData clientBinding;
+    bool hasClientBinding = false;
     uint16_t msgType = MsgType::MSGTYPE_NONE;
 
     // 模块id,方法id--用于逻辑线程查路由并分发
