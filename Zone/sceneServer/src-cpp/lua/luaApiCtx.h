@@ -2,13 +2,12 @@
 #define CLEARMOON_LUA_LUAAPICTX_H
 
 #include "db/redisKey.h"
-
+#include "player/playerManager.h"
 #include <cstdint>
 
 class LuaEnv;
 class lua_State;
 class MsgBus;
-class PlayerManager;
 class ITimerService;
 struct TimerOp;
 

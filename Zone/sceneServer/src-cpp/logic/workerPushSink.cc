@@ -3,6 +3,7 @@
 #include "service/aoi/aoiPushSink.h"
 #include "common/msgBus.h"
 #include <utility>
+#include <unordered_set>
 
 
 
@@ -41,9 +42,28 @@ AoiPushResult WorkerPushSink::sendToClient(const AoiClientPushRequest& request)
 
 AoiWorkerPublishResult WorkerPushSink::publishToWorkers(const AoiWorkerPublishRequest& request)
 {
-    //TODO 使用MsgBus的broadcastToLogic/broadcastToLogicExcept来广播/投递到对应逻辑线程
-    AoiWorkerPublishResult res;
-
-    //...
-    return res;
+    AoiWorkerPublishResult result;
+    std::unordered_set<workerId> seen;
+    const auto self = playerManager_.workerId();
+    for(auto target : request.targets) 
+    {
+        if(!seen.insert(target).second) 
+            continue;
+        bool accepted = false;
+        if(request.msgType == MSGTYPE_SERVICE && 
+           request.module == Module::AOI &&
+           target < msgBus_.numWorker() && 
+           target != self) 
+        {
+            Msg msg;
+            msg.head.msgType = MSGTYPE_SERVICE;
+            msg.head.Module = request.module;
+            msg.head.Method = request.method;
+            msg.head.serviceSenderWorkerId = self;
+            msg.body = request.body;
+            accepted = msgBus_.sendToWorker(target, std::move(msg));
+        }
+        result.deliveries.push_back({target, accepted});
+    }
+    return result;
 }

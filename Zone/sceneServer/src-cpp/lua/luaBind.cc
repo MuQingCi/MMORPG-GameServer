@@ -1,11 +1,11 @@
 // ============================================================================
-// luaBind.cc —— C++ API 绑定到 Lua 层（**每线程上下文版**）
+// luaBind.cc —— C++ API 绑定到 Lua 层
 //
-// 设计要点（对应建议书 D6 / E4 / E5）：
+// 设计要点：
 //   1. 不再有 LuaEnv::I() / PlayerMgr::I() / NetServer::SendPacket 这类全局单例直调：
-//      绑定函数只通过 registry 里的 LuaApiCtx* 拿到**本线程**能安全访问的对象；
-//   2. net.send 是**异步**的：只把 Msg 投进 MsgBus（入队 + 唤醒网络线程），
-//      返回值代表"已入队"而不是"已发出"。跨线程碰 NetServer 的写缓冲就是数据竞争；
+//      绑定函数只通过 registry 里的 LuaApiCtx* 拿到 本线程 能安全访问的对象；
+//   2. net.send 是 异步 的：只把 Msg 投进 MsgBus（入队 + 唤醒网络线程），
+//      返回值代表"已入队"而不是"已发出";跨线程碰 NetServer 的写缓冲就是数据竞争；
 //   3. 全程不使用 luaL_error：它会 longjmp，跳过 C++ 栈上对象的析构
 //      （std::string / Message 等）。脚本作者一定会用 pcall 包住调用，
 //      错误被 Lua 接住 -> C++ 侧对象泄漏。统一改成返回 (ok, err) 元组。
