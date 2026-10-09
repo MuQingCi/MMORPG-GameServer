@@ -48,6 +48,11 @@ AoiService::AoiService(workerId id, const AoiConfig& cfg,
     targets.erase(std::remove(targets.begin(), targets.end(), wId_), targets.end());
 }
 
+bool AoiService::IsEntityActive(EntityId id) const
+{
+    return replica_.findById(id) != nullptr;
+}
+
 AoiService::ApplyResult AoiService::OnEntityEnter(Player& p) 
 { 
     return Enter(p, false); 

@@ -79,6 +79,7 @@ public:
     AoiServiceStats Stats() const;
 
     std::optional<EntityId> EntityOf(uint64_t playerId) const;
+    bool IsEntityActive(EntityId id) const;
 
     std::vector<workerId> OwnersNeedingSnapshot() const;
 
