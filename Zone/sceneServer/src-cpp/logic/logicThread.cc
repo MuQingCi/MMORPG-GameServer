@@ -1,5 +1,6 @@
 #include "logic/logicThread.h"
 
+#include "common/msg.h"
 #include "common/msgBus.h"
 #include "base/proto.h"
 #include "db/dbValue.h"
@@ -8,6 +9,9 @@
 #include "player/playerManager.h"
 #include "proto/pb_lua.h"
 #include "routeTable.h"
+#include "logic/workerPushSink.h"
+#include "service/aoi/aoiServiceRouter.h"
+#include <limits>
 
 #include <atomic>
 #include <chrono>
@@ -21,8 +25,8 @@
 
 namespace
 {
-// 落库 SQL：**必须幂等**（超时重试一定会发生）。
-// 生产上这属于 DAO 层的职责，这里给出最小可用版本作为占位与示例。
+// 落库 SQL：必须幂等（超时重试一定会发生）
+// 生产上这属于 DAO 层的职责，这里给出最小可用版本作为占位与示例
 constexpr const char* kSavePlayerSql =
     "INSERT INTO player(id,hp,mp,gold,pos_x,pos_y,dir,updated_at) VALUES(?,?,?,?,?,?,?,NOW()) "
     "ON DUPLICATE KEY UPDATE hp=VALUES(hp),mp=VALUES(mp),gold=VALUES(gold),"
@@ -31,9 +35,26 @@ constexpr const char* kSavePlayerSql =
 std::string I64ToStr(int64_t v) { return std::to_string(v); }
 }  // namespace
 
-LogicThread::LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg)
-    : threadId_(threadId), m_bus_(&bus), cfg_(cfg),
-      players_(std::make_unique<PlayerManager>(threadId))
+
+/**
+ *  逻辑线程的建立新连接指的是网络层连接的网关，而新建立连接的客户端则由网关处理然后将客户端数据如：玩家ID等打包发送到场景服并交由逻辑线程处理
+ * 
+ */
+
+
+
+LogicThread::LogicThread(uint32_t threadId, 
+                         MsgBus& bus, 
+                         const Config& cfg, 
+                         const AoiConfig& aoiCfg, 
+                         const Map& map)
+                       : threadId_(threadId), 
+                         m_bus_(&bus), 
+                         cfg_(cfg),
+                         players_(threadId),
+                         workerPushSink_(bus, players_),
+                          aoiService_(threadId,aoiCfg,workerPushSink_,map,
+                              AoiServiceRouter::PublishHooks(threadId, bus.numWorker()))
 {
 }
 
@@ -44,12 +65,12 @@ LogicThread::~LogicThread()
 
 PlayerManager& LogicThread::players()
 {
-    return *players_;
+    return players_;
 }
 
 size_t LogicThread::playerCount() const
 {
-    return players_->size();
+    return players_.size();
 }
 
 bool LogicThread::start()
@@ -60,7 +81,7 @@ bool LogicThread::start()
     // Lua 环境必须在**本线程**创建：lua_State 与创建它的线程绑定使用
     apiCtx_.env = nullptr;
     apiCtx_.bus = m_bus_;
-    apiCtx_.players = players_.get();
+    apiCtx_.players = &players_;
     apiCtx_.timer = timer_;
     apiCtx_.workerId = threadId_;
     apiCtx_.redisNs = cfg_.redisNs;   // 脚本的 Redis 命令按此命名空间校验/分片
@@ -113,6 +134,11 @@ void LogicThread::run()
         // 安全点：热更只在"没有正在处理的消息"时发生
         doReloadIfNeeded();
 
+        //AOITick
+        int64_t nowMs = NowMs();
+        aoiService_.OnTick(nowMs);
+        advanceAoiRecovery(nowMs);
+
         Msg m;
         // 单段等待：队列空则最多阻塞 idleWaitMs，非空立即取出
         if (!m_bus_->waitPopWorker(threadId_, m,
@@ -163,6 +189,9 @@ void LogicThread::handleMsg(Msg& m)
             onReload(m);
             break;
 
+        case MSGTYPE_SERVICE:
+            onService(m);
+            break;
         default:
             LOG_DEBUG << "logic: unhandled msgType=" << MsgTypeName(m.head.msgType);
             break;
@@ -179,10 +208,11 @@ void LogicThread::drainPending()
     }
 }
 
+//TODO 旧设计遗留问题：把网关连接当场客户端连接
 void LogicThread::onConnNew(Msg& m)
 {
     // 连接建立只知道 session，还不知道 playerId：Actor 在第一条带 playerId 的
-    // 业务消息到达时懒创建（登录流程本身由 Lua 处理）。
+    // 业务消息到达时懒创建
     LOG_INFO << "worker " << threadId_ << " conn established, session=" << m.head.session
              << " peer=" << ServerIdName((uint8_t)m.head.ctx);
 }
@@ -196,7 +226,7 @@ void LogicThread::onConnClose(Msg& m)
     if (playerId == 0)
         return;   // 会话级连接（尚未绑定玩家）：无 Actor 需要清理
 
-    Player* p = players_->get(playerId);
+    Player* p = players_.get(playerId);
     if (p == nullptr)
         return;   // 该玩家不在本分片（或已下线）：与本线程无关
 
@@ -229,12 +259,12 @@ void LogicThread::onConnClose(Msg& m)
     if (lua_)
         lua_->OnPlayerLogout(playerId);
 
-    players_->remove(playerId);
+    players_.remove(playerId);
 }
 
 Player* LogicThread::ensureActor(uint64_t playerId, uint64_t session, uint32_t& epochOut)
 {
-    return players_->getOrCreate(playerId, session, epochOut);
+    return players_.getOrCreate(playerId, session, epochOut);
 }
 
 void LogicThread::sendRetTip(const Msg& request, int32_t code, const char* text)
@@ -277,11 +307,8 @@ void LogicThread::onNetMsg(Msg& m)
 {
     const RouteTable::Route* route = RouteTable::FindC2S(m.head.Module, m.head.Method);
 
-    // ★ 顺序要求（阶段 1 任务 1.16）：**先做路由校验，再创建 Actor**。
-    //   旧顺序是"先 ensureActor 再判 route"，于是任何「无效 Module/Method + 任意 playerId」
-    //   的垃圾消息都会凭空创建一个 Actor（占内存、推进 epoch），
-    //   实测：发一条 Module=9999/Method=9999、playerId=4242 的帧 → stats 显示 w3 players=1。
-    //   现在对无效路由直接 return：不创建 Actor、也不刷新活跃度。
+    // 顺序要求：先做路由校验，再创建 Actor
+    // 现在对无效路由直接 return：不创建 Actor、也不刷新活跃度
     uint32_t epoch = 0;
 
     if (route == nullptr)
@@ -292,13 +319,11 @@ void LogicThread::onNetMsg(Msg& m)
         return;
     }
 
-    // 懒创建/更新 Actor：带 playerId 的消息就是"该玩家在本场景的一条指令"，
-    // 由它来保证"同一个玩家的所有消息落在同一个线程、串行处理"。
-    //
-    // 落点说明：这里仍在 lua_fn / lua ready 校验**之前**，即"路由存在"就会创建 Actor
-    //（清单 1.16 的字面要求）。若希望更严格（只有确实能分发出去才创建），
-    // 把这一段整体下移到下面的"lua env not ready"校验之后即可 —— 行为差异仅出现在
-    // 「路由存在但处理器未实现 / Lua 未就绪」这两种情况。
+    // 懒创建/更新 Actor：带 playerId 的消息就是"该玩家在本场景的一条指令"，由它来保证"同一个玩家的所有消息落在同一个线程、串行处理"
+
+    // 落点说明：这里仍在 lua_fn / lua ready 校验之前，即"路由存在"就会创建 Actor
+    //若希望更严格（只有确实能分发出去才创建），
+    // 把这一段整体下移到下面的"lua env not ready"校验之后即可 —— 行为差异仅出现在「路由存在但处理器未实现 / Lua 未就绪」这两种情况
     if (m.head.playerId != 0)
     {
         Player* p = ensureActor(m.head.playerId, m.head.session, epoch);
@@ -342,7 +367,7 @@ void LogicThread::onDbResult(Msg& m)
     }
 
     // 1. 先校验 Actor 生命周期：发起查询时可能已下线/Actor 已重建
-    if (m.head.playerId != 0 && !players_->validateEpoch(m.head.playerId, m.head.epoch))
+    if (m.head.playerId != 0 && !players_.validateEpoch(m.head.playerId, m.head.epoch))
     {
         droppedCallbacks_.fetch_add(1, std::memory_order_relaxed);
         LOG_INFO << "worker " << threadId_ << " drop stale db result, pid=" << m.head.playerId
@@ -369,7 +394,7 @@ void LogicThread::onTimer(Msg& m)
     {
         // 逻辑层必须重新校验 Actor 是否还活着：TimerOp 里的 playerId/epoch是发起时刻的快照，不能当作"现在还存在"
         if (m.head.playerId != 0 &&
-            !players_->validateEpoch(m.head.playerId, m.head.epoch))
+            !players_.validateEpoch(m.head.playerId, m.head.epoch))
         {
             droppedCallbacks_.fetch_add(1, std::memory_order_relaxed);
             LOG_DEBUG << "worker " << threadId_ << " drop stale lua timer, pid="
@@ -408,6 +433,88 @@ void LogicThread::onReload(Msg& m)
     pendingLuaVersion_.store(version, std::memory_order_release);
     LOG_INFO << "worker " << threadId_ << " lua reload scheduled, version=" << version
              << " dir=" << pendingLuaDir_;
+}
+
+
+void LogicThread::onService(Msg& m)
+{
+    const auto result = AoiServiceRouter::Dispatch(aoiService_, threadId_, m_bus_->numWorker(), m);
+    if(result == AoiServiceRouter::Result::kRejected) 
+    {
+        LOG_WARNING << "invalid internal service message, worker=" << threadId_
+                    << " module=" << m.head.Module << " method=" << m.head.Method
+                    << " sender=" << m.head.serviceSenderWorkerId;
+        return;
+    }
+
+    if(result == AoiServiceRouter::Result::kSnapshotRequested) 
+    {
+        AoiWorkerPublishRequest reply;
+        reply.msgType = MSGTYPE_SERVICE;
+        reply.module = Module::AOI;
+        reply.method = Method::AOI_OWNER_SNAPSHOT;
+        reply.targets = {m.head.serviceSenderWorkerId};
+        if(!AoiWire::EncodeSnapshot(aoiService_.BuildOwnerSnapshot(), reply.body)) 
+        {
+            LOG_ERROR << "AOI owner snapshot exceeds protocol limit or is invalid, worker=" << threadId_;
+            return;
+        }
+        pendingAoiSnapshots_[m.head.serviceSenderWorkerId] = std::move(reply);
+    } 
+    else if(m.head.Method == Method::AOI_OWNER_SNAPSHOT) 
+    {
+        nextSnapshotRequestAt_.erase(m.head.serviceSenderWorkerId);
+    }
+}
+
+void LogicThread::advanceAoiRecovery(int64_t now)
+{
+    if(now < nextAoiRecoveryAt_) 
+        return;
+    constexpr int64_t retryMs = 1000;
+
+    nextAoiRecoveryAt_ = now > std::numeric_limits<int64_t>::max() - retryMs
+        ? std::numeric_limits<int64_t>::max() : now + retryMs;
+    
+    //遍历待处理快照
+    for(auto it = pendingAoiSnapshots_.begin(); it != pendingAoiSnapshots_.end();) 
+    {
+        //推送快照至其他逻辑线程
+        const auto result = workerPushSink_.publishToWorkers(it->second);
+        const auto accepted = std::find_if(result.deliveries.begin(), result.deliveries.end(),
+            [&](const WorkerDeliveryResult& d) { return d.target == it->first && d.accepted; });
+        if(accepted != result.deliveries.end()) 
+            it = pendingAoiSnapshots_.erase(it);
+        else ++it;
+    }
+
+    //清理已不需要恢复的请求时间
+    const auto owners = aoiService_.OwnersNeedingSnapshot();
+    for(auto it = nextSnapshotRequestAt_.begin(); it != nextSnapshotRequestAt_.end();) 
+    {
+        if(std::find(owners.begin(), owners.end(), it->first) == owners.end())
+            it = nextSnapshotRequestAt_.erase(it);
+        else ++it;
+    }
+
+    //为仍需恢复的 owner 发送请求
+    for(auto owner : owners) 
+    {
+        if(owner >= m_bus_->numWorker() || owner == threadId_) 
+            continue;
+        const auto previous = nextSnapshotRequestAt_.find(owner);
+        if(previous != nextSnapshotRequestAt_.end() && now < previous->second) 
+            continue;
+        AoiWorkerPublishRequest request;
+        request.msgType = MSGTYPE_SERVICE;
+        request.module = Module::AOI;
+        request.method = Method::AOI_OWNER_SNAPSHOT_REQ;
+        request.targets = {owner};
+        request.body = AoiWire::SnapshotRequest();
+        workerPushSink_.publishToWorkers(request);
+        // 回复丢失也会重试；不能把请求入队成功当作恢复完成。
+        nextSnapshotRequestAt_[owner] = nextAoiRecoveryAt_;
+    }
 }
 
 void LogicThread::doReloadIfNeeded()
@@ -450,25 +557,25 @@ void LogicThread::onIdle()
         lastScanMs_ = now;
 
         size_t idle = 0;
-        players_->forEach([&](const Player& p) {
+        players_.forEach([&](const Player& p) {
             if (now - p.lastActiveMs() > 5 * 60 * 1000)
                 ++idle;
             return true;
         });
 
         if (idle > 0)
-            LOG_INFO << "worker " << threadId_ << " players=" << players_->size()
+            LOG_INFO << "worker " << threadId_ << " players=" << players_.size()
                      << " idle(>5min)=" << idle;
     }
 }
 
 void LogicThread::flushDirtyPlayers()
 {
-    if (players_->size() == 0)
+    if (players_.size() == 0)
         return;
 
     size_t saved = 0;
-    players_->forEach([&](Player& p) {
+    players_.forEach([&](Player& p) {
         if (!p.dirty())
             return true;
 

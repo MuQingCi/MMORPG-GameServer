@@ -1,10 +1,12 @@
-#ifndef CLEARMOON_LOGIC_LOGICTHREAD_H
-#define CLEARMOON_LOGIC_LOGICTHREAD_H
+#ifndef CLEARMOON_SCENESERVER_LOGIC_LOGICTHREAD_H
+#define CLEARMOON_SCENESERVER_LOGIC_LOGICTHREAD_H
 
 #include "common/msg.h"
 #include "common/msgBus.h"
 #include "db/redisKey.h"
 #include "lua/luaApiCtx.h"
+#include "service/aoi/aoiService.h"
+#include "logic/workerPushSink.h"
 
 #include <atomic>
 #include <cstdint>
@@ -12,10 +14,11 @@
 #include <string>
 #include <thread>
 
+class Player;
+class PlayerManager;
 class LuaEnv;
 class ITimerService;
-class PlayerManager;
-class Player;
+
 namespace RouteTable
 {
 struct Route;
@@ -54,6 +57,8 @@ public:
     };
 
     LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg);
+    LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg, const AoiConfig& aoiCfg, const Map& map);
+
     ~LogicThread();
 
     LogicThread(const LogicThread&) = delete;
@@ -83,6 +88,8 @@ private:
     void onDbResult(Msg& m);
     void onTimer(Msg& m);
     void onReload(Msg& m);
+    void onService(Msg& m);
+    void advanceAoiRecovery(int64_t now);
 
     void onIdle();             // 空闲内务：定期快照 / 空闲扫描
     void doReloadIfNeeded();   // 主循环安全点热更
@@ -105,10 +112,21 @@ private:
     Config cfg_;
 
     std::unique_ptr<LuaEnv> lua_;
-    std::unique_ptr<PlayerManager> players_;
+    // std::unique_ptr<PlayerManager> players_;
+    PlayerManager players_;
     LuaApiCtx apiCtx_;
 
     ITimerService* timer_ = nullptr;
+    
+    WorkerPushSink workerPushSink_;
+    AoiService aoiService_;
+
+    // 完整 owner 快照回复：每目标最多保留一个待重投包。
+    std::unordered_map<workerId, AoiWorkerPublishRequest> pendingAoiSnapshots_;
+    //owner worker → 下次允许请求快照的时间
+    std::unordered_map<workerId, int64_t> nextSnapshotRequestAt_;
+    //整个恢复调度下次允许运行的时间
+    int64_t nextAoiRecoveryAt_ = 0;
 
     // 热更：目标版本 + 目标目录（由广播消息带来，每个 worker 独立应用）
     std::atomic<uint64_t> pendingLuaVersion_{0};

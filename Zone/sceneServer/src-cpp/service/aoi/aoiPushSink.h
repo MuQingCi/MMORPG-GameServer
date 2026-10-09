@@ -33,6 +33,8 @@ struct AoiWorkerPublishRequest {
     uint16_t msgType = 0;
     std::vector<workerId> targets;
     std::string body;
+    uint16_t module = 0;
+    uint16_t method = 0;
 };
 
 

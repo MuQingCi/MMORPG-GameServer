@@ -70,6 +70,12 @@ enum MsgType : uint16_t
     // 数据库：Redis 通道
     MSGTYPE_DB_TASK_REDIS   = 11,
     MSGTYPE_DB_RESULT_REDIS = 12,
+
+    //Service
+    MSGTYPE_SERVICE     = 100
+    // MSGTYPE_SERVICE_AOI_ENTRY  = 100,
+    // MSGTYPE_SERVICE_AOI_MOVE   = 101,
+    // MSGTYPE_SERVICE_AOI_LEAVE  = 102
 };
 
 // 便于日志输出
@@ -90,6 +96,7 @@ inline const char* MsgTypeName(uint16_t t)
         case MSGTYPE_RELOAD:          return "RELOAD";
         case MSGTYPE_DB_TASK_REDIS:   return "DB_TASK_REDIS";
         case MSGTYPE_DB_RESULT_REDIS: return "DB_RESULT_REDIS";
+        case MSGTYPE_SERVICE:         return "SERVICE";
         default:                      return "UNKNOWN";
     }
 }
@@ -112,6 +119,9 @@ namespace Module
     constexpr uint16_t ENEMY        = 4;    // 敌人
     constexpr uint16_t BATTLE       = 5;    // 战斗
     constexpr uint16_t SHOPPINGMALL = 6;    // 商城
+
+    //Service
+    constexpr uint16_t AOI          = 100;   //AOI模块,默认其他逻辑线程发送，本地走onNetData()的Lua路由/由lua驱动
 }
 
 namespace Method
@@ -135,7 +145,16 @@ namespace Method
 
     //------------------敌人模块--------------
     constexpr uint16_t ENEMY_AI_TICK     = 1;
-}
+
+    //------------------AOI模块--------------
+    constexpr uint16_t AOI_ENTRY         = 1;
+    constexpr uint16_t AOI_MOVE          = 2;
+    constexpr uint16_t AOI_LEAVE         = 3;
+    constexpr uint16_t AOI_RESYNC        = 4;
+    // 仅用于 worker 间内部服务消息，不属于客户端 C2S 路由。
+    constexpr uint16_t AOI_OWNER_SNAPSHOT_REQ = 5;
+    constexpr uint16_t AOI_OWNER_SNAPSHOT     = 6;
+}   
 
 struct MsgHead
 {
@@ -150,6 +169,9 @@ struct MsgHead
     uint64_t playerId = 0;    // 玩家id
 
     uint32_t srcWorkerId = 0; // 仅用于"结果回投原逻辑线程"，不是路由依据
+    // MSGTYPE_SERVICE/AOI 专用：由 WorkerPushSink 写入真实发布方下标。
+    // 不复用 srcWorkerId（其既有含义仍是异步结果回投地址）。
+    uint32_t serviceSenderWorkerId = UINT32_MAX;
     uint32_t epoch = 0;       // Actor 版本号：异步回调回到逻辑线程后先校验它
 
     // 上下文-根据消息类型决定ctx存的值

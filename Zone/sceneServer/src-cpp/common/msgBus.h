@@ -60,7 +60,7 @@ public:
     bool sendToWorker(WorkerId wid, Msg m);
     // 广播到全部逻辑线程（热更、全服公告等），msgs 必须可拷贝
     void broadcastToLogic(const Msg& m);
-
+    bool broadcastToLogicExcept(WorkerId except, const Msg& m, std::vector<uint8_t>* perWorkerOk);
     // ---------------- 辅助线程投递 ----------------
     bool sendToNet(Msg m);
     // 按 msgType 自动选择 DB 通道；Redis 通道再按 m.head.dbShard 选队列
