@@ -2,7 +2,7 @@
 
 区服客户端接入与内部服务路由入口，默认客户端端口 `127.0.0.1:10000`、后端端口 `127.0.0.1:13145`。客户端与后端协议严格隔离；网关是连接与可信会话边界，不是玩法服或正式登录服。
 
-下文 Mermaid 图按当前源码展示数据流，箭头上的字段用于说明数据转换，不表示消息已可靠送达。示例使用本机绝对路径，检出目录不同时请替换 `/home/lanxiyuan/Project_Cpp/GameServer`。
+下文 Mermaid 图按当前源码展示数据流，箭头上的字段用于说明数据转换，不表示消息已可靠送达。文档路径以 `GameServer` 为根目录；构建与测试命令默认在根目录执行，运行命令显式标注目录切换。
 
 ## 内部功能
 
@@ -61,7 +61,7 @@ flowchart LR
 | roleName | 12 B | UTF-8 角色名、右侧补零；最长 12 字节，不能用于鉴权 |
 | body | 可变 | 控制体或业务体；整帧上限 64 KiB |
 
-头部多字节整数使用**网络序（大端）**，定长控制体使用**小端**。权威定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/clientProto.h`，详细偏移见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`。客户端只可发送 `Control(module=1)` 或 `Request(module!=1)`；不能自行发送 Response、Push 或 Error。
+头部多字节整数使用**网络序（大端）**，定长控制体使用**小端**。权威定义见 `Zone/zone_common/base/clientProto.h`，详细偏移见 `Zone/PROTOCOL.md`。客户端只可发送 `Control(module=1)` 或 `Request(module!=1)`；不能自行发送 Response、Push 或 Error。
 
 | 控制方法（`ClientSysMethod`） | 方向 | 内容 |
 | --- | --- | --- |
@@ -142,7 +142,7 @@ flowchart TD
 
 ## 与 BackendServer 的消息流
 
-后端启动后**主动连接网关内网端口**，先发送 `GateFrame(module=SYS, method=kHandshake)` 注册。服务间帧固定头 **32 B**、魔数 `0xC1EA`、版本 `1`；包含 `msgType/retrFlag/module/method/seq/playerId/totalLen/srcServiceID/dstServiceID`，整帧上限 10 MiB。`msgType` 是链路标识，**不是**请求/响应/推送类别。定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/proto.h`。
+后端启动后**主动连接网关内网端口**，先发送 `GateFrame(module=SYS, method=kHandshake)` 注册。服务间帧固定头 **32 B**、魔数 `0xC1EA`、版本 `1`；包含 `msgType/retrFlag/module/method/seq/playerId/totalLen/srcServiceID/dstServiceID`，整帧上限 10 MiB。`msgType` 是链路标识，**不是**请求/响应/推送类别。定义见 `Zone/zone_common/base/proto.h`。
 
 ```text
 Backend -- 握手 GateFrame --> privateConfig 端口 / bAcceptor_
@@ -175,7 +175,7 @@ flowchart TD
     Q --> L[创建、换绑或清理 Player]
 ```
 
-场景信封位于 GateFrame body 开头，32 B，字段均为小端：`magic(u16=0x4750)、version(u16=1)、playerId(u64)、clientSession(u64)、clientEpoch(u32)、gatewayId(u32)、sceneId(u32)`，随后为原始玩法 body。定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/gatewayPlayer.h`。专用 `module=200` 不允许客户端借场景业务路由指定。
+场景信封位于 GateFrame body 开头，32 B，字段均为小端：`magic(u16=0x4750)、version(u16=1)、playerId(u64)、clientSession(u64)、clientEpoch(u32)、gatewayId(u32)、sceneId(u32)`，随后为原始玩法 body。定义见 `Zone/zone_common/base/gatewayPlayer.h`。专用 `module=200` 不允许客户端借场景业务路由指定。
 
 注意事项：
 
@@ -208,9 +208,9 @@ flowchart TD
 
 ## 配置、构建与运行
 
-网关配置为 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/config/gatewayConfig.yaml`。`publicConfig` 只接客户端，`privateConfig` 只接后端；`allowedServices` 必须显式配置，`defaultServiceId` 也必须位于白名单中。`maxClientSessions`、`maxPendingRoutes`、`routeTtlMs` 控制容量与清理。
+网关配置为 `Zone/gatewayServer/config/gatewayConfig.yaml`。`publicConfig` 只接客户端，`privateConfig` 只接后端；`allowedServices` 必须显式配置，`defaultServiceId` 也必须位于白名单中。`maxClientSessions`、`maxPendingRoutes`、`routeTtlMs` 控制容量与清理。
 
-默认本机配置已对齐：`publicConfig` 的客户端入口为 `127.0.0.1:10000`，`privateConfig` 的后端入口为 `127.0.0.1:13145`；共享配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml` 的 `ZoneServer.gateways` 指向后者。跨机器部署仍需将内网监听和网关列表改为可达的内网地址，并限制内网访问。
+默认本机配置已对齐：`publicConfig` 的客户端入口为 `127.0.0.1:10000`，`privateConfig` 的后端入口为 `127.0.0.1:13145`；共享配置 `Zone/config/zoneConfig.yaml` 的 `ZoneServer.gateways` 指向后者。跨机器部署仍需将内网监听和网关列表改为可达的内网地址，并限制内网访问。
 
 默认 `zoneId=1`、`gatewayId=1`、`clientToken=998877`、`defaultServiceId=8`，白名单仅含 `8`。要运行聊天/全局服务，须保留 `8` 并加入 `3`、`4`，且使用分行列表；轻量 YAML 解析器不支持 `[8, 3, 4]`：
 
@@ -224,21 +224,22 @@ allowedServices:
 从网关目录执行，默认配置路径是相对当前工作目录的 `./config/gatewayConfig.yaml`：
 
 ```bash
-cmake -S /home/lanxiyuan/Project_Cpp/GameServer/Zone \
-  -B /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme -DSCENE_BUILD_TESTS=ON
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme --target gatewayServer -j 4
-cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin/gatewayServer \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/config/gatewayConfig.yaml
+cmake -S Zone \
+  -B Zone/build-readme -DSCENE_BUILD_TESTS=ON
+cmake --build Zone/build-readme --target gatewayServer -j 4
+(
+  cd Zone/gatewayServer &&
+  ../build-readme/bin/gatewayServer ./config/gatewayConfig.yaml
+)
 ```
 
-可以把配置文件绝对路径作为第一个参数传入。日志固定输出到运行目录的 `./logs`；当前 `SIGTERM` 直接终止网关进程，**不是**优雅停服。
+可以把配置文件路径作为第一个参数传入（相对进程工作目录解析）。日志固定输出到运行目录的 `./logs`；当前 `SIGTERM` 直接终止网关进程，**不是**优雅停服。
 
 测试（需构建测试目标，端到端用例依赖相应后端目标及 `python3`）：
 
 ```bash
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme -j 4
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme \
+cmake --build Zone/build-readme -j 4
+ctest --test-dir Zone/build-readme \
   --output-on-failure -R '^gateway_'
 ```
 

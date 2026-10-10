@@ -73,7 +73,7 @@ flowchart TD
 
 `Player::session()` 是场景服与网关的内部连接 session；信封中的 `clientSession` 是网关客户端会话。两者不能互换。网络发送入队成功不代表客户端已经收到，ONLINE 也没有场景准入成功的含义。
 
-网关从已鉴权会话写入 `playerId`、内部 `seq` 和目标服务号；场景服接收业务帧并回复到原连接。网关要求普通响应保持原请求的 `seq/playerId/module/method`，才能按回程路由还原客户端 `requestId`。详见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/README.md` 与 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`。
+网关从已鉴权会话写入 `playerId`、内部 `seq` 和目标服务号；场景服接收业务帧并回复到原连接。网关要求普通响应保持原请求的 `seq/playerId/module/method`，才能按回程路由还原客户端 `requestId`。详见 `Zone/gatewayServer/README.md` 与 `Zone/PROTOCOL.md`。
 
 ### 消息定义
 
@@ -88,7 +88,7 @@ flowchart TD
 | totalLen / srcServiceID / dstServiceID | 4 / 1 / 1 B | 总长度含帧头，源和目的服务号 |
 | body | 可变 | 握手或玩法数据；整帧上限 10 MiB |
 
-头部多字节整数为**网络序（大端）**；握手体里的 `zoneId`、`sceneId` 为**小端**。定义见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/proto.h`，当前路由表位于 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/routeTable.cc`，不是由示例路由 YAML 动态加载。
+头部多字节整数为**网络序（大端）**；握手体里的 `zoneId`、`sceneId` 为**小端**。定义见 `Zone/zone_common/base/proto.h`，当前路由表位于 `Zone/sceneServer/src-cpp/routeTable.cc`，不是由示例路由 YAML 动态加载。
 
 | module/method | 请求 → 响应 | 处理位置 |
 | --- | --- | --- |
@@ -157,7 +157,7 @@ flowchart TD
 | `PlayerService` / `AoiService` | 权威玩家位置、实体生命周期、观察者状态与 AOI tick。 |
 | `WorkerPushSink` / `AoiServiceRouter` / `AoiWire` | 内部 AOI 事件编码、跨 worker 投递、可信发送方校验与快照恢复。 |
 
-主要接口：`SceneServer::start/stop` 控制生命周期，`reloadLua` 广播热更新，`stats` 输出各 worker、定时器与 DB 快照；`MsgBus::sendToWorkerByPlayerId/sendToNet/sendToDb` 执行跨线程投递。生命周期细节见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/sceneServer.h`。
+主要接口：`SceneServer::start/stop` 控制生命周期，`reloadLua` 广播热更新，`stats` 输出各 worker、定时器与 DB 快照；`MsgBus::sendToWorkerByPlayerId/sendToNet/sendToDb` 执行跨线程投递。生命周期细节见 `Zone/sceneServer/src-cpp/sceneServer.h`。
 
 ### DB、定时器与热更新数据流图
 
@@ -229,18 +229,18 @@ flowchart TD
 依赖升级后请新建构建目录，避免旧 Protobuf 生成文件与当前运行库混用。Lua 绑定使用 5.4/5.3 API，构建优先查找对应版本：
 
 ```bash
-cmake -S /home/lanxiyuan/Project_Cpp/GameServer/Zone \
-  -B /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-acceptance -DSCENE_BUILD_TESTS=ON
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-acceptance \
+cmake -S Zone \
+  -B Zone/build-acceptance -DSCENE_BUILD_TESTS=ON
+cmake --build Zone/build-acceptance \
   --target sceneServer gatewayServer scene_tests -j4
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-acceptance \
+ctest --test-dir Zone/build-acceptance \
   --output-on-failure -R '^(scene_tests|scene_smoke_invalid_route|gateway_real_scene)$'
 ```
 
 `gateway_real_scene` 使用真实网关/场景服进程及标准库 Python 客户端，禁用 DB，覆盖进场、移动、错误回程、连接复用、主动退出与断开清理。
 
-- 共享配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
-- 专属配置 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器/AOI 参数。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
+- 共享配置 `Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
+- 专属配置 `Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器/AOI 参数。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
 - AOI 当前仅支持 `nineGrid`，`tickMs/cellSize` 必须大于零，`viewRange` 为地图坐标单位，`cellPerLogicThread` 必须为 `0`；十字链表参数不支持。共享项不能重复放入场景配置，未知配置键会报错。
 - **网关地址：**共享配置默认 `gateways: 127.0.0.1:13145`，与网关 `privateConfig` 内网监听一致；`10000` 是客户端公网端口，不应用于场景服反向连接。跨机器部署须改成实际可达的内网地址，并确保 `zoneId` 一致、`serviceId=8` 位于网关 `allowedServices` 中。
 - 示例 `ZoneServer.db.enable: true`；实际运行需要可用的 MySQL、Redis 及对应账号。无数据库联调可以按需禁用 DB 通道，但相关持久化功能不工作。
@@ -248,13 +248,15 @@ ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-acceptance \
 从场景服目录启动以使用相对路径的 `./lua_script` 和日志目录。默认共享配置 `./config/zoneConfig.yaml` **不在此目录**，所以务必提供第一个位置参数；第二个参数显式指定场景配置：
 
 ```bash
-cmake -S /home/lanxiyuan/Project_Cpp/GameServer/Zone \
-  -B /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme -DSCENE_BUILD_TESTS=ON
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme --target sceneServer -j 4
-cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin/sceneServer \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml
+cmake -S Zone \
+  -B Zone/build-readme -DSCENE_BUILD_TESTS=ON
+cmake --build Zone/build-readme --target sceneServer -j 4
+(
+  cd Zone/sceneServer &&
+  ../build-readme/bin/sceneServer \
+    ../config/zoneConfig.yaml \
+    ./config/sceneConfig.yaml
+)
 ```
 
 日志写入 `ZoneServer.log.dir` 指定的目录（相对路径基于工作目录）；发送 `SIGUSR1` 重载 `luaDir` 下脚本，`SIGTERM` 或 `SIGINT` 触发有序退出。
@@ -262,11 +264,11 @@ cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer
 测试：
 
 ```bash
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme -j 4
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme \
+cmake --build Zone/build-readme -j 4
+ctest --test-dir Zone/build-readme \
   --output-on-failure -R '^(scene_tests|scene_smoke_invalid_route|gateway_real_scene)$'
 ```
 
 `scene_tests` 包含玩家绑定、AOI 路由/服务/副本/视野状态及 Lua 绑定等单元测试；`scene_smoke_invalid_route` 通过临时配置验证真实网络帧经过总线和逻辑线程后，无效路由不会创建 Actor；`gateway_real_scene` 验证真实玩家主链路。进程测试不证明外部 DB、可靠持久化或完整客户端视野协议可用。
 
-所有构建/运行示例使用本机绝对路径；检出目录不同时请统一替换 `/home/lanxiyuan/Project_Cpp/GameServer`。`luaDir` 和相对日志路径基于工作目录，`mapPath` 相对路径基于场景配置目录。
+文档路径以 `GameServer` 为根目录；各段构建与测试命令默认从根目录执行。运行示例在子 shell 中切换工作目录，退出后不改变当前终端目录。`luaDir` 和相对日志路径基于工作目录，`mapPath` 相对路径基于场景配置目录。

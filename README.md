@@ -1,8 +1,8 @@
 # ClearMoon GameServer
 
-基于 **C++20、Lua 与 Protobuf** 的 MMORPG 分区分服服务端实验项目。当前区服构建入口位于 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/CMakeLists.txt`：网关接入客户端，场景服处理玩家绑定、进场/移动/退出和 AOI 内部状态，聊天服处理在线私聊/喊话，全局服提供 Ping/Echo 接入验证。**这是开发与联调用底座，不是可直接上线的完整游戏后端。**
+基于 **C++20、Lua 与 Protobuf** 的 MMORPG 分区分服服务端实验项目。当前区服构建入口位于 `Zone/CMakeLists.txt`：网关接入客户端，场景服处理玩家绑定、进场/移动/退出和 AOI 内部状态，聊天服处理在线私聊/喊话，全局服提供 Ping/Echo 接入验证。**这是开发与联调用底座，不是可直接上线的完整游戏后端。**
 
-> 本文按当前工作区源码整理。示例使用本机绝对路径；检出位置不同时，请统一替换 `/home/lanxiyuan/Project_Cpp/GameServer`。设计、评审和部分子目录文档可能保留历史描述，以现行源码为准。
+> 本文按当前工作区源码整理。文档路径以 `GameServer` 为根目录，构建与测试命令默认在该根目录执行；运行命令显式标注目录切换。设计、评审和部分子目录文档可能保留历史描述，以现行源码为准。
 
 ## 当前架构与实现范围
 
@@ -29,7 +29,7 @@
 | 聊天服 | 单网关或多网关在线私聊、普通玩家全区喊话；向配置的网关扇出，由网关筛选本地会话 | 离线消息、可靠送达、自动重连、可信管理员广播 |
 | 全局服 | 原样回显 Ping/Echo 的二进制消息体 | 公会、全区状态及持久化等实际全局业务；自动重连 |
 
-两套协议**不能混用**：客户端到网关是 `ClientFrame`（32 B 头，魔数 `0xC1EB`，整帧上限 64 KiB），后端到网关是 `GateFrame`（32 B 头，魔数 `0xC1EA`，整帧上限 10 MiB）。头部多字节整数为网络序；控制体、握手体与业务体应按各自定义解析。详细字段和业务限制参见 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/PROTOCOL.md`；场景新增入口另见源码路由表。
+两套协议**不能混用**：客户端到网关是 `ClientFrame`（32 B 头，魔数 `0xC1EB`，整帧上限 64 KiB），后端到网关是 `GateFrame`（32 B 头，魔数 `0xC1EA`，整帧上限 10 MiB）。头部多字节整数为网络序；控制体、握手体与业务体应按各自定义解析。详细字段和业务限制参见 `Zone/PROTOCOL.md`；场景新增入口另见源码路由表。
 
 ### 场景服线程与 AOI 边界
 
@@ -41,20 +41,20 @@
 
 ## 目录导航
 
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/CMakeLists.txt`：区服 CMake 入口，构建四个服务。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/proto/gameProto.proto`：场景玩法消息定义，构建时自动生成 C++ 代码。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/README.md`：网关会话、双端口、服务注册和转发。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/README.md`：玩家绑定、进场验收、AOI、脚本和 DB。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/src-cpp/routeTable.cc`：当前实际玩法路由表，并非从示例路由 YAML 动态加载。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/lua_script`：Lua 玩法与 DB/定时器示例。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/chatServer/README.md`：聊天协议、跨网关联调与限制。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/globalServer/README.md`：全局服现有能力。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common`：共享协议、玩家信封、缓冲、配置、日志和最小服务运行时。
-- `/home/lanxiyuan/Project_Cpp/GameServer/docs`：设计、评审及演进记录。
-- `/home/lanxiyuan/Project_Cpp/GameServer/Enviromation.md`：开发机环境记录，不代表最低版本要求。
-- `/home/lanxiyuan/Project_Cpp/GameServer/LoginServer`：当前 CMake 文件为空，未接入区服构建；不能将开发期票据视为正式登录系统。
+- `Zone/CMakeLists.txt`：区服 CMake 入口，构建四个服务。
+- `Zone/proto/gameProto.proto`：场景玩法消息定义，构建时自动生成 C++ 代码。
+- `Zone/gatewayServer/README.md`：网关会话、双端口、服务注册和转发。
+- `Zone/sceneServer/README.md`：玩家绑定、进场验收、AOI、脚本和 DB。
+- `Zone/sceneServer/src-cpp/routeTable.cc`：当前实际玩法路由表，并非从示例路由 YAML 动态加载。
+- `Zone/sceneServer/lua_script`：Lua 玩法与 DB/定时器示例。
+- `Zone/chatServer/README.md`：聊天协议、跨网关联调与限制。
+- `Zone/globalServer/README.md`：全局服现有能力。
+- `Zone/zone_common`：共享协议、玩家信封、缓冲、配置、日志和最小服务运行时。
+- `docs`：设计、评审及演进记录。
+- `Enviromation.md`：开发机环境记录，不代表最低版本要求。
+- `LoginServer`：当前 CMake 文件为空，未接入区服构建；不能将开发期票据视为正式登录系统。
 
-根目录 `/home/lanxiyuan/Project_Cpp/GameServer/docker-compose.yml` **仅提供 Kafka**，不启动网关、场景服、MySQL 或 Redis；Kafka 不是当前区服构建必需依赖，不能将 `docker compose up` 当作项目一键启动命令。
+根目录 `docker-compose.yml` **仅提供 Kafka**，不启动网关、场景服、MySQL 或 Redis；Kafka 不是当前区服构建必需依赖，不能将 `docker compose up` 当作项目一键启动命令。
 
 ## 构建和测试
 
@@ -63,14 +63,14 @@
 端到端测试使用 Bash 和 Python 3（Python 客户端只用标准库）；缺少 Python 时部分用例不会注册。升级 Protobuf 后建议新建构建目录重新生成协议，避免旧生成文件与新运行库混用。
 
 ```bash
-cmake -S /home/lanxiyuan/Project_Cpp/GameServer/Zone \
-      -B /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme \
+cmake -S Zone \
+      -B Zone/build-readme \
       -DSCENE_BUILD_TESTS=ON
-cmake --build /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme -j 4
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme --output-on-failure
+cmake --build Zone/build-readme -j 4
+ctest --test-dir Zone/build-readme --output-on-failure
 ```
 
-四个服务产物位于 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin`。默认构建类型为 `Debug`，可配置 `-DCMAKE_BUILD_TYPE=Release`。`SCENE_BUILD_TESTS` 默认为 `ON`；构建同时生成 `compile_commands.json`。
+四个服务产物位于 `Zone/build-readme/bin`。默认构建类型为 `Debug`，可配置 `-DCMAKE_BUILD_TYPE=Release`。`SCENE_BUILD_TESTS` 默认为 `ON`；构建同时生成 `compile_commands.json`。
 
 | CTest 用例 | 验证内容 |
 | --- | --- |
@@ -85,7 +85,7 @@ ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme --outp
 端到端测试使用**临时配置与本地进程**，真实场景主链路禁用 DB，不验证外部 MySQL/Redis 或默认配置的持久化成功。完整构建后，可仅验收场景主链路：
 
 ```bash
-ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme \
+ctest --test-dir Zone/build-readme \
       --output-on-failure \
       -R '^(scene_tests|scene_smoke_invalid_route|gateway_real_scene)$'
 ```
@@ -96,12 +96,12 @@ ctest --test-dir /home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme \
 
 默认示例保留两个独立端口：网关客户端入口 `127.0.0.1:10000`、后端入口 `127.0.0.1:13145`。默认区服 `zoneId=1`、网关 `gatewayId=1`、场景 `sceneId=1/serviceId=8`，逻辑 worker 数量为 4。
 
-| 配置文件绝对路径 | 内容 |
+| 配置文件路径（相对 GameServer 根目录） | 内容 |
 | --- | --- |
-| `/home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/config/gatewayConfig.yaml` | 网关身份、双端口、票据、白名单和路由限额 |
-| `/home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml` | 区服 ID、数据库、网关内网地址及场景日志 |
-| `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml` | 场景/服务 ID、Lua、worker、地图、网络、时间轮和 AOI |
-| `/home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/map.yaml` | 默认场景地图 |
+| `Zone/gatewayServer/config/gatewayConfig.yaml` | 网关身份、双端口、票据、白名单和路由限额 |
+| `Zone/config/zoneConfig.yaml` | 区服 ID、数据库、网关内网地址及场景日志 |
+| `Zone/sceneServer/config/sceneConfig.yaml` | 场景/服务 ID、Lua、worker、地图、网络、时间轮和 AOI |
+| `Zone/sceneServer/config/map.yaml` | 默认场景地图 |
 
 启动前确认区服 ID、内网地址与后端白名单一致。`ZoneServer.gateways` 默认已指向内网端口；网关 `allowedServices` **仅包含场景服 8**，运行聊天/全局服前需加入 `3`/`4`，保留 `8`。轻量解析器不支持行内列表，须填写：
 
@@ -118,30 +118,33 @@ allowedServices:
 
 ```bash
 # 终端 1：网关
-cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin/gatewayServer \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/gatewayServer/config/gatewayConfig.yaml
+(
+  cd Zone/gatewayServer &&
+  ../build-readme/bin/gatewayServer ./config/gatewayConfig.yaml
+)
 
 # 终端 2：场景服（请先确认数据库配置和依赖）
-cd /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin/sceneServer \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/config/zoneConfig.yaml \
-  /home/lanxiyuan/Project_Cpp/GameServer/Zone/sceneServer/config/sceneConfig.yaml
+(
+  cd Zone/sceneServer &&
+  ../build-readme/bin/sceneServer \
+    ../config/zoneConfig.yaml \
+    ./config/sceneConfig.yaml
+)
 
 # 终端 3、4：可选；需先在网关 allowedServices 中允许服务号 3、4
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin/chatServer 127.0.0.1 13145 1
-/home/lanxiyuan/Project_Cpp/GameServer/Zone/build-readme/bin/globalServer 127.0.0.1 13145 1
+Zone/build-readme/bin/chatServer 127.0.0.1 13145 1
+Zone/build-readme/bin/globalServer 127.0.0.1 13145 1
 ```
 
 场景服默认启用 DB，并指向示例本机 MySQL/Redis 地址；实际部署前须提供服务和适配凭证。无需 DB 的联调可以在共享配置中禁用 DB，但持久化功能不可用。聊天服可追加更多组 `<网关内网 IPv4> <端口> <同一区服 ID>` 参数连接多个网关，参见聊天服文档；全局服目前只连接一个网关。示例中的 `127.0.0.1` 只适用于同一主机；跨主机/容器需配置可达的内网地址并限制后端端口访问。
 
 默认 MySQL 为 `127.0.0.1:3306`、数据库 `game`，Redis 为 `127.0.0.1:6379`。无 DB 联调可将 `ZoneServer.db.enable` 设为 `false`。聊天服任意网关链路断开都会导致进程退出，当前没有自动重连。
 
-场景服参数顺序为“共享配置、场景配置”。即使使用绝对配置路径，`luaDir: ./lua_script` 和相对日志目录仍基于**进程工作目录**；`mapPath` 相对路径则基于**场景配置文件目录**，默认 `map.yaml`。地图加载失败时不会启动网络线程。
+场景服参数顺序为“共享配置、场景配置”。即使显式指定配置文件路径，`luaDir: ./lua_script` 和相对日志目录仍基于**进程工作目录**；`mapPath` 相对路径则基于**场景配置文件目录**，默认 `map.yaml`。地图加载失败时不会启动网络线程。
 
 ## 最小玩家验收链路
 
-网关发给场景服的玩家消息使用 `/home/lanxiyuan/Project_Cpp/GameServer/Zone/zone_common/base/gatewayPlayer.h` 定义的 **32 B 版本化绑定信封**，随后才是玩法载荷。网关与场景服须同步升级；旧裸 body 玩家请求不再接受。专用 `module=200` 的 ONLINE/OFFLINE 不允许公网客户端调用。
+网关发给场景服的玩家消息使用 `Zone/zone_common/base/gatewayPlayer.h` 定义的 **32 B 版本化绑定信封**，随后才是玩法载荷。网关与场景服须同步升级；旧裸 body 玩家请求不再接受。专用 `module=200` 的 ONLINE/OFFLINE 不允许公网客户端调用。
 
 1. **Auth**：客户端发送 `Control(module=1, method=1)`，body 为 `playerId(u64 LE)+ticket(u64 LE)`，默认 ticket 为 `998877`。成功后网关建立会话并向场景服发布 ONLINE；只建立 Player/绑定，不表示角色加载完成，不自动进入 AOI。
 2. **进场**：发送 `Request(module=3, method=4)`，body 为 `gs.EnterSceneReq`（空消息）。当前出生点 `(0,0,0)`，返回 `gs.EnterSceneAck`，包含实体 ID、generation 和位置；重复请求保留当前位置，不重新分配世代。
