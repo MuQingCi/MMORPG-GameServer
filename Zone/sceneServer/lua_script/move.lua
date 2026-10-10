@@ -31,7 +31,11 @@ function move.c2s_walk(session, pid, req)
     local dy = req and req.dy or 0
 
     -- 简化版距离校验：真实项目里应交给寻路/AOI 模块
-    local dist = math.abs(dx - sx) + math.abs(dy - sy)
+    if sx ~= p.x or sy ~= p.y then
+        net.send(session, "RetTip", { code = 1002, text = "position mismatch" })
+        return
+    end
+    local dist = math.abs(dx - p.x) + math.abs(dy - p.y)
     if dist > 100 then
         net.send(session, "RetTip", { code = 1002, text = "too far" })
         return

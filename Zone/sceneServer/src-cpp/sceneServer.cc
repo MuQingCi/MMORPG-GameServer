@@ -79,8 +79,7 @@ bool SceneServer::start()
     for (uint32_t i = 0; i < cfg_.logicThreadNum; ++i)
     {
         auto lt = std::make_unique<LogicThread>(i, *bus_, logicCfg, cfg_.aoi, map_);
-        // ★ 必须注入定时器服务：否则 Lua 里的 timer.after 会拿到空服务
-        //   （旧实现里 timer_ 既无默认值又无人 bindTimer -> 野指针崩溃）
+        //  必须注入定时器服务：否则 Lua 里的 timer.after 会拿到空服务
         lt->bindTimer(timerThread_.get());
         if (!lt->start())
         {
