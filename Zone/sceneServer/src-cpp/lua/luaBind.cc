@@ -122,7 +122,7 @@ static int l_net_send(lua_State* L)
     m.body          = std::move(body);
 
     // 只入队 + 唤醒网络线程；实际发送由网络线程完成（异步语义）
-    if (!c->bus->sendToNet(std::move(m)))
+    if (!IsAccepted(c->bus->sendToNet(std::move(m))))
         return PushFail(L, "net queue full");
 
     return PushOk(L);
@@ -213,7 +213,7 @@ static int SendDb(lua_State* L, uint8_t kind)
     m.body = task.Encode();
 
     const uint64_t ctxId = m.head.ctx;
-    if (!c->bus->sendToDb(std::move(m)))
+    if (!(c->submitDbTask ? c->submitDbTask(m) : IsAccepted(c->bus->sendToDb(m))))
         return PushFail(L, "db queue full");
 
     lua_pushinteger(L, (lua_Integer)ctxId);   // 返回 ctx，脚本可自行对账

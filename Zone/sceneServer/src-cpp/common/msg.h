@@ -161,6 +161,7 @@ namespace Method
 
 struct MsgHead
 {
+    uint64_t taskId = 0; // Process-local DB delivery identity, independent of Lua ctx.
     ClientData clientBinding;
     bool hasClientBinding = false;
     uint16_t msgType = MsgType::MSGTYPE_NONE;

@@ -5,6 +5,7 @@
 #include "common/msgBus.h"
 #include "db/dbConfig.h"
 #include "db/dbValue.h"
+#include "db/taskDelivery.h"
 #include "db/mysqlConnection.h"
 #include "db/redisConnection.h"
 
@@ -56,6 +57,7 @@ private:
     struct RedisShard
     {
         std::unique_ptr<RedisConnection> conn;
+        DbResultLedger results;
         std::thread thread;
 
         std::string host;      // 本分片端点（来自 RedisConfig::EndpointOf）
@@ -69,7 +71,8 @@ private:
     void redisLoop(size_t shard);
 
     // 把结果投回"发起它的逻辑线程"
-    void replyResult(const Msg& task, const dbv::DbResult& res);
+    void replyResult(DbResultLedger& ledger, const Msg& task, const dbv::DbResult& res);
+    void flushResults(DbResultLedger& ledger);
 
     // 连接维护：失联时按**指数退避**重试（避免"每 2 秒刷一条 ERROR"的日志噪音，
     // 也避免 DB 恢复瞬间被打满连接风暴）
@@ -80,6 +83,7 @@ private:
     DbConfig cfg_;
 
     MySqlConnection mysql_;
+    DbResultLedger mysqlResults_;
     std::vector<std::unique_ptr<RedisShard>> redisShards_;
 
     std::atomic<bool> running_{false};

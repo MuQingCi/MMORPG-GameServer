@@ -353,7 +353,7 @@ void NetServer::acceptNewConn()
         m.head.msgType = MsgType::MSGTYPE_CONN_NEW;
         m.head.session = session;
         m.head.ctx = ServerID::kGateway;
-        m_bus_->sendToWorker(wid, std::move(m));
+        IsAccepted(m_bus_->sendToWorker(wid, std::move(m)));
     }
 }
 
@@ -507,7 +507,7 @@ void NetServer::onPeerWritable(Conn& conn)
     m.head.msgType = MsgType::MSGTYPE_CONN_NEW;
     m.head.session = session;
     m.head.ctx = conn.peerServiceID;
-    m_bus_->sendToWorker(wid, std::move(m));
+    IsAccepted(m_bus_->sendToWorker(wid, std::move(m)));
 }
 
 void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
@@ -553,7 +553,7 @@ void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
 
         m.head.clientBinding=d; m.head.hasClientBinding=true; m.body=std::move(payload);
         // 生命周期不得因 worker 队列满而静默丢弃；普通玩法允许明确丢弃/告警。
-        if(!pendingClientNotifications_.empty() || !m_bus_->sendToWorkerByPlayerId(head.playerId,m)) 
+        if(!pendingClientNotifications_.empty() || !IsAccepted(m_bus_->sendToWorkerByPlayerId(head.playerId,m))) 
         {
             if(online || offline) 
                 pendingClientNotifications_.push_back(std::move(m));
@@ -566,12 +566,12 @@ void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
     if (head.playerId != 0)
     {
         // Actor 亲和：正确性由 playerId 保证（同一玩家永远落在同一逻辑线程）
-        m_bus_->sendToWorkerByPlayerId(head.playerId, std::move(m));
+        IsAccepted(m_bus_->sendToWorkerByPlayerId(head.playerId, std::move(m)));
     }
     else
     {
         // 会话亲和：登录中等尚未绑定玩家的会话消息
-        m_bus_->sendToWorker(workerForSession(conn.session, true, 0), std::move(m));
+        IsAccepted(m_bus_->sendToWorker(workerForSession(conn.session, true, 0), std::move(m)));
     }
 }
 
@@ -727,7 +727,7 @@ void NetServer::handleClose(Conn& conn)
         offline.head.Method=GatewayPlayer::kOffline;
         offline.head.playerId=d.playerId; offline.head.session=session;
         offline.head.clientBinding=d; offline.head.hasClientBinding=true;
-        if(!pendingClientNotifications_.empty() || !m_bus_->sendToWorkerByPlayerId(d.playerId,offline))
+        if(!pendingClientNotifications_.empty() || !IsAccepted(m_bus_->sendToWorkerByPlayerId(d.playerId,offline)))
             pendingClientNotifications_.push_back(std::move(offline));
     }
     Msg m;
@@ -735,7 +735,7 @@ void NetServer::handleClose(Conn& conn)
     m.head.session = session;
     m.head.ctx = peer;
 
-    m_bus_->sendToWorker(wid, std::move(m));
+    IsAccepted(m_bus_->sendToWorker(wid, std::move(m)));
 
     LOG_INFO << "close conn, session=" << session
              << " peer=" << ServerIdName(peer);
@@ -745,7 +745,7 @@ void NetServer::retryClientNotifications()
 {
     for(auto it=pendingClientNotifications_.begin();it!=pendingClientNotifications_.end();) 
     {
-        if(m_bus_->sendToWorkerByPlayerId(it->head.playerId,*it))
+        if(IsAccepted(m_bus_->sendToWorkerByPlayerId(it->head.playerId,*it)))
             it=pendingClientNotifications_.erase(it);
         else break; // 生命周期顺序不允许 OFFLINE 越过待补 ONLINE
     }

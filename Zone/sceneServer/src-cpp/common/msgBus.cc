@@ -34,66 +34,79 @@ MsgBus::MsgBus(size_t numWorkers, size_t redisShards)
 
 MsgBus::~MsgBus() = default;
 
-bool MsgBus::sendToActor(ActorId id, Msg m)
+DispatchResult MsgBus::sendToActor(ActorId id, Msg m)
 {
     const WorkerId wid = static_cast<WorkerId>(hashutil::WorkerForActor(id, worker_queues_.size()));
     return sendToWorker(wid, std::move(m));
 }
 
-bool MsgBus::sendToModule(ModuleId mid, Msg m)
+DispatchResult MsgBus::sendToModule(ModuleId mid, Msg m)
 {
     // 模块消息与 Actor 无关，直接按模块号取模：保证"同一模块的消息串行"
     const WorkerId wid = static_cast<WorkerId>(mid % worker_queues_.size());
     return sendToWorker(wid, std::move(m));
 }
 
-bool MsgBus::sendToWorkerByPlayerId(PlayerId pid, Msg m)
+DispatchResult MsgBus::sendToWorkerByPlayerId(PlayerId pid, Msg m)
 {
     // 玩家即 Actor：归属决策点全进程唯一，就在这一行
     const WorkerId wid = static_cast<WorkerId>(hashutil::WorkerForActor(pid, worker_queues_.size()));
     return sendToWorker(wid, std::move(m));
 }
 
-bool MsgBus::sendToWorker(WorkerId wid, Msg m)
+DispatchResult MsgBus::sendToWorker(WorkerId wid, Msg m)
 {
     if (wid >= worker_queues_.size())
     {
         LOG_ERROR << "sendToWorker: wid=" << wid << " out of range, numWorker=" << worker_queues_.size();
-        return false;
+        return DispatchResult::kInvalidTarget;
     }
 
     const bool ok = worker_queues_[wid]->try_push(std::move(m));
     if (!ok)
         LOG_WARNING << "sendToWorker: queue full, wid=" << wid;
 
-    return ok;
+    return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
 }
 
-void MsgBus::broadcastToLogic(const Msg& m)
+std::vector<DispatchResult> MsgBus::broadcastToLogic(const Msg& m)
 {
-    //TODO 存在拷贝，后续可用shared_ptr指针来优化
-    for (auto& q : worker_queues_)
-    {
-        Msg copy = m;  // 每条队列一份副本：Msg 不能跨线程共享同一对象
-        if (!q->try_push(std::move(copy)))
-            LOG_ERROR << "broadcastToLogic: try_push failed";
-    }
+    std::vector<DispatchResult> results;
+    results.reserve(numWorker());
+    for (WorkerId wid = 0; wid < numWorker(); ++wid)
+        results.push_back(sendToWorker(wid, m));
+    return results;
 }
 
-bool MsgBus::sendToNet(Msg m)
+DispatchResult MsgBus::broadcastToLogicExcept(WorkerId except, const Msg& m,
+                                               std::vector<uint8_t>* perWorkerOk)
+{
+    if (except >= numWorker()) return DispatchResult::kInvalidTarget;
+    if (perWorkerOk) perWorkerOk->assign(numWorker(), 0);
+    auto result = DispatchResult::kAccepted;
+    for (WorkerId wid = 0; wid < numWorker(); ++wid) {
+        if (wid == except) continue;
+        const auto dispatched = sendToWorker(wid, m);
+        if (perWorkerOk) (*perWorkerOk)[wid] = IsAccepted(dispatched);
+        if (!IsAccepted(dispatched)) result = dispatched;
+    }
+    return result;
+}
+
+DispatchResult MsgBus::sendToNet(Msg m)
 {
     const bool ok = net_queue_->try_push(std::move(m));
     if (!ok)
     {
         LOG_WARNING << "sendToNet: queue full";
-        return false;
+        return DispatchResult::kBackpressure;
     }
 
     // 入队成功才唤醒：空队列时的唤醒是纯浪费
     if (net_wakeup_)
         net_wakeup_();
 
-    return true;
+    return DispatchResult::kAccepted;
 }
 
 void MsgBus::setNetWakeup(Wakeup cb)
@@ -101,14 +114,14 @@ void MsgBus::setNetWakeup(Wakeup cb)
     net_wakeup_ = std::move(cb);
 }
 
-bool MsgBus::sendToDb(Msg m)
+DispatchResult MsgBus::sendToDb(Msg m)
 {
     const bool redis = (m.head.msgType == MsgType::MSGTYPE_DB_TASK_REDIS);
     const bool mysql = (m.head.msgType == MsgType::MSGTYPE_DB_TASK_MYSQL);
     if (!redis && !mysql)
     {
         LOG_ERROR << "sendToDb: illegal msgType=" << MsgTypeName(m.head.msgType);
-        return false;
+        return DispatchResult::kInvalidMessage;
     }
 
     if (!redis)
@@ -116,7 +129,7 @@ bool MsgBus::sendToDb(Msg m)
         const bool ok = mysql_queue_->try_push(std::move(m));
         if (!ok)
             LOG_WARNING << "sendToDb: mysql queue full";
-        return ok;
+        return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
     }
 
     // Redis：按分片索引选队列。索引越界说明调用方算错了分片数
@@ -126,13 +139,13 @@ bool MsgBus::sendToDb(Msg m)
     {
         LOG_ERROR << "sendToDb: redis shard " << shard << " out of range, shardCount="
                   << redis_queues_.size();
-        return false;
+        return DispatchResult::kInvalidTarget;
     }
 
     const bool ok = redis_queues_[shard]->try_push(std::move(m));
     if (!ok)
         LOG_WARNING << "sendToDb: redis queue full, shard=" << shard;
-    return ok;
+    return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
 }
 
 bool MsgBus::tryPopWorker(WorkerId wid, Msg& out)

@@ -10,6 +10,17 @@
 
 struct Msg;
 
+// Accepted only means queue admission, not execution or persistence.
+enum class DispatchResult {
+    kAccepted,
+    kBackpressure,
+    kTargetStopped, // Reserved: current bus does not own thread lifecycle/admission gates.
+    kInvalidTarget,
+    kInvalidMessage
+};
+
+inline bool IsAccepted(DispatchResult result) { return result == DispatchResult::kAccepted; }
+
 template<typename T>
 class MsgQueue;
 
@@ -52,19 +63,19 @@ public:
 
     // ---------------- 逻辑线程路由 ----------------
     // Actor 归属：hash(actorId) % N。玩家即 Actor 时等价于 sendToWorkerByPlayerId
-    bool sendToActor(ActorId id, Msg m);
+    DispatchResult sendToActor(ActorId id, Msg m);
     // 无状态模块消息：同一模块的消息串行落到同一线程（避免模块内状态竞争）
-    bool sendToModule(ModuleId mid, Msg m);
-    bool sendToWorkerByPlayerId(PlayerId pid, Msg m);
+    DispatchResult sendToModule(ModuleId mid, Msg m);
+    DispatchResult sendToWorkerByPlayerId(PlayerId pid, Msg m);
     // 精准投递（结果回投 / 会话亲和 / 定时器到期）
-    bool sendToWorker(WorkerId wid, Msg m);
+    DispatchResult sendToWorker(WorkerId wid, Msg m);
     // 广播到全部逻辑线程（热更、全服公告等），msgs 必须可拷贝
-    void broadcastToLogic(const Msg& m);
-    bool broadcastToLogicExcept(WorkerId except, const Msg& m, std::vector<uint8_t>* perWorkerOk);
+    std::vector<DispatchResult> broadcastToLogic(const Msg& m);
+    DispatchResult broadcastToLogicExcept(WorkerId except, const Msg& m, std::vector<uint8_t>* perWorkerOk);
     // ---------------- 辅助线程投递 ----------------
-    bool sendToNet(Msg m);
+    DispatchResult sendToNet(Msg m);
     // 按 msgType 自动选择 DB 通道；Redis 通道再按 m.head.dbShard 选队列
-    bool sendToDb(Msg m);
+    DispatchResult sendToDb(Msg m);
 
     // ---------------- 消费侧（只能在对应线程调用）----------------
     bool tryPopWorker(WorkerId wid, Msg& out);

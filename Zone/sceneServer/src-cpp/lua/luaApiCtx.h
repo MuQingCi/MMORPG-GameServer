@@ -4,12 +4,14 @@
 #include "db/redisKey.h"
 #include "player/playerManager.h"
 #include <cstdint>
+#include <functional>
 
 class LuaEnv;
 class lua_State;
 class MsgBus;
 class ITimerService;
 class PlayerService;
+struct Msg;
 struct TimerOp;
 
 /**
@@ -33,6 +35,7 @@ struct LuaApiCtx
 {
     LuaEnv*        env = nullptr;
     MsgBus*        bus = nullptr;
+    std::function<bool(Msg)> submitDbTask; // Owner-thread registration before dispatch.
     PlayerManager* players = nullptr;
     PlayerService* playerService = nullptr; // 进场/移动/离场的权威变更与 AOI 通知收口
     ITimerService* timer = nullptr;

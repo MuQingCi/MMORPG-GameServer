@@ -155,7 +155,7 @@ void DBThread::ensureRedisConnection(size_t shard)
                 << ") unavailable (streak=" << s.failStreak << "), retry in " << wait << "ms";
 }
 
-void DBThread::replyResult(const Msg& task, const dbv::DbResult& res)
+void DBThread::replyResult(DbResultLedger& ledger, const Msg& task, const dbv::DbResult& res)
 {
     Msg out;
     // 结果类型与任务通道一一对应：逻辑层据此决定走哪条回调
@@ -164,6 +164,7 @@ void DBThread::replyResult(const Msg& task, const dbv::DbResult& res)
                            : MsgType::MSGTYPE_DB_RESULT_MYSQL;
 
     // 关键字段必须原样带回：ctx 用于找回 Lua 回调，epoch 用于校验 Actor 生命周期
+    out.head.taskId = task.head.taskId;
     out.head.ctx = task.head.ctx;
     out.head.epoch = task.head.epoch;
     out.head.playerId = task.head.playerId;
@@ -174,14 +175,15 @@ void DBThread::replyResult(const Msg& task, const dbv::DbResult& res)
     out.head.srcWorkerId = task.head.srcWorkerId;
     out.body = res.Encode();
 
-    // 回投到发起它的逻辑线程（srcWorkerId）。绝不能由 DB 线程直接调 Lua。
-    const MsgBus::WorkerId wid = static_cast<MsgBus::WorkerId>(task.head.srcWorkerId);
-    if (!m_bus_->sendToWorker(wid, std::move(out)))
-    {
-        errors_.fetch_add(1, std::memory_order_relaxed);
-        LOG_WARNING << "db result lost: owner worker queue full, worker=" << wid
-                    << " ctx=" << task.head.ctx;
-    }
+    ledger.finish(task, std::move(out));
+    flushResults(ledger);
+}
+
+void DBThread::flushResults(DbResultLedger& ledger)
+{
+    ledger.flush([this](const Msg& result) {
+        return m_bus_->sendToWorker(result.head.srcWorkerId, result);
+    });
 }
 
 void DBThread::mysqlLoop()
@@ -191,10 +193,23 @@ void DBThread::mysqlLoop()
     Msg task;
     while (!stop_.load(std::memory_order_acquire))
     {
+        flushResults(mysqlResults_);
+        if (!mysqlResults_.hasCapacity()) {
+            std::this_thread::sleep_for(kWaitMs);
+            continue;
+        }
         if (!m_bus_->waitPopDbMySql(task, kWaitMs))
         {
             // 空闲：借机维护连接（断开后由这里恢复，而不是每条 SQL 都重试）
             ensureMysqlConnection();
+            continue;
+        }
+
+        const auto admission = mysqlResults_.accept(task);
+        if (admission != DbResultLedger::Admission::New) {
+            if (admission == DbResultLedger::Admission::Conflict)
+                LOG_ERROR << "DB task identity conflict, taskId=" << task.head.taskId;
+            flushResults(mysqlResults_);
             continue;
         }
 
@@ -206,7 +221,7 @@ void DBThread::mysqlLoop()
             dbv::DbResult bad;
             bad.errcode = 1;
             bad.errmsg = "decode db task failed";
-            replyResult(task, bad);
+            replyResult(mysqlResults_, task, bad);
             continue;
         }
 
@@ -221,7 +236,7 @@ void DBThread::mysqlLoop()
         }
 
         mysqlTasks_.fetch_add(1, std::memory_order_relaxed);
-        replyResult(task, res);
+        replyResult(mysqlResults_, task, res);
     }
 
     LOG_INFO << "mysql channel thread stopped";
@@ -238,10 +253,23 @@ void DBThread::redisLoop(size_t shard)
     Msg task;
     while (!stop_.load(std::memory_order_acquire))
     {
+        flushResults(s.results);
+        if (!s.results.hasCapacity()) {
+            std::this_thread::sleep_for(kWaitMs);
+            continue;
+        }
         // 只消费属于本分片的队列：分片之间互不影响（一个实例慢不拖累其它实例）
         if (!m_bus_->waitPopDbRedis(static_cast<uint16_t>(shard), task, kWaitMs))
         {
             ensureRedisConnection(shard);
+            continue;
+        }
+
+        const auto admission = s.results.accept(task);
+        if (admission != DbResultLedger::Admission::New) {
+            if (admission == DbResultLedger::Admission::Conflict)
+                LOG_ERROR << "Redis task identity conflict, taskId=" << task.head.taskId;
+            flushResults(s.results);
             continue;
         }
 
@@ -252,7 +280,7 @@ void DBThread::redisLoop(size_t shard)
             dbv::DbResult bad;
             bad.errcode = 1;
             bad.errmsg = "decode redis task failed";
-            replyResult(task, bad);
+            replyResult(s.results, task, bad);
             continue;
         }
 
@@ -268,7 +296,7 @@ void DBThread::redisLoop(size_t shard)
         }
 
         redisTasks_.fetch_add(1, std::memory_order_relaxed);
-        replyResult(task, res);
+        replyResult(s.results, task, res);
     }
 
     LOG_INFO << "redis shard " << shard << " thread stopped";

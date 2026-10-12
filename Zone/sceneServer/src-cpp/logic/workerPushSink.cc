@@ -37,7 +37,7 @@ AoiPushResult WorkerPushSink::sendToClient(const AoiClientPushRequest& request)
     msg.head.Module = request.module;
     msg.head.Method = request.method;
     msg.body        = std::move(request.body);
-    bool res = msgBus_.sendToNet(msg);
+    bool res = IsAccepted(msgBus_.sendToNet(msg));
     if(!res)
         return AoiPushResult::kQueueFull;
     return AoiPushResult::kAccepted;
@@ -64,7 +64,7 @@ AoiWorkerPublishResult WorkerPushSink::publishToWorkers(const AoiWorkerPublishRe
             msg.head.Method = request.method;
             msg.head.serviceSenderWorkerId = self;
             msg.body = request.body;
-            accepted = msgBus_.sendToWorker(target, std::move(msg));
+            accepted = IsAccepted(msgBus_.sendToWorker(target, std::move(msg)));
         }
         result.deliveries.push_back({target, accepted});
     }

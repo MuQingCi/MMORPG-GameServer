@@ -49,8 +49,8 @@ LogicThread::LogicThread(uint32_t threadId,
                          const AoiConfig& aoiCfg, 
                          const Map& map)
                        : threadId_(threadId), 
-                         m_bus_(&bus), 
                          cfg_(cfg),
+                          m_bus_(&bus),
                          players_(threadId),
                          workerPushSink_(bus, players_),
                           aoiService_(threadId,aoiCfg,workerPushSink_,map,
@@ -82,6 +82,7 @@ bool LogicThread::start()
     // Lua 环境必须在**本线程**创建：lua_State 与创建它的线程绑定使用
     apiCtx_.env = nullptr;
     apiCtx_.bus = m_bus_;
+    apiCtx_.submitDbTask = [this](Msg task) { return submitDbTask(std::move(task)); };
     apiCtx_.players = &players_;
     apiCtx_.playerService = &playerService_;
     apiCtx_.timer = timer_;
@@ -103,7 +104,7 @@ void LogicThread::stop()
     // 投一条 SHUTDOWN 把阻塞在 waitPopWorker 的线程叫醒
     Msg m;
     m.head.msgType = MsgType::MSGTYPE_SHUTDOWN;
-    m_bus_->sendToWorker(threadId_, std::move(m));
+    IsAccepted(m_bus_->sendToWorker(threadId_, std::move(m)));
 
     if (thread_.joinable())
         thread_.join();
@@ -140,6 +141,7 @@ void LogicThread::run()
         int64_t nowMs = NowMs();
         aoiService_.OnTick(nowMs);
         advanceAoiRecovery(nowMs);
+        pendingTasks_.tick(nowMs, [this](const Msg& task) { return m_bus_->sendToDb(task); });
 
         Msg m;
         // 单段等待：队列空则最多阻塞 idleWaitMs，非空立即取出
@@ -252,7 +254,7 @@ bool LogicThread::logoutPlayer(uint64_t playerId)
         db.head.epoch = p->epoch();
         db.head.srcWorkerId = threadId_;   // 结果回来也只回到本线程（且不会进 Lua）
         db.body = task.Encode();
-        m_bus_->sendToDb(std::move(db));
+        submitDbTask(std::move(db));
     }
 
     // 取消该玩家全部 Lua 定时器 + 通知脚本钩子
@@ -342,7 +344,7 @@ void LogicThread::sendRetTip(const Msg& request, int32_t code, const char* text)
     m.head.session = request.head.session;
     m.head.playerId = request.head.playerId;
     m.body = tip.SerializeAsString();
-    m_bus_->sendToNet(std::move(m));
+    IsAccepted(m_bus_->sendToNet(std::move(m)));
 }
 
 void LogicThread::sendToSession(uint64_t session, const RouteTable::Route* route,
@@ -356,7 +358,7 @@ void LogicThread::sendToSession(uint64_t session, const RouteTable::Route* route
     m.head.session = session;
     m.head.playerId = playerId;
     m.body = body;
-    m_bus_->sendToNet(std::move(m));
+    IsAccepted(m_bus_->sendToNet(std::move(m)));
 }
 
 void LogicThread::onNetMsg(Msg& m)
@@ -473,6 +475,9 @@ void LogicThread::onDbResult(Msg& m)
         LOG_WARNING << "worker " << threadId_ << " bad db result body";
         return;
     }
+
+    // Complete persistence delivery before Actor validation. Never rerun SQL on timeout.
+    if (m.head.taskId && !pendingTasks_.complete(m)) return;
 
     // 1. 先校验 Actor 生命周期：发起查询时可能已下线/Actor 已重建
     if (m.head.playerId != 0 && !players_.validateEpoch(m.head.playerId, m.head.epoch))
@@ -709,8 +714,10 @@ void LogicThread::flushDirtyPlayers()
         db.head.ctx = 0;              // 无 Lua 回调
         db.body = task.Encode();
 
-        // 入队成功才清脏标记：失败时保留脏标记，下个周期再存
-        if (m_bus_->sendToDb(std::move(db)))
+        // Only clears the scheduling dirty bit after fixed task registration.
+        // This is NOT a persistence acknowledgment; save-version confirmation
+        // and database-error recovery remain the persistence layer's next step.
+        if (submitDbTask(std::move(db)))
         {
             p.clearDirty();
             ++saved;
@@ -720,4 +727,11 @@ void LogicThread::flushDirtyPlayers()
 
     if (saved > 0)
         LOG_INFO << "worker " << threadId_ << " flushed " << saved << " players";
+}
+
+bool LogicThread::submitDbTask(Msg task)
+{
+    task.head.srcWorkerId = threadId_;
+    return pendingTasks_.submit(std::move(task), NowMs(),
+        [this](const Msg& request) { return m_bus_->sendToDb(request); });
 }

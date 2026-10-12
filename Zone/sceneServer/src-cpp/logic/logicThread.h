@@ -4,6 +4,7 @@
 #include "common/msg.h"
 #include "common/msgBus.h"
 #include "db/redisKey.h"
+#include "db/taskDelivery.h"
 #include "lua/luaApiCtx.h"
 #include "service/aoi/aoiService.h"
 #include "logic/workerPushSink.h"
@@ -14,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 class Player;
 class PlayerManager;
@@ -43,6 +45,7 @@ struct Route;
  * 异步回调的共同点：**必须先校验 epoch**。发起时 Actor 可能已下线重建，
  * 迟到结果要么写错对象，要么直接丢弃。
  */
+
 class LogicThread
 {
 public:
@@ -110,19 +113,20 @@ private:
     std::atomic<bool> started_{false};
     std::atomic<bool> stopRequested_{false};
 
-    MsgBus* m_bus_ = nullptr;
     Config cfg_;
+    MsgBus* m_bus_ = nullptr;
 
     std::unique_ptr<LuaEnv> lua_;
     // std::unique_ptr<PlayerManager> players_;
     PlayerManager players_;
-    LuaApiCtx apiCtx_;
-
     ITimerService* timer_ = nullptr;
     
     WorkerPushSink workerPushSink_;
     AoiService aoiService_;
     PlayerService playerService_;
+
+    LuaApiCtx apiCtx_;
+
     // 离线后保留绑定水位，拒绝延迟上线通知重新创建旧会话。
     std::unordered_map<uint64_t, ClientData> latestClientBindings_;
 
@@ -143,6 +147,11 @@ private:
 
     std::atomic<uint64_t> handledMessages_{0};
     std::atomic<uint64_t> droppedCallbacks_{0};
+
+    //可靠任务投递——待处理队列
+    //根据state判断任务处于什么状态，用一个容器存储以减少同步数和产生空隙时间
+    PendingDbTasks pendingTasks_;
+    bool submitDbTask(Msg task);
 };
 
 #endif
