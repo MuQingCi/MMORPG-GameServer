@@ -76,6 +76,8 @@ public:
     DispatchResult sendToNet(Msg m);
     // 按 msgType 自动选择 DB 通道；Redis 通道再按 m.head.dbShard 选队列
     DispatchResult sendToDb(Msg m);
+    DispatchResult sendToDbControl(Msg m);
+    bool tryPopDbControl(bool redis, uint16_t shard, Msg& out);
 
     // ---------------- 消费侧（只能在对应线程调用）----------------
     bool tryPopWorker(WorkerId wid, Msg& out);
@@ -113,6 +115,8 @@ private:
     // 每个 Redis 分片一条队列：慢 SQL（MySQL 通道）与 Redis 互不影响，
     // 分片之间也互不影响（一个实例慢不会拖累其它实例的读）
     std::vector<std::unique_ptr<MsgQueue<Msg>>> redis_queues_;
+    std::unique_ptr<MsgQueue<Msg>> mysql_control_queue_;
+    std::vector<std::unique_ptr<MsgQueue<Msg>>> redis_control_queues_;
 
     Wakeup net_wakeup_;
 };

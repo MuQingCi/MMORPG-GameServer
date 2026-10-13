@@ -17,6 +17,7 @@ inline bool LessLoaded(size_t a, size_t b) { return a < b; }
 MsgBus::MsgBus(size_t numWorkers, size_t redisShards)
     : net_queue_(std::make_unique<MsgQueue<Msg>>())
     , mysql_queue_(std::make_unique<MsgQueue<Msg>>())
+    , mysql_control_queue_(std::make_unique<MsgQueue<Msg>>())
 {
     if (numWorkers == 0)
         numWorkers = 1;  // 至少一个逻辑线程，否则后面取模会除零
@@ -29,7 +30,10 @@ MsgBus::MsgBus(size_t numWorkers, size_t redisShards)
 
     redis_queues_.reserve(redisShards);
     for (size_t i = 0; i < redisShards; ++i)
+    {
         redis_queues_.emplace_back(std::make_unique<MsgQueue<Msg>>());
+        redis_control_queues_.emplace_back(std::make_unique<MsgQueue<Msg>>());
+    }
 }
 
 MsgBus::~MsgBus() = default;
@@ -146,6 +150,24 @@ DispatchResult MsgBus::sendToDb(Msg m)
     if (!ok)
         LOG_WARNING << "sendToDb: redis queue full, shard=" << shard;
     return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+}
+
+DispatchResult MsgBus::sendToDbControl(Msg m)
+{
+    if (!m.head.taskId || m.head.srcWorkerId >= numWorker() ||
+        (m.head.dbControl != 1 && m.head.dbControl != 2)) return DispatchResult::kInvalidMessage;
+    if (m.head.msgType == MSGTYPE_DB_CONTROL_MYSQL)
+        return mysql_control_queue_->try_push(std::move(m)) ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+    if (m.head.msgType != MSGTYPE_DB_CONTROL_REDIS) return DispatchResult::kInvalidMessage;
+    if (m.head.dbShard >= redis_control_queues_.size()) return DispatchResult::kInvalidTarget;
+    const auto shard = m.head.dbShard;
+    return redis_control_queues_[shard]->try_push(std::move(m)) ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+}
+
+bool MsgBus::tryPopDbControl(bool redis, uint16_t shard, Msg& out)
+{
+    if (!redis) return mysql_control_queue_->try_pop(out);
+    return shard < redis_control_queues_.size() && redis_control_queues_[shard]->try_pop(out);
 }
 
 bool MsgBus::tryPopWorker(WorkerId wid, Msg& out)

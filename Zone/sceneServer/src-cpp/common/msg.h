@@ -71,6 +71,9 @@ enum MsgType : uint16_t
     // 数据库：Redis 通道
     MSGTYPE_DB_TASK_REDIS   = 11,
     MSGTYPE_DB_RESULT_REDIS = 12,
+    MSGTYPE_DB_CONTROL_MYSQL = 13,
+    MSGTYPE_DB_CONTROL_REDIS = 14,
+    MSGTYPE_DB_STATUS = 15,
 
     //Service
     MSGTYPE_SERVICE     = 100
@@ -97,6 +100,9 @@ inline const char* MsgTypeName(uint16_t t)
         case MSGTYPE_RELOAD:          return "RELOAD";
         case MSGTYPE_DB_TASK_REDIS:   return "DB_TASK_REDIS";
         case MSGTYPE_DB_RESULT_REDIS: return "DB_RESULT_REDIS";
+        case MSGTYPE_DB_CONTROL_MYSQL: return "DB_CONTROL_MYSQL";
+        case MSGTYPE_DB_CONTROL_REDIS: return "DB_CONTROL_REDIS";
+        case MSGTYPE_DB_STATUS: return "DB_STATUS";
         case MSGTYPE_SERVICE:         return "SERVICE";
         default:                      return "UNKNOWN";
     }
@@ -162,8 +168,11 @@ namespace Method
 struct MsgHead
 {
     uint64_t taskId = 0; // Process-local DB delivery identity, independent of Lua ctx.
+    uint8_t dbControl = 0; // 1=result applied ACK, 2=status query
+
     ClientData clientBinding;
     bool hasClientBinding = false;
+
     uint16_t msgType = MsgType::MSGTYPE_NONE;
 
     // 模块id,方法id--用于逻辑线程查路由并分发
