@@ -12,9 +12,7 @@
  * @brief 玩家背包（属于某个玩家 Actor，只被其归属逻辑线程访问，因此内部无锁）
  *
  * 数据结构：itemId -> {count, slot}
- *   - 旧实现用 unordered_map<Item, uint8_t>，key 只比 id_，值是 uint8_t（上限 255），
- *     且 viewBag 返回 std::set<std::string&, size_t>（引用做 key，编译不过）；
- *   - 现在用 itemId 做 key、数量 uint16、并显式记录槽位，语义与容量都明确。
+ *   - 用 itemId 做 key、数量 uint16、并显式记录槽位，语义与容量都明确。
  */
 class Bag
 {
@@ -37,10 +35,13 @@ public:
 
     size_t capacity() const { return capacity_; }
     size_t used() const { return items_.size(); }
+    uint32_t nextSlot() const { return nextSlot_; }
+    // 加载固定持久状态，先校验再替换当前背包。
+    bool restore(size_t capacity, uint32_t nextSlot, const std::vector<ItemStack>& items);
 
 private:
     size_t capacity_ = 64;
-    uint16_t nextSlot_ = 0;
+    uint32_t nextSlot_ = 0;
     std::unordered_map<uint32_t, ItemStack> items_;
 };
 

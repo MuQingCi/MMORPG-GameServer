@@ -4,10 +4,14 @@
 
 #include <algorithm>
 #include <utility>
+#include <stdexcept>
+#include <unordered_set>
 
 Bag::Bag(size_t capacity)
     : capacity_(capacity == 0 ? 1 : capacity)
 {
+    if (capacity_ > 65536) 
+        throw std::invalid_argument("bag capacity exceeds slot range");
 }
 
 Bag::~Bag() = default;
@@ -40,7 +44,7 @@ bool Bag::addItem(uint32_t itemId, uint16_t num)
         return true;
     }
 
-    if (items_.size() >= capacity_)
+    if (items_.size() >= capacity_ || nextSlot_ >= 65536)
     {
         LOG_WARNING << "bag is full, capacity=" << capacity_ << " itemId=" << itemId;
         return false;
@@ -49,8 +53,9 @@ bool Bag::addItem(uint32_t itemId, uint16_t num)
     ItemStack st;
     st.itemId = itemId;
     st.count = num;
-    st.slot = nextSlot_++;
+    st.slot = static_cast<uint16_t>(nextSlot_);
     items_.emplace(itemId, st);
+    ++nextSlot_;
     return true;
 }
 
@@ -79,4 +84,21 @@ void Bag::clear()
 {
     items_.clear();
     nextSlot_ = 0;
+}
+
+bool Bag::restore(size_t capacity, uint32_t nextSlot, const std::vector<ItemStack>& items)
+{
+    if (capacity == 0 || capacity > 65536 || nextSlot > 65536 || items.size() > capacity)
+        return false;
+    std::unordered_map<uint32_t, ItemStack> restored;
+    std::unordered_set<uint16_t> slots;
+    for (const auto& item : items) {
+        if (!item.itemId || !item.count || item.slot >= nextSlot ||
+            !slots.insert(item.slot).second || !restored.emplace(item.itemId, item).second)
+            return false;
+    }
+    items_.swap(restored);
+    capacity_ = capacity;
+    nextSlot_ = nextSlot;
+    return true;
 }

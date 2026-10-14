@@ -2,10 +2,12 @@
 #define CLEARMOON_PLAYER_H
 
 #include "player/bag.h"
+#include "player/playerSaveSnapshot.h"
 #include "base/gatewayPlayer.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 /**
@@ -46,11 +48,11 @@ public:
 
     // ---- 数值 ----
     uint16_t hp() const { return hp_; }
-    void set_hp(uint16_t v) { hp_ = v; }
+    void set_hp(uint16_t v);
     void modifyHp(int32_t delta);
 
     uint16_t mp() const { return mp_; }
-    void set_mp(uint16_t v) { mp_ = v; }
+    void set_mp(uint16_t v);
     void modifyMp(int32_t delta);
 
     uint32_t gold() const { return gold_; }
@@ -63,32 +65,87 @@ public:
     void setPos(int32_t x, int32_t y, int32_t dir);
 
     // ---- 背包 ----
-    Bag& bag() { return bag_; }
     const Bag& bag() const { return bag_; }
+    bool addItem(uint32_t itemId, uint16_t count);
+    bool consumeItem(uint32_t itemId, uint16_t count);
+    void clearBag();
+
+    // 由所属线程可信业务提供计划，不能使用客户端自报价格。
+    struct EconomyRequest {
+        std::string operationId;
+        uint32_t cost = 0, itemId = 0;
+        uint16_t count = 0;
+        uint32_t rulesVersion = 0;
+        bool operator==(const EconomyRequest&) const = default;
+    };
+    bool reserveEconomy(const EconomyRequest& request);
+    bool economyPending() const { return economyReservation_.has_value(); }
+    // 预留时冻结候选状态。持久化层必须将本计划与
+    // 前序写入串行执行，不能将购买前的实时经济状态作为后续保存内容。
+    const PlayerSaveSnapshot* economyCandidate() const {
+        return economyReservation_ ? &economyReservation_->candidate : nullptr;
+    }
+    // 只有保存协调器取得持久成功证据后才能调用提交。
+    // 只有确认拒绝或回滚后才能取消预留，超时不能作为取消依据。
+    bool commitEconomy(const std::string& operationId);
+    bool cancelEconomy(const std::string& operationId);
+
+    uint64_t mutationRevision() const { return mutationRevision_; }
+    uint64_t persistedVersion() const { return persistedVersion_; }
+    uint64_t persistedRevision() const { return persistedRevision_; }
+
+    void confirmSave(uint64_t version, uint64_t revision) {
+        if (revision > mutationRevision_ || version < persistedVersion_) return;
+        persistedVersion_ = version;
+        persistedRevision_ = revision;
+        if (revision == mutationRevision_) clearDirty();
+    }
+    uint32_t sceneId() const { return sceneId_; }
+    void setSceneId(uint32_t sceneId);
+    PlayerSaveSnapshot freezeSaveSnapshot(uint64_t saveVersion, uint64_t lifecycleToken) const;
+    // 仅供加载使用，不能用于已活动的 Actor 或 AOI 实体。
+    // 保留 session 和 Actor epoch；无效输入不改变任何状态。
+    bool restoreSaveSnapshot(const PlayerSaveSnapshot& snapshot);
 
     // ---- 脏标记与落盘节奏 ----
     // 存档策略：定期快照 + 关键操作立即落库（仅在登出时保存是数据事故的常见来源）
     bool dirty() const { return dirty_; }
-    void markDirty() { dirty_ = true; }
+    void markDirty() { dirty_ = true; } // 仅用于保存调度，不表示数据发生新变化。
     void clearDirty() { dirty_ = false; }
 
     int64_t lastActiveMs() const { return lastActiveMs_; }
     void touch(int64_t nowMs) { lastActiveMs_ = nowMs; }
 
 private:
+    friend class PlayerService; // 暂存位置、通知 AOI，然后记录一次数据变化。
+    void ensureRevisionAvailable() const;
+    void recordMutation();
+
+    //玩家标识
     uint64_t playerId_ = 0;
     uint32_t epoch_ = 0;
     uint64_t session_ = 0;
     ClientData clientBinding_;
-
+    //数据
     uint16_t hp_ = 100;
     uint16_t mp_ = 50;
     uint32_t gold_ = 0;
     int32_t x_ = 0;
     int32_t y_ = 0;
     int32_t dir_ = 0;
+    uint32_t sceneId_ = 1;
+    uint64_t mutationRevision_ = 0;
+    uint64_t persistedVersion_ = 0;
+    uint64_t persistedRevision_ = 0;
 
     Bag bag_;
+
+    struct EconomyReservation {
+        EconomyRequest request;
+        PlayerSaveSnapshot candidate;
+        Bag preparedBag;
+    };
+    std::optional<EconomyReservation> economyReservation_;
 
     bool dirty_ = false;
     int64_t lastActiveMs_ = 0;
