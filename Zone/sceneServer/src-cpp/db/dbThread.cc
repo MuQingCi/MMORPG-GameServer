@@ -165,6 +165,7 @@ void DBThread::replyResult(DbResultLedger& ledger, const Msg& task, const dbv::D
 
     // 关键字段必须原样带回：ctx 用于找回 Lua 回调，epoch 用于校验 Actor 生命周期
     out.head.taskId = task.head.taskId;
+    out.head.dbShard = task.head.dbShard;
     out.head.ctx = task.head.ctx;
     out.head.epoch = task.head.epoch;
     out.head.playerId = task.head.playerId;
@@ -193,11 +194,25 @@ void DBThread::mysqlLoop()
     Msg task;
     while (!stop_.load(std::memory_order_acquire))
     {
+        processControls(mysqlResults_, false, 0);
+
+        //处理事务重试
+        mysqlRetries_.tick(NowMs(), [this](const dbv::DbTask& task, dbv::DbResult& result) {
+            ensureMysqlConnection();
+            mysql_.Execute(task,result);
+        }, [this](const Msg& task, const dbv::DbResult& result) {
+            replyResult(mysqlResults_,task,result);
+        });
+
         flushResults(mysqlResults_);
-        if (!mysqlResults_.hasCapacity()) {
+
+        //检查结果账本容量
+        if (!mysqlResults_.hasCapacity()) 
+        {
             std::this_thread::sleep_for(kWaitMs);
             continue;
         }
+        
         if (!m_bus_->waitPopDbMySql(task, kWaitMs))
         {
             // 空闲：借机维护连接（断开后由这里恢复，而不是每条 SQL 都重试）
@@ -206,18 +221,34 @@ void DBThread::mysqlLoop()
         }
 
         const auto admission = mysqlResults_.accept(task);
-        if (admission != DbResultLedger::Admission::New) {
+        if (admission != DbResultLedger::Admission::New) 
+        {
             if (admission == DbResultLedger::Admission::Conflict)
+            {
                 LOG_ERROR << "DB task identity conflict, taskId=" << task.head.taskId;
+
+                dbv::DbResult conflict; 
+                conflict.errcode = 1005;
+                conflict.errmsg = "taskId reused with different request";
+                conflict.classification = dbv::ResultClass::kIdentityConflict;
+
+                Msg reply = task; 
+                reply.head.msgType = MSGTYPE_DB_RESULT_MYSQL;
+                reply.body = conflict.Encode();
+                mysqlResults_.queueNotice(std::move(reply));
+            }
             flushResults(mysqlResults_);
             continue;
         }
 
+        //解码 DbTask
         dbv::DbTask dbTask;
         if (!dbv::DbTask::Decode(task.body, dbTask))
         {
             errors_.fetch_add(1, std::memory_order_relaxed);
+
             LOG_WARNING << "bad db task body, ctx=" << task.head.ctx;
+
             dbv::DbResult bad;
             bad.errcode = 1;
             bad.errmsg = "decode db task failed";
@@ -227,18 +258,24 @@ void DBThread::mysqlLoop()
 
         ensureMysqlConnection();
 
+        //执行 SQL 或事务
         dbv::DbResult res;
         mysql_.Execute(dbTask, res);
         if (res.errcode != 0)
         {
             errors_.fetch_add(1, std::memory_order_relaxed);
+
             LOG_WARNING << "mysql task failed, ctx=" << task.head.ctx << " err=" << res.errmsg;
         }
 
         mysqlTasks_.fetch_add(1, std::memory_order_relaxed);
-        replyResult(mysqlResults_, task, res);
+        if (!mysqlRetries_.schedule(task,dbTask,res,1,NowMs()))
+            //保存并回投结果
+            replyResult(mysqlResults_, task, res);
     }
 
+    // DB 停止前逻辑线程已完成排空；消费最后的结果 ACK。
+    processControls(mysqlResults_, false, 0);
     LOG_INFO << "mysql channel thread stopped";
 }
 
@@ -253,6 +290,7 @@ void DBThread::redisLoop(size_t shard)
     Msg task;
     while (!stop_.load(std::memory_order_acquire))
     {
+        processControls(s.results, true, static_cast<uint16_t>(shard));
         flushResults(s.results);
         if (!s.results.hasCapacity()) {
             std::this_thread::sleep_for(kWaitMs);
@@ -267,8 +305,15 @@ void DBThread::redisLoop(size_t shard)
 
         const auto admission = s.results.accept(task);
         if (admission != DbResultLedger::Admission::New) {
-            if (admission == DbResultLedger::Admission::Conflict)
+            if (admission == DbResultLedger::Admission::Conflict) {
                 LOG_ERROR << "Redis task identity conflict, taskId=" << task.head.taskId;
+                dbv::DbResult conflict; conflict.errcode = 2004;
+                conflict.errmsg = "taskId reused with different request";
+                conflict.classification = dbv::ResultClass::kIdentityConflict;
+                Msg reply = task; reply.head.msgType = MSGTYPE_DB_RESULT_REDIS;
+                reply.body = conflict.Encode();
+                s.results.queueNotice(std::move(reply));
+            }
             flushResults(s.results);
             continue;
         }
@@ -299,5 +344,22 @@ void DBThread::redisLoop(size_t shard)
         replyResult(s.results, task, res);
     }
 
+    processControls(s.results, true, static_cast<uint16_t>(shard));
     LOG_INFO << "redis shard " << shard << " thread stopped";
+}
+
+void DBThread::processControls(DbResultLedger& ledger, bool redis, uint16_t shard)
+{
+    Msg control;
+    // 限制控制消息处理量，避免状态查询流量阻塞业务执行。
+    for (size_t i = 0; i < 256 && m_bus_->tryPopDbControl(redis, shard, control); ++i) {
+        const bool found = ledger.handleControl(control);
+        if (control.head.dbControl == 2) {
+            Msg status = control;
+            status.head.msgType = MSGTYPE_DB_STATUS;
+            // 0=未知或记录未保留，1=处理中，2=已完成（同时重投结果）。
+            status.body.assign(1, static_cast<char>(found ? ledger.status(control.head.taskId) : 0));
+            ledger.queueNotice(std::move(status));
+        }
+    }
 }

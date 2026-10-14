@@ -3,6 +3,7 @@
 
 #include "db/dbConfig.h"
 #include "db/dbValue.h"
+#include "db/transactionExecutor.h"
 
 #include <cstdint>
 #include <memory>
@@ -24,7 +25,7 @@
  * 头文件里不出现 mysql.h：用 pimpl 把依赖隔离在 .cc，
  * 上层无需 -I/usr/include/mysql，也避免 MySQL 头里大量宏的污染。
  */
-class MySqlConnection
+class MySqlConnection : private dbv::TransactionBackend
 {
 public:
     MySqlConnection();
@@ -49,6 +50,12 @@ public:
     bool Reconnect();
 
 private:
+    void begin(dbv::DbResult& result) override;
+    void execute(const dbv::SqlStep& step, dbv::DbResult& result) override;
+    void commit(dbv::DbResult& result) override;
+    bool rollback() override;
+    void ExecuteStatement(const dbv::DbTask& task, dbv::DbResult& out);
+    bool inTransaction_ = false;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     MySqlConfig cfg_;

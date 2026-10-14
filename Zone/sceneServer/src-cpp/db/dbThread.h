@@ -5,6 +5,7 @@
 #include "common/msgBus.h"
 #include "db/dbConfig.h"
 #include "db/dbValue.h"
+#include "db/transactionRetries.h"
 #include "db/taskDelivery.h"
 #include "db/mysqlConnection.h"
 #include "db/redisConnection.h"
@@ -69,6 +70,7 @@ private:
 
     void mysqlLoop();
     void redisLoop(size_t shard);
+    void processControls(DbResultLedger& ledger, bool redis, uint16_t shard);
 
     // 把结果投回"发起它的逻辑线程"
     void replyResult(DbResultLedger& ledger, const Msg& task, const dbv::DbResult& res);
@@ -84,6 +86,7 @@ private:
 
     MySqlConnection mysql_;
     DbResultLedger mysqlResults_;
+    TransactionRetries mysqlRetries_;
     std::vector<std::unique_ptr<RedisShard>> redisShards_;
 
     std::atomic<bool> running_{false};

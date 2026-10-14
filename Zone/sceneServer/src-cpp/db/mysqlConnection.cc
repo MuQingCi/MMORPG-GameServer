@@ -22,6 +22,7 @@ void Fail(dbv::DbResult& out, int32_t code, const std::string& msg)
 {
     out.errcode = code;
     out.errmsg = msg;
+    out.classification = dbv::ResultClass::kFailure;
     out.data = dbv::Val::Nil();
 }
 }  // namespace
@@ -54,6 +55,7 @@ bool MySqlConnection::IsConnected() const
 
 void MySqlConnection::Close()
 {
+    inTransaction_ = false;
 #if defined(SCENE_HAS_MYSQL)
     if (impl_->conn != nullptr)
     {
@@ -114,9 +116,93 @@ bool MySqlConnection::Reconnect()
 
 void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
 {
+    //完整事务任务
+    if (task.kind == 4 || task.kind == 5) 
+    {
+        out = dbv::executeTransaction(task, *this);
+        return;
+    }
+    //单条任务
+    ExecuteStatement(task, out);
+}
+
+void MySqlConnection::begin(dbv::DbResult& result)
+{
+    result = {};
+#if defined(SCENE_HAS_MYSQL)
+    if (!impl_->conn) 
+    {
+        Fail(result, kErrNotConnected, "mysql not connected; transaction not started");
+        result.classification = dbv::ResultClass::kRetryable;
+        return;
+    }
+    if (inTransaction_) 
+    {
+        Fail(result, kErrBadTask, "nested transaction rejected");
+        return;
+    }
+    if (::mysql_query(impl_->conn, "START TRANSACTION") != 0) {
+        result.nativeError = ::mysql_errno(impl_->conn);
+        Fail(result, kErrExecute, ::mysql_error(impl_->conn));
+        if (result.nativeError == 2006 || result.nativeError == 2013) Close();
+        return;
+    }
+    inTransaction_ = true;
+#else
+    Fail(result, kErrNotConnected, "mysql support not compiled in");
+#endif
+}
+
+void MySqlConnection::execute(const dbv::SqlStep& step, dbv::DbResult& result)
+{
+    dbv::DbTask statement; statement.kind = step.kind; statement.args = step.args;
+    ExecuteStatement(statement, result);
+}
+
+void MySqlConnection::commit(dbv::DbResult& result)
+{
+    result = {};
+#if defined(SCENE_HAS_MYSQL)
+    if (!impl_->conn || !inTransaction_) 
+    {
+        Fail(result, kErrExecute, "transaction connection lost before commit");
+        result.classification = dbv::ResultClass::kOutcomeUnknown;
+        return;
+    }
+    if (::mysql_commit(impl_->conn) != 0) 
+    {
+        result.nativeError = ::mysql_errno(impl_->conn);
+        Fail(result, kErrExecute, ::mysql_error(impl_->conn));
+        // 即使后续清理成功，也绝不重试结果未知的 COMMIT。
+        result.classification = dbv::ResultClass::kOutcomeUnknown;
+        Close();
+        return;
+    }
+    inTransaction_ = false;
+#else
+    Fail(result, kErrNotConnected, "mysql support not compiled in");
+#endif
+}
+
+bool MySqlConnection::rollback()
+{
+#if defined(SCENE_HAS_MYSQL)
+    if (!impl_->conn) return false;
+    if (!inTransaction_) return true;
+    if (::mysql_rollback(impl_->conn) != 0) { Close(); return false; }
+    inTransaction_ = false;
+    return true;
+#else
+    return false;
+#endif
+}
+
+void MySqlConnection::ExecuteStatement(const dbv::DbTask& task, dbv::DbResult& out)
+{
     out = dbv::DbResult{};
 
 #if !defined(SCENE_HAS_MYSQL)
+    (void)task;
     Fail(out, kErrNotConnected, "mysql support not compiled in");
     return;
 #else
@@ -147,8 +233,15 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
     if (::mysql_stmt_prepare(stmt, sql.c_str(), static_cast<unsigned long>(sql.size())) != 0)
     {
         const std::string err = ::mysql_stmt_error(stmt);
+        out.nativeError = ::mysql_stmt_errno(stmt);
         ::mysql_stmt_close(stmt);
         Fail(out, kErrPrepare, err);
+        return;
+    }
+
+    if (::mysql_stmt_param_count(stmt) != task.args.size() - 1) {
+        ::mysql_stmt_close(stmt);
+        Fail(out, kErrBadTask, "SQL placeholder count mismatch");
         return;
     }
 
@@ -170,6 +263,7 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
     if (paramCount > 0 && ::mysql_stmt_bind_param(stmt, paramBinds.data()) != 0)
     {
         const std::string err = ::mysql_stmt_error(stmt);
+        out.nativeError = ::mysql_stmt_errno(stmt);
         ::mysql_stmt_close(stmt);
         Fail(out, kErrPrepare, "bind param failed: " + err);
         return;
@@ -184,6 +278,11 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
         if (eno == 2006 || eno == 2013)
             Close();
         Fail(out, kErrExecute, err);
+        out.nativeError = eno;
+        if (eno == 2006 || eno == 2013)
+            out.classification = dbv::ResultClass::kOutcomeUnknown;
+        else if (inTransaction_ && (eno == 1213 || eno == 1205))
+            out.classification = dbv::ResultClass::kRetryable;
         return;
     }
 
@@ -204,6 +303,7 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
     if (meta == nullptr)
     {
         const std::string err = ::mysql_stmt_error(stmt);
+        out.nativeError = ::mysql_stmt_errno(stmt);
         ::mysql_stmt_close(stmt);
         Fail(out, kErrFetch, "no result metadata: " + err);
         return;
@@ -250,6 +350,7 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
     if (::mysql_stmt_bind_result(stmt, colBinds.data()) != 0)
     {
         const std::string err = ::mysql_stmt_error(stmt);
+        out.nativeError = ::mysql_stmt_errno(stmt);
         ::mysql_free_result(meta);
         ::mysql_stmt_close(stmt);
         Fail(out, kErrFetch, "bind result failed: " + err);
@@ -265,6 +366,7 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
         if (rc != 0 && rc != MYSQL_DATA_TRUNCATED)
         {
             const std::string err = ::mysql_stmt_error(stmt);
+            out.nativeError = ::mysql_stmt_errno(stmt);
             ::mysql_free_result(meta);
             ::mysql_stmt_close(stmt);
             Fail(out, kErrFetch, err);
@@ -299,8 +401,14 @@ void MySqlConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
                 one.buffer = big.data();
                 one.buffer_length = static_cast<unsigned long>(big.size());
                 one.length = &realLen;
-                if (::mysql_stmt_fetch_column(stmt, &one, i, 0) == 0)
-                    text.assign(big.data(), realLen);
+                if (::mysql_stmt_fetch_column(stmt, &one, i, 0) != 0) {
+                    const auto eno = ::mysql_stmt_errno(stmt);
+                    const std::string err = ::mysql_stmt_error(stmt);
+                    ::mysql_free_result(meta); ::mysql_stmt_close(stmt);
+                    Fail(out, kErrFetch, err); out.nativeError = eno;
+                    return;
+                }
+                text.assign(big.data(), realLen);
             }
             else
             {
