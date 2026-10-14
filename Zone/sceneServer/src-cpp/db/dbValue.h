@@ -46,19 +46,37 @@ struct Val {
 };
 
 // DB任务
+struct SqlStep {
+  uint8_t kind = 2; // 1=查询，2=执行；仅接受可信的参数化数据操作语句。
+  std::vector<std::string> args;
+  int64_t expectedAffected = -1; // -1=不检查；其他值要求影响行数精确匹配。
+  bool checkData = false;
+  Val expectedData;
+};
 struct DbTask {
   // 1 = MySQL select(返回行), 2 = MySQL exec(返回[影响行,自增id]), 3 = Redis 命令
   uint8_t kind = 1;
   std::vector<std::string> args;  // select/exec: args[0]=sql,args[1..]=占位参数; redis:整条命令数组
+  // 4=显式完整事务，5=玩家完整快照事务。
+  std::vector<SqlStep> steps;
+  std::vector<SqlStep> verification; // 快照重放时精确核对持久值。
+  uint64_t playerId = 0, saveVersion = 0, capturedRevision = 0, saveLifecycleToken = 0;
   std::string Encode() const;
   static bool Decode(const std::string& body, DbTask& out);
 };
 
 // DB结果
+enum class ResultClass : uint8_t {
+  kSuccess, kFailure, kRetryable, kOutcomeUnknown, kIdentityConflict,
+  kSuperseded, kBusinessRejected, kVersionConflict
+};
 struct DbResult {
   int32_t errcode = 0;      // 0 成功
   std::string errmsg;       // 失败原因
   Val data;                 // 结果树
+  ResultClass classification = ResultClass::kSuccess;
+  uint32_t nativeError = 0;
+  uint64_t playerId = 0, saveVersion = 0, capturedRevision = 0, saveLifecycleToken = 0;
   std::string Encode() const;
   static bool Decode(const std::string& body, DbResult& out);
 };

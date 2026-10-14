@@ -1,5 +1,7 @@
 #include "dbValue.h"
 #include "common/msg.h"
+#include <limits>
+#include <stdexcept>
 
 namespace dbv {
 
@@ -9,6 +11,15 @@ constexpr uint8_t kWireVersion = 1;      // 线格式版本
 constexpr int kMaxDepth = 64;            // 值树深度上限
 constexpr uint32_t kMaxErrMsg = 64 * 1024;
 constexpr uint32_t kMaxItems = 1u << 24;  // 数组元素/参数量上限
+constexpr uint32_t kMaxSteps = 65540;
+void PutU64(std::string& s, uint64_t value) {
+  for (unsigned i=0; i<8; ++i) s.push_back(static_cast<char>(value >> (i*8)));
+}
+uint64_t GetU64(const char* p) {
+  uint64_t value=0;
+  for (unsigned i=0; i<8; ++i) value |= uint64_t(static_cast<unsigned char>(p[i])) << (i*8);
+  return value;
+}
 }  // namespace
 
 static void EncodeValD(std::string& s, const Val& v, int depth) {
@@ -80,6 +91,31 @@ bool DecodeVal(const char*& p, const char* end, Val& v) {
 }
 
 std::string DbTask::Encode() const {
+  if (kind == 4 || kind == 5) {
+    if (steps.empty() || steps.size() > kMaxSteps || verification.size() > kMaxSteps)
+      throw std::invalid_argument("invalid transaction step count");
+    std::string s;
+    PutU16(s, kWireMagic); s.push_back(char(2)); s.push_back(char(kind));
+    PutU64(s, playerId); PutU64(s, saveVersion);
+    PutU64(s, capturedRevision); PutU64(s, saveLifecycleToken);
+    auto encode = [&](const std::vector<SqlStep>& list) {
+      PutU32(s, static_cast<uint32_t>(list.size()));
+      for (const auto& step : list) {
+        if (step.args.empty() || step.args.size() > 65536) throw std::invalid_argument("invalid SQL arguments");
+        s.push_back(char(step.kind)); PutI64(s, step.expectedAffected);
+        s.push_back(char(step.checkData));
+        PutU32(s, static_cast<uint32_t>(step.args.size()));
+        for (const auto& arg : step.args) {
+          if (arg.size() > 1024 * 1024) throw std::invalid_argument("SQL argument too long");
+          PutU32(s, static_cast<uint32_t>(arg.size())); s.append(arg);
+        }
+        EncodeVal(s, step.expectedData);
+      }
+    };
+    encode(steps); encode(verification);
+    if (s.size() > 32 * 1024 * 1024) throw std::invalid_argument("transaction too large");
+    return s;
+  }
   std::string s;
   PutU16(s, kWireMagic);
   s.push_back(char(kWireVersion));
@@ -98,11 +134,49 @@ bool DbTask::Decode(const std::string& body, DbTask& out) {
   const char* end = p + body.size();
   if (GetU16(p) != kWireMagic) return false;
   p += 2;
-  if (uint8_t(*p++) != kWireVersion) return false;
+  const auto version = uint8_t(*p++);
+  if (version == 2) {
+    if (body.size() > 32 * 1024 * 1024 || end - p < 33) return false;
+    DbTask decoded;
+    decoded.kind = uint8_t(*p++);
+    if (decoded.kind != 4 && decoded.kind != 5) return false;
+    decoded.playerId = GetU64(p); p += 8;
+    decoded.saveVersion = GetU64(p); p += 8;
+    decoded.capturedRevision = GetU64(p); p += 8;
+    decoded.saveLifecycleToken = GetU64(p); p += 8;
+    auto decode = [&](std::vector<SqlStep>& list) {
+      if (end - p < 4) return false;
+      const auto count = GetU32(p); p += 4;
+      if (count > kMaxSteps || static_cast<size_t>(end - p) < count * 15ULL) return false;
+      for (uint32_t i = 0; i < count; ++i) {
+        if (end - p < 14) return false;
+        SqlStep step; step.kind = uint8_t(*p++);
+        step.expectedAffected = GetI64(p); p += 8;
+        const auto check = uint8_t(*p++);
+        if ((step.kind != 1 && step.kind != 2) || check > 1 || step.expectedAffected < -1) return false;
+        step.checkData = check;
+        const auto argc = GetU32(p); p += 4;
+        if (!argc || argc > 65536 || static_cast<size_t>(end - p) < argc * 4ULL) return false;
+        for (uint32_t j = 0; j < argc; ++j) {
+          if (end - p < 4) return false;
+          const auto len = GetU32(p); p += 4;
+          if (len > 1024 * 1024 || static_cast<size_t>(end - p) < len) return false;
+          step.args.emplace_back(p, len); p += len;
+        }
+        if (!DecodeVal(p, end, step.expectedData)) return false;
+        list.push_back(std::move(step));
+      }
+      return true;
+    };
+    if (!decode(decoded.steps) || decoded.steps.empty() || !decode(decoded.verification) || p != end) return false;
+    out = std::move(decoded); return true;
+  }
+  if (version != kWireVersion) return false;
+  out = DbTask{};
   out.kind = uint8_t(*p++);
   uint32_t n = GetU32(p);
   p += 4;
-  if (n > kMaxItems) return false;
+  if (n > kMaxItems || static_cast<size_t>(end - p) < n * 4ULL) return false;
   out.args.clear();
   out.args.reserve(n);
   for (uint32_t i = 0; i < n; ++i) {
@@ -119,11 +193,16 @@ bool DbTask::Decode(const std::string& body, DbTask& out) {
 std::string DbResult::Encode() const {
   std::string s;
   PutU16(s, kWireMagic);
-  s.push_back(char(kWireVersion));
+  s.push_back(char(3));
   PutU32(s, (uint32_t)errcode);  // errcode 改 u32, 避免负码/大码截断
   PutU32(s, (uint32_t)errmsg.size());
   s.append(errmsg);
   EncodeVal(s, data);
+  s.push_back(char(errcode != 0 && classification == ResultClass::kSuccess
+                   ? ResultClass::kFailure : classification));
+  PutU32(s, nativeError);
+  PutU64(s, playerId); PutU64(s, saveVersion);
+  PutU64(s, capturedRevision); PutU64(s, saveLifecycleToken);
   return s;
 }
 
@@ -133,7 +212,9 @@ bool DbResult::Decode(const std::string& body, DbResult& out) {
   const char* end = p + body.size();
   if (GetU16(p) != kWireMagic) return false;
   p += 2;
-  if (uint8_t(*p++) != kWireVersion) return false;
+  const uint8_t version = uint8_t(*p++);
+  if (version != 1 && version != 2 && version != 3) return false;
+  out = DbResult{};
   out.errcode = (int32_t)GetU32(p);
   p += 4;
   uint32_t elen = GetU32(p);
@@ -142,6 +223,19 @@ bool DbResult::Decode(const std::string& body, DbResult& out) {
   out.errmsg.assign(p, elen);
   p += elen;
   if (!DecodeVal(p, end, out.data)) return false;
+  out.classification = out.errcode == 0 ? ResultClass::kSuccess : ResultClass::kFailure;
+  if (version >= 2) {
+    if (p == end) return false;
+    const auto value = static_cast<uint8_t>(*p++);
+    if (value > static_cast<uint8_t>(ResultClass::kVersionConflict)) return false;
+    out.classification = static_cast<ResultClass>(value);
+  }
+  if (version == 3) {
+    if (end - p < 36) return false;
+    out.nativeError = GetU32(p); p += 4;
+    out.playerId = GetU64(p); p += 8; out.saveVersion = GetU64(p); p += 8;
+    out.capturedRevision = GetU64(p); p += 8; out.saveLifecycleToken = GetU64(p); p += 8;
+  }
   return p == end;  // 尾部不得有残留
 }
 
