@@ -71,6 +71,95 @@ flowchart TD
     G -->|恢复 requestId / ClientFrame Response| C
 ```
 
+### 场景服启动与网关注册时序
+
+场景服由 `SceneServer::start()` 负责按依赖顺序创建消息总线、网络线程、定时器、可选 DB 通道和逻辑 worker，最后由 `NetServer::connectTo()` 主动连接网关。网络连接建立后，场景服发送 `GateFrame` 握手；网关注册成功后才进入正常业务收发。
+
+```mermaid
+sequenceDiagram
+    participant M as SceneServer::start
+    participant B as MsgBus
+    participant N as NetServer
+    participant T as TimerThread
+    participant DB as DBThread
+    participant L as LogicThread
+    participant G as gatewayServer
+
+    M->>B: 创建 MsgBus(worker 数、Redis 分片数)
+    M->>N: start()
+    N->>N: 创建 epoll/eventfd；按配置决定本地监听
+    M->>T: start()
+    M->>DB: start()（dbEnable=true 时）
+    M->>L: 创建并 start() 每个逻辑 worker/Lua VM
+    M->>N: connectTo(gateway)
+    N->>G: TCP connect(privateConfig)
+    N->>G: GateFrame SYS/Handshake(serviceId=8, zoneId, sceneId)
+    G->>G: 校验白名单和 zoneId，注册后端连接
+    G-->>N: 后续允许业务帧（当前握手无协议 Ack）
+```
+
+### 玩家绑定与一条玩法请求的运行时序
+
+ONLINE/OFFLINE 和普通玩法请求都先经过网络线程的信封校验。网络线程只负责协议、连接索引和投递，不访问 `Player` 或 AOI；逻辑 worker 是玩家状态的唯一执行上下文。
+
+```mermaid
+sequenceDiagram
+    participant G as gatewayServer
+    participant N as NetServer
+    participant Q as MsgBus
+    participant L as LogicThread
+    participant P as Player/PlayerService
+    participant U as LuaEnv
+    participant O as AOI/WorkerPushSink
+
+    G->>N: GateFrame ONLINE
+    N->>N: Decode；Unpack GatewayPlayer envelope；GatewayClientIndex::Bind
+    N->>Q: sendToWorkerByPlayerId(MSGTYPE_CONN_DATA)
+    Q->>L: onNetMsg -> onPlayerBinding
+    L->>P: 创建/换绑 Player；记录 ClientData
+
+    G->>N: GateFrame 玩法请求(seq, playerId, binding, payload)
+    N->>N: 校验来源、sceneId、当前绑定和玩家世代
+    N->>Q: sendToWorkerByPlayerId(MSGTYPE_CONN_DATA)
+    Q->>L: onNetMsg
+    L->>L: RouteTable 校验（失败则 RetTip，不创建 Actor）
+    alt C++ 入口：进场/退出
+        L->>P: PlayerService::EnterScene / LeaveScene
+        P->>O: 更新 AOI 权威实体
+    else Lua 入口：移动/示例路径
+        L->>U: LuaEnv::DispatchC2S
+        U->>P: player.move 等绑定调用
+        P->>O: 地图校验并更新 AOI
+    end
+    L->>Q: sendToNet(MSGTYPE_SEND，保留 seq/playerId/module/method)
+    Q->>N: processBusMsg -> sendTo
+    N-->>G: GateFrame Response/Push
+```
+
+### 断链和 OFFLINE 清理时序
+
+内部 TCP 连接断开本身不等于某个玩家下线。只有带完整绑定信封的 OFFLINE，或网络线程枚举该网关连接上的全部绑定后逐玩家生成的离线通知，才会进入玩家生命周期处理。
+
+```mermaid
+sequenceDiagram
+    participant G as gatewayServer
+    participant N as NetServer
+    participant I as GatewayClientIndex
+    participant Q as MsgBus
+    participant L as LogicThread
+    participant P as PlayerPersistence/AOI
+
+    G-xN: GateFrame 链路断开
+    N->>I: Close(connection)
+    I-->>N: 返回该连接上的全部有效 ClientData
+    loop 每个绑定玩家
+        N->>Q: 投递 OFFLINE；队列满则进入 pendingClientNotifications_
+        Q->>L: onPlayerBinding(OFFLINE)
+        L->>P: LeaveScene；执行最终快照/清理流程
+    end
+    N->>N: 清理连接、sessionWorker 和网络资源
+```
+
 `Player::session()` 是场景服与网关的内部连接 session；信封中的 `clientSession` 是网关客户端会话。两者不能互换。网络发送入队成功不代表客户端已经收到，ONLINE 也没有场景准入成功的含义。
 
 网关从已鉴权会话写入 `playerId`、内部 `seq` 和目标服务号；场景服接收业务帧并回复到原连接。网关要求普通响应保持原请求的 `seq/playerId/module/method`，才能按回程路由还原客户端 `requestId`。详见 `Zone/gatewayServer/README.md` 与 `Zone/PROTOCOL.md`。

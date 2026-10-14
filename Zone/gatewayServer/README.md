@@ -49,6 +49,73 @@ flowchart LR
 
 主 `baseLoop` 管理监听与连接索引，连接 IO 回调在所属事件循环处理。两类连接使用不同解码入口，不能通过在客户端端口发送后端握手来注册服务。
 
+### 网关启动、注册与请求回程时序
+
+时序图对应 `GatewayDispatcher::OnClientConnected`、`OnBackendConnected`、`OnClientMessage`、`OnBackendMessage` 以及 `ServiceRegistry`、`ClientSessionTable`、`ReturnRouteTable` 的当前职责。网关不会等待后端主动来取请求；后端连接建立后由后端先发送握手，客户端请求才可以被转发。
+
+```mermaid
+sequenceDiagram
+    participant S as scene/chat/global
+    participant A as private Acceptor
+    participant R as ServiceRegistry
+    participant C as Client
+    participant P as public Acceptor
+    participant D as GatewayDispatcher
+    participant T as ClientSessionTable
+    participant Q as ReturnRouteTable
+
+    S->>A: TCP connect(privateConfig)
+    A->>D: OnBackendConnected(conn)
+    S->>D: GateFrame SYS/Handshake
+    D->>D: 校验 magic、srcServiceID、seq/playerId/retrFlag
+    D->>R: Bind(connName, serviceId, zoneId, sceneId)
+    R-->>D: 注册成功；同 serviceId 的旧连接被替换
+
+    C->>P: TCP connect(publicConfig)
+    P->>D: OnClientConnected(conn)
+    D->>T: Create(conn, defaultDstService)
+    C->>D: ClientFrame Control/Auth
+    D->>T: Bind(sessionId, playerId, dstService)
+    D-->>C: ClientFrame AuthAck
+
+    C->>D: ClientFrame Request(requestId, module/method/body)
+    D->>T: Get(sessionId)
+    D->>R: GetByService(dstService)
+    D->>Q: Add(internalSeq -> session/request/epoch/context)
+    D->>S: GateFrame Request(seq=internalSeq, playerId)
+    S-->>D: GateFrame Response(seq=internalSeq)
+    D->>Q: Take(internalSeq)
+    D-->>C: ClientFrame Response(requestId)
+```
+
+### 玩家绑定与断开清理时序
+
+场景绑定通知属于网关内部的 `module=200` 消息，不是客户端可以直接发送的业务请求。网关在鉴权、服务绑定或场景请求前发送幂等 ONLINE；客户端连接关闭时清理会话和回程路由，并向场景服发送精确的 OFFLINE 通知。通知发送成功不等于场景逻辑 worker 已经应用。
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant D as GatewayDispatcher
+    participant S as sceneServer
+    participant W as Scene LogicThread
+
+    C->>D: Auth / BindService / 场景 Request
+    D->>D: ClientSessionTable 取得 playerId、clientEpoch、gatewayId
+    D->>S: GateFrame module=200, method=ONLINE, seq=0
+    D->>S: GateFrame 绑定信封 + 业务 Request
+    S->>W: 按 playerId 投递 ONLINE
+    S->>W: 按 playerId 投递业务消息
+    W->>W: 创建或换绑 Player；普通业务不隐式创建 Actor
+
+    C-xD: TCP 连接断开
+    D->>D: NotifySceneBinding(OFFLINE)
+    D->>D: ClientSessionTable::Erase
+    D->>D: ReturnRouteTable::EraseBySession
+    D->>S: GateFrame module=200, method=OFFLINE, seq=0
+    S->>W: 精确匹配 binding 后投递离线通知
+    W->>W: 清理 Player/AOI 或执行最终保存流程
+```
+
 ### 消息定义
 
 客户端帧 v2 固定头 **32 B**，魔数 `0xC1EB`、版本 `2`（不兼容旧 v1 客户端）：
