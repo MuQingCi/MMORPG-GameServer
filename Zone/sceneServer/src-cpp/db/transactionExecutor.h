@@ -68,10 +68,15 @@ inline bool validStep(const SqlStep& step)
 inline DbResult executeTransaction(const DbTask& task, TransactionBackend& backend) 
 {
     DbResult out;
-    out.playerId = task.playerId; out.saveVersion = task.saveVersion;
-    out.capturedRevision = task.capturedRevision; out.saveLifecycleToken = task.saveLifecycleToken;
+    out.playerId = task.playerId; 
+    out.saveVersion = task.saveVersion;
+    out.capturedRevision = task.capturedRevision; 
+    out.saveLifecycleToken = task.saveLifecycleToken;
+
     auto fail = [&](ResultClass kind, const char* message) {
-        out.errcode = 1010; out.errmsg = message; out.classification = kind;
+        out.errcode = 1010; 
+        out.errmsg = message; 
+        out.classification = kind;
     };
 
     if ((task.kind != 4 && task.kind != 5) || task.steps.empty() || task.steps.size() > 65540 ||
@@ -80,10 +85,12 @@ inline DbResult executeTransaction(const DbTask& task, TransactionBackend& backe
         fail(ResultClass::kFailure, "invalid transaction request"); 
         return out;
     }
-    for (const auto& step : task.steps) if (!validStep(step)) 
-    {
-        fail(ResultClass::kFailure, "transaction accepts parameterized DML only"); return out;
-    }
+
+    for (const auto& step : task.steps) 
+        if (!validStep(step)) 
+        {
+            fail(ResultClass::kFailure, "transaction accepts parameterized DML only"); return out;
+        }
     for (const auto& step : task.verification) 
         if (!validStep(step) || step.kind != 1 || !step.checkData) 
         {
@@ -115,6 +122,7 @@ inline DbResult executeTransaction(const DbTask& task, TransactionBackend& backe
             out.classification = ResultClass::kOutcomeUnknown;
         }
     };
+    
     DbResult result;
     backend.begin(result);
     if (result.errcode) 

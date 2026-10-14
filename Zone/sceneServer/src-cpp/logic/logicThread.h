@@ -102,7 +102,7 @@ private:
     void onService(Msg& m);
     void advanceAoiRecovery(int64_t now);
 
-    void onIdle();             // 空闲内务：定期快照 / 空闲扫描
+    void onIdle();             // 空闲内务：仅执行空闲扫描
     void doReloadIfNeeded();   // 主循环安全点热更
     void drainPending();
 

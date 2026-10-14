@@ -103,8 +103,8 @@ public:
     bool handleControl(const Msg& message);
     uint8_t status(uint64_t taskId) const;
     
-    template<class Sender> 
-    void flush(Sender send, int64_t now = NowMs());
+    using Sender = std::function<DispatchResult(const Msg&)>;
+    void flush(const Sender& send, int64_t now = NowMs());
 private:
     size_t capacity_;
     std::unordered_map<uint64_t, Entry> entries_;

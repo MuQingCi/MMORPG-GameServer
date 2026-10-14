@@ -154,6 +154,14 @@ void LogicThread::run()
             //推进玩家载荷
             advancePlayerLoads();
 
+
+        // 定期快照：防宕机丢数据（"只在登出时保存"是数据事故的常见来源）
+        if (!draining_ && nowMs - lastFlushMs_ >= cfg_.flushIntervalMs)
+        {
+            lastFlushMs_ = nowMs;
+            flushDirtyPlayers();
+        }
+
         // AOI 周期更新
         aoiService_.OnTick(nowMs);
         advanceAoiRecovery(nowMs);
@@ -861,14 +869,8 @@ void LogicThread::onIdle()
 {
     const int64_t now = NowMs();
 
-    // 定期快照：防宕机丢数据（"只在登出时保存"是数据事故的常见来源）
-    if (now - lastFlushMs_ >= cfg_.flushIntervalMs)
-    {
-        lastFlushMs_ = now;
-        flushDirtyPlayers();
-    }
-
-    // 空闲会话扫描：这里只做统计与告警，踢人策略交给脚本/配置决定
+    // 周期快照在 run() 的每轮主循环中调度，不能依赖队列变空。
+    // 这里仅做空闲会话扫描：这里只做统计与告警，踢人策略交给脚本/配置决定。
     if (now - lastScanMs_ >= cfg_.scanIdleMs)
     {
         lastScanMs_ = now;

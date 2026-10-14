@@ -407,7 +407,7 @@ void TimerThread::fire(const TimerItem& item)
     m.head.ctx         = item.userTimerId;
     m.body.clear();
 
-    if (!m_bus_->sendToWorker(static_cast<uint32_t>(item.ownerWorkerId), std::move(m)))
+    if (!IsAccepted(m_bus_->sendToWorker(static_cast<uint32_t>(item.ownerWorkerId), std::move(m))))
         logDrop("fire", item.userTimerId);
 }
 

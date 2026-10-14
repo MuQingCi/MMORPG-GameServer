@@ -119,9 +119,14 @@ void SceneServer::stop()
         netServer_->stop();          // 不再有新消息进来
 
     for (auto& lt : logicThreads_)
+        if(lt) lt->requestDrain();
+
+    for (auto& lt : logicThreads_)
     {
-        if (lt)
+        if (lt) {
             lt->stop();
+            if(!lt->drainSucceeded()) LOG_ERROR << "worker shutdown not durably drained, worker=" << lt->threadId();
+        }
     }
 
     if (timerThread_)

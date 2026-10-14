@@ -225,8 +225,7 @@ uint8_t DbResultLedger::status(uint64_t taskId) const
     return it == entries_.end() ? 0 : (it->second.ready ? 2 : 1);
 }
 
-template<class Sender> 
-void DbResultLedger::flush(Sender send, int64_t now) 
+void DbResultLedger::flush(const Sender& send, int64_t now)
 {
     for (auto& [id, entry] : entries_) 
     {

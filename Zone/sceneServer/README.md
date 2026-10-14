@@ -200,6 +200,75 @@ GateFrame --> NetServer::onFrame --> MsgBus（玩家/会话所属 worker）
 
 无效路由会返回 `gs.RetTip{code=1001,text="route not found"}` 且不创建 Actor。关联请求的错误响应沿用原请求的 `module/method/seq/playerId`，因此能通过网关回程路由并恢复客户端 `requestId`；客户端需在该请求的 Response body 中识别 `gs.RetTip`（当前服务间协议没有显式错误类别）。无关联请求的 RetTip 通知仍使用 SYS 模块/方法。
 
+## 可靠 DB 任务投递与玩家持久化
+
+### 运行对象与所有权
+
+- `LogicThread` 是玩家状态和 `PlayerPersistence` 的唯一执行者。每个逻辑 worker 独占自己的 `PlayerManager`、Lua VM、持久化记录和 `PendingDbTasks`，其它线程不能直接修改 `Player`。
+- `PendingDbTasks` 位于逻辑 worker，负责在发送 DB 任务前登记固定请求、分配 `taskId`、处理消息队列背压，并保存尚未完成的任务。任务一旦被 DB 队列接受，后续超时不会重新执行原 SQL/Redis 命令。
+- `DBThread` 按 MySQL 通道和 Redis 分片消费任务。每条 DB 通道独占一个 `DbResultLedger`，记录请求身份、执行结果和 ACK 状态；账本只在所属 DB 线程访问。
+- `PlayerPersistence` 保存玩家快照的 active/queued 版本、捕获 revision、生命周期 token 和错误状态。它只负责快照串行化和保存责任，不直接执行 SQL；实际执行由 `DBThread` 完成。
+- `MsgBus` 只传递 `Msg`，不传递 `Player` 指针。DB 结果必须回到发起任务的 `srcWorkerId`，由所属 `LogicThread` 校验 epoch、taskId 和快照身份后应用。
+
+### 一次保存任务的生命周期
+
+```mermaid
+sequenceDiagram
+    participant L as LogicThread
+    participant P as PlayerPersistence
+    participant Q as PendingDbTasks
+    participant B as MsgBus
+    participant D as DBThread
+    participant R as DbResultLedger
+
+    L->>P: request(player, offline, submit)
+    P->>P: freezeSaveSnapshot(version, token)
+    P->>Q: submit(DB task with taskId)
+    Q->>Q: 先登记 PendingDispatch
+    Q->>B: sendToDb(task)
+    alt 队列背压
+        B-->>Q: kBackpressure
+        Q->>Q: 保留任务，稍后重试入队
+    else 入队成功
+        B-->>Q: kAccepted
+        Q->>Q: AwaitResult；不因超时重发 SQL
+        B->>D: DB task
+        D->>R: accept(task)；按 taskId 去重
+        D->>D: 执行 SQL/事务/Redis 命令
+        D->>R: finish(task, result)
+        R->>B: 回投 DB result
+        alt 结果回投背压
+            B-->>R: 未接受
+            R->>R: 保留结果并重试投递
+        else worker 接受结果
+            B->>L: DB result
+            L->>Q: complete(result)
+            L->>P: complete(taskId, result, livePlayer)
+            L->>B: 发送 ACK control
+            B->>D: DB ACK
+            D->>R: 标记 acknowledged，允许容量回收
+        end
+    end
+```
+
+关键不变量：
+
+1. `PendingDbTasks` 在第一次发送前登记请求；同一 `taskId` 的不同请求会被拒绝，避免身份冲突。
+2. “已入 DB 队列”与“DB 已执行”是两个状态；队列接受不等于事务成功，结果必须带回原始 `taskId`、`playerId`、`epoch`、`srcWorkerId`、模块和方法字段。
+3. DB 结果回投失败只重试结果，不重新执行原任务；重复结果只触发 ACK，不重复应用玩家或 Lua 业务逻辑。
+4. ACK 表示结果已经由 worker 接管并完成传递层确认，不替代业务层的保存结果校验。玩家保存还会校验 `saveVersion`、`capturedRevision` 和 `saveLifecycleToken`。
+5. 未知状态不能证明原 SQL 尚未提交，因此状态查询不会自动重放原任务；不确定结果由持久化协调器保留并阻塞后续不安全的保存。
+
+### 周期保存与停服排空
+
+周期保存由 `LogicThread::run()` 每轮主循环检查 `flushIntervalMs`，不依赖 `onIdle()`。因此逻辑 worker 即使持续处理消息、队列始终非空，也会扫描 dirty 玩家并创建快照任务。加载中的玩家、排空中的玩家和未启用持久化的实例不会生成普通周期保存。
+
+停服时的顺序是：停止接收新的业务生命周期 → 各逻辑 worker 进入排空 → 登出玩家并提交最终快照 → 等待 `PlayerPersistence`、`PendingDbTasks` 和结果 ACK 全部稳定，或达到 `shutdownDrainMs` → 最后停止 DB 线程。排空未完成时记录错误并将 worker 标记为未成功排空，不能把进程退出当作数据已经持久化。
+
+### 能力边界
+
+当前可靠性范围是**单进程内的有界内存任务登记、队列背压重试、DB 结果回投重试、幂等去重和 ACK 回收**。`PendingDbTasks` 与 `DbResultLedger` 不落盘，因此不提供进程崩溃后的任务恢复、跨重启去重、跨网关接管或 COMMIT 断链未知结果的自动对账。真实数据库验收也不等同于任意 MySQL/MariaDB 版本兼容性证明。
+
 ## 与 BackendServer 的消息流
 
 场景服本身是网关的后端服务：启动后从 `ZoneServer.gateways` 读取地址，**反向连接网关内网端口**，发送 `GateFrame(module=SYS, method=kHandshake)`。握手体是 `serviceId(u8)+zoneId(u32 小端)+sceneId(u32 小端)`，共 9 B；出站 `srcServiceID` 取 `SceneServer.serviceId`，示例为 `8` (`ServerID::kScene_1`)。网关检查区服 ID 与白名单，注册前不接受业务帧；同服务号重新注册会替换旧连接。
@@ -359,5 +428,24 @@ ctest --test-dir Zone/build-readme \
 ```
 
 `scene_tests` 包含玩家绑定、AOI 路由/服务/副本/视野状态及 Lua 绑定等单元测试；`scene_smoke_invalid_route` 通过临时配置验证真实网络帧经过总线和逻辑线程后，无效路由不会创建 Actor；`gateway_real_scene` 验证真实玩家主链路。进程测试不证明外部 DB、可靠持久化或完整客户端视野协议可用。
+
+### 真实数据库持久化验收
+
+持久化验收不会默认加入 CTest，也不会使用 `Zone/config/zoneConfig.yaml` 中的数据库。它由脚本创建临时 MariaDB/Redis、回环端口、独立数据库和受限账号，结束时停止本次进程并删除临时数据。需要本机提供 MariaDB 初始化/服务端/客户端工具以及 Redis 服务端。
+
+以下命令均以 `GameServer` 为根目录执行：
+
+```bash
+cmake -S Zone \
+  -B Zone/build-acceptance
+cmake --build Zone/build-acceptance \
+  --target sceneServer gatewayServer persistence_dao_probe -j2
+python3 Zone/sceneServer/tests/persistence_e2e.py \
+  Zone/build-acceptance
+```
+
+成功摘要写入 `Zone/build-acceptance/persistence_e2e_summary.txt`。当前已通过的真实检查包括：DAO 加载/回滚/同版本重放/旧版本拒绝，非默认出生点加载，离线保存后立即重新绑定加载，在线周期快照，优雅停服最终保存，场景服重启恢复，以及复用网关连接时另一玩家断开后的独立持久化。
+
+该验收覆盖正常时序和受控的队列/结果处理，不证明进程崩溃后内存任务不丢失、跨重启任务恢复、COMMIT 断链后的未知结果自动对账、跨网关接管、死锁不存在或所有 MySQL/MariaDB 版本兼容。若因 `SIGKILL` 或主机故障无法清理，应先确认残留进程属于本次临时目录，再手工清理，不能停止其他数据库实例。
 
 文档路径以 `GameServer` 为根目录；各段构建与测试命令默认从根目录执行。运行示例在子 shell 中切换工作目录，退出后不改变当前终端目录。`luaDir` 和相对日志路径基于工作目录，`mapPath` 相对路径基于场景配置目录。
