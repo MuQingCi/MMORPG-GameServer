@@ -471,12 +471,15 @@ static int l_player_bag_add(lua_State* L)
     if (p == nullptr)
         return PushFail(L, "player not in this worker");
 
-    const uint32_t itemId = (uint32_t)luaL_checkinteger(L, 2);
-    const uint16_t num = (uint16_t)luaL_checkinteger(L, 3);
-    if (!p->bag().addItem(itemId, num))
+    const lua_Integer rawItemId = luaL_checkinteger(L, 2);
+    const lua_Integer rawNum = luaL_checkinteger(L, 3);
+    if (rawItemId <= 0 || rawItemId > 0xFFFFFFFFLL || rawNum <= 0 || rawNum > 65535)
+        return PushFail(L, "invalid item id or count");
+    const uint32_t itemId = static_cast<uint32_t>(rawItemId);
+    const uint16_t num = static_cast<uint16_t>(rawNum);
+    if (!p->addItem(itemId, num))
         return PushFail(L, "bag add failed (full or bad args)");
 
-    p->markDirty();
     return PushOk(L);
 }
 
@@ -486,12 +489,15 @@ static int l_player_bag_consume(lua_State* L)
     if (p == nullptr)
         return PushFail(L, "player not in this worker");
 
-    const uint32_t itemId = (uint32_t)luaL_checkinteger(L, 2);
-    const uint16_t num = (uint16_t)luaL_checkinteger(L, 3);
-    if (!p->bag().reduceItem(itemId, num))
+    const lua_Integer rawItemId = luaL_checkinteger(L, 2);
+    const lua_Integer rawNum = luaL_checkinteger(L, 3);
+    if (rawItemId <= 0 || rawItemId > 0xFFFFFFFFLL || rawNum <= 0 || rawNum > 65535)
+        return PushFail(L, "invalid item id or count");
+    const uint32_t itemId = static_cast<uint32_t>(rawItemId);
+    const uint16_t num = static_cast<uint16_t>(rawNum);
+    if (!p->consumeItem(itemId, num))
         return PushFail(L, "bag consume failed (not enough)");
 
-    p->markDirty();
     return PushOk(L);
 }
 

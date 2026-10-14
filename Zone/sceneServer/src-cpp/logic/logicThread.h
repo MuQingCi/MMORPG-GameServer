@@ -5,6 +5,7 @@
 #include "common/msgBus.h"
 #include "db/redisKey.h"
 #include "db/taskDelivery.h"
+#include "player/playerPersistence.h"
 #include "lua/luaApiCtx.h"
 #include "service/aoi/aoiService.h"
 #include "logic/workerPushSink.h"
@@ -58,6 +59,8 @@ public:
         uint64_t luaInstructionLimit = 10000000;  // 0 = 关闭 Lua 指令预算
         // Redis 命名空间：脚本发的每条 Redis 命令都按它校验 key 前缀（见 db/redisKey.h）
         RedisNamespace redisNs;
+        bool persistenceEnabled = true; // 无 DB 的开发模式中显式关闭持久化。
+        int64_t shutdownDrainMs = 5000;
     };
 
     LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg, const AoiConfig& aoiCfg, const Map& map);
@@ -69,6 +72,9 @@ public:
 
     bool start();
     void stop();
+    void requestDrain();
+    bool drainFinished() const { return drainFinished_.load(); }
+    bool drainSucceeded() const { return drainSucceeded_.load(); }
 
     // 由 SceneServer 在 start 前注入（LuaEnv 未绑定时 timer API 会明确报错而不是野指针崩溃）
     void bindTimer(ITimerService* timer);
@@ -107,6 +113,8 @@ private:
     void sendToSession(uint64_t session, const RouteTable::Route* route, uint64_t seq,
                        uint64_t playerId, const std::string& body);
     void flushDirtyPlayers();
+    void advancePlayerLoads();
+    bool handlePlayerLoadResult(const Msg& message, const dbv::DbResult& result);
 
     std::thread thread_;
     uint32_t threadId_ = 0;
@@ -150,7 +158,28 @@ private:
 
     //可靠任务投递——待处理队列
     //根据state判断任务处于什么状态，用一个容器存储以减少同步数和产生空隙时间
+
+    //存储跨线程 DB 请求投递、等待结果和 ACK 状态
     PendingDbTasks pendingTasks_;
+
+    //存储已冻结的周期或离线保存状态
+    PlayerPersistence persistence_;
+
+    struct LoadState {
+        //触发本次加载的可信网关上线绑定消息
+        Msg binding;    
+        
+        uint64_t taskId = 0;
+        uint32_t actorEpoch = 0;
+        bool failed = false;
+        std::optional<Msg> enterRequest;
+    };
+    //存储当前 LogicThread 中“正在进行数据库加载、尚未完成正式上线”的玩家加载任务状态
+    std::unordered_map<uint64_t,LoadState> playerLoads_;
+    std::unordered_set<uint64_t> logoutPrepared_;
+    std::atomic<bool> drainRequested_{false}, drainFinished_{false}, drainSucceeded_{false};
+    int64_t drainDeadline_ = 0;
+    bool draining_ = false;
     bool submitDbTask(Msg task);
 };
 

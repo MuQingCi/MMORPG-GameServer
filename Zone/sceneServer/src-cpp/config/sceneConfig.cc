@@ -69,6 +69,7 @@ LogicThread::Config SceneConfig::MakeLogicConfig() const
     c.scanIdleMs = scanIdleMs;
     c.luaInstructionLimit = luaInstructionLimit;
     c.redisNs = RedisNs();
+    c.persistenceEnabled = zone.dbEnable;
     return c;
 }
 

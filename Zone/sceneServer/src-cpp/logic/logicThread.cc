@@ -23,17 +23,7 @@
 // 生成的协议头（由 proto/CMakeLists.txt 生成 gs.* 消息）
 #include "gameProto.pb.h"
 
-namespace
-{
-// 落库 SQL：必须幂等（超时重试一定会发生）
-// 生产上这属于 DAO 层的职责，这里给出最小可用版本作为占位与示例
-constexpr const char* kSavePlayerSql =
-    "INSERT INTO player(id,hp,mp,gold,pos_x,pos_y,dir,updated_at) VALUES(?,?,?,?,?,?,?,NOW()) "
-    "ON DUPLICATE KEY UPDATE hp=VALUES(hp),mp=VALUES(mp),gold=VALUES(gold),"
-    "pos_x=VALUES(pos_x),pos_y=VALUES(pos_y),dir=VALUES(dir),updated_at=NOW()";
 
-std::string I64ToStr(int64_t v) { return std::to_string(v); }
-}  // namespace
 
 
 /**
@@ -50,12 +40,12 @@ LogicThread::LogicThread(uint32_t threadId,
                          const Map& map)
                        : threadId_(threadId), 
                          cfg_(cfg),
-                          m_bus_(&bus),
+                         m_bus_(&bus),
                          players_(threadId),
                          workerPushSink_(bus, players_),
-                          aoiService_(threadId,aoiCfg,workerPushSink_,map,
+                         aoiService_(threadId,aoiCfg,workerPushSink_,map,
                               AoiServiceRouter::PublishHooks(threadId, bus.numWorker())),
-                          playerService_(players_, aoiService_, map)
+                         playerService_(players_, aoiService_, map)
 {
 }
 
@@ -96,18 +86,15 @@ bool LogicThread::start()
 
 void LogicThread::stop()
 {
-    if (!started_.exchange(false, std::memory_order_acq_rel))
-        return;
-
-    stopRequested_.store(true, std::memory_order_release);
-
-    // 投一条 SHUTDOWN 把阻塞在 waitPopWorker 的线程叫醒
-    Msg m;
-    m.head.msgType = MsgType::MSGTYPE_SHUTDOWN;
-    IsAccepted(m_bus_->sendToWorker(threadId_, std::move(m)));
-
+    if(started_.load()) 
+        requestDrain();
     if (thread_.joinable())
         thread_.join();
+}
+
+void LogicThread::requestDrain()
+{
+    drainRequested_.store(true);
 }
 
 void LogicThread::bindTimer(ITimerService* timer)
@@ -137,12 +124,59 @@ void LogicThread::run()
         // 安全点：热更只在"没有正在处理的消息"时发生
         doReloadIfNeeded();
 
-        //AOITick
         int64_t nowMs = NowMs();
+
+        //线程停止时且不处于排空中则置排空状态为true并规定排空截至时间，清空players和playerLoads
+        if(drainRequested_.load() && !draining_)
+        {
+            draining_=true;
+            drainDeadline_=nowMs+cfg_.shutdownDrainMs;
+            for(const auto& [id,state]:playerLoads_) 
+            { 
+                (void)state; 
+                players_.remove(id); 
+            }
+            playerLoads_.clear();
+        }
+
+        if(draining_) 
+        {
+            //对每个玩家调用玩家登出方法
+            std::vector<uint64_t> ids;
+            players_.forEach([&](const Player& p) { 
+                ids.push_back(p.id()); 
+                return true; });
+
+            for(auto id:ids) 
+                logoutPlayer(id);
+        } 
+        else 
+            //推进玩家载荷
+            advancePlayerLoads();
+
+        // AOI 周期更新
         aoiService_.OnTick(nowMs);
         advanceAoiRecovery(nowMs);
-        pendingTasks_.tick(nowMs, [this](const Msg& task) { return m_bus_->sendToDb(task); });
 
+        persistence_.tick([this](Msg task) { return submitDbTask(std::move(task)); });
+        pendingTasks_.tick(nowMs, [this](const Msg& task) { return m_bus_->sendToDb(task); });
+        pendingTasks_.tickControls(nowMs, [this](const Msg& control) { return m_bus_->sendToDbControl(control); });
+
+        if(draining_) 
+        {
+            //处于排空状态需要确保玩家清空和不存在待处理事件
+            const bool finished=players_.size()==0 && !persistence_.unsettled() && !pendingTasks_.unsettled();
+            if(finished || nowMs>=drainDeadline_) 
+            {
+                drainSucceeded_.store(finished);
+                drainFinished_.store(true);
+                if(!finished) 
+                    LOG_ERROR << "shutdown persistence drain incomplete, worker=" << threadId_;
+                break;
+            }
+        }
+
+        //取事件并消费
         Msg m;
         // 单段等待：队列空则最多阻塞 idleWaitMs，非空立即取出
         if (!m_bus_->waitPopWorker(threadId_, m,
@@ -152,14 +186,13 @@ void LogicThread::run()
             continue;
         }
 
-        if (m.head.msgType == MsgType::MSGTYPE_SHUTDOWN)
-            break;
+        if (m.head.msgType == MsgType::MSGTYPE_SHUTDOWN) { requestDrain(); continue; }
 
         handleMsg(m);
         handledMessages_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    drainPending();
+    started_.store(false);
     if (lua_)
         lua_->Shutdown();
     LOG_INFO << "logic thread stopped, worker=" << threadId_
@@ -183,6 +216,10 @@ void LogicThread::handleMsg(Msg& m)
         case MsgType::MSGTYPE_DB_RESULT_MYSQL:
         case MsgType::MSGTYPE_DB_RESULT_REDIS:
             onDbResult(m);
+            break;
+        case MSGTYPE_DB_STATUS:
+            if (pendingTasks_.observeStatus(m) && m.body[0] == 0)
+                LOG_WARNING << "DB task outcome unresolved, taskId=" << m.head.taskId;
             break;
 
         case MsgType::MSGTYPE_TIMER_FIRE:
@@ -232,33 +269,8 @@ bool LogicThread::logoutPlayer(uint64_t playerId)
     Player* p = players_.get(playerId);
     if(!p) return true;
 
-    // 顺序很重要：先落盘 -> 再取消定时器 -> 最后销毁 Actor
-    if (p->dirty())
-    {
-        dbv::DbTask task;
-        task.kind = 2;
-        task.args.push_back(kSavePlayerSql);
-        task.args.push_back(I64ToStr((int64_t)p->id()));
-        task.args.push_back(I64ToStr(p->hp()));
-        task.args.push_back(I64ToStr(p->mp()));
-        task.args.push_back(I64ToStr((int64_t)p->gold()));
-        task.args.push_back(I64ToStr(p->x()));
-        task.args.push_back(I64ToStr(p->y()));
-        task.args.push_back(I64ToStr(p->dir()));
-
-        Msg db;
-        db.head.msgType = MsgType::MSGTYPE_DB_TASK_MYSQL;
-        db.head.Module = Module::SYS;
-        db.head.playerId = p->id();
-        db.head.session = p->session();
-        db.head.epoch = p->epoch();
-        db.head.srcWorkerId = threadId_;   // 结果回来也只回到本线程（且不会进 Lua）
-        db.body = task.Encode();
-        submitDbTask(std::move(db));
-    }
-
     // 取消该玩家全部 Lua 定时器 + 通知脚本钩子
-    if (lua_)
+    if (lua_ && logoutPrepared_.insert(playerId).second)
         lua_->OnPlayerLogout(playerId);
 
     // 脚本钩子执行完仍需兜底离场。不能销毁 Player 后才生成 LEAVE。
@@ -266,12 +278,24 @@ bool LogicThread::logoutPlayer(uint64_t playerId)
         LOG_ERROR << "AOI leave failed; preserving actor, pid=" << playerId;
         return false;
     }
+    // 登出钩子执行后、Actor 销毁前冻结快照。固定数据
+    // 独立存活，直到数据库返回明确成功结果。
+    if (cfg_.persistenceEnabled && !persistence_.request(*p,true,
+            [this](Msg task) { return submitDbTask(std::move(task)); })) {
+        LOG_ERROR << "cannot retain final snapshot; preserving actor, pid=" << playerId;
+        return false;
+    }
     players_.remove(playerId);
+    logoutPrepared_.erase(playerId);
+    playerLoads_.erase(playerId);
     return true;
 }
 
 void LogicThread::onPlayerBinding(Msg& m)
 {
+    if(draining_) 
+        return;
+    //校验
     if(!m.head.hasClientBinding || !GatewayPlayer::Valid(m.head.clientBinding) ||
        m.head.clientBinding.playerId != m.head.playerId || m.head.session==0 || !m.body.empty()) 
         return;
@@ -281,11 +305,14 @@ void LogicThread::onPlayerBinding(Msg& m)
     const auto latest=latestClientBindings_.find(d.playerId);
     if(m.head.Method==GatewayPlayer::kOnline) 
     {
+        //有绑定记录
         if(latest!=latestClientBindings_.end()) 
         {
             const auto& old=latest->second;
+            //校验新旧客户端数据
             if(d.gatewayId!=old.gatewayId || d.sceneId!=old.sceneId || d.clientEpoch<old.clientEpoch) 
                 return;
+            //校验客户端世代
             if(d.clientEpoch==old.clientEpoch) 
             {
                 if(!p || !SameClientBinding(d,p->clientBinding()) || p->session()!=m.head.session) 
@@ -293,8 +320,48 @@ void LogicThread::onPlayerBinding(Msg& m)
                 return; // 重复上线不清空基线、不提升 Actor epoch。
             }
         }
+
+        //开启了持久化选项——将playerId → LoadState放入playerLoads_
+        if(cfg_.persistenceEnabled) 
+        {
+            //找旧加载状态
+            auto load=playerLoads_.find(d.playerId);
+            
+            //存在且绑定相似则直接返回
+            if(load!=playerLoads_.end() && SameClientBinding(load->second.binding.head.clientBinding,d) &&
+               load->second.binding.head.session==m.head.session) return;
+
+            //存在就确保新旧相等
+            if(load!=playerLoads_.end()) 
+            {
+                const auto& old=load->second.binding.head.clientBinding;
+                if(old.gatewayId!=d.gatewayId || old.sceneId!=d.sceneId || d.clientEpoch<=old.clientEpoch) 
+                    return;
+            }
+
+            if(!p || load!=playerLoads_.end()) 
+            {
+                if(load==playerLoads_.end() && playerLoads_.size()>=PlayerPersistence::kMaxPlayers) 
+                {
+                    LOG_ERROR << "player load capacity exhausted, pid=" << d.playerId;
+                    return;
+                }
+                if(p) 
+                    players_.renewEpoch(d.playerId);
+
+                //创建新状态
+                LoadState state; 
+                state.binding=m;
+                playerLoads_[d.playerId]=std::move(state);
+                advancePlayerLoads();
+                return;
+            }
+        }
+        // DB 禁用或已有正常 Player 时的其他逻辑
+        //获取玩家绑定的客户端世代
         const auto oldEpoch=p ? p->clientBinding().clientEpoch : 0;
         uint32_t actorEpoch;
+        //获取/创建玩家
         p=players_.getOrCreate(d.playerId,m.head.session,actorEpoch);
         if(!p) 
             return;
@@ -310,8 +377,20 @@ void LogicThread::onPlayerBinding(Msg& m)
             else 
                 aoiService_.OnPlayerOnline(d.playerId,d.gatewayId,d.clientEpoch);
         }
-    } else if(m.head.Method==GatewayPlayer::kOffline) 
-    {
+    } 
+    else if(m.head.Method==GatewayPlayer::kOffline) {
+        auto load=playerLoads_.find(d.playerId);
+        if(load!=playerLoads_.end() && SameClientBinding(load->second.binding.head.clientBinding,d) &&
+           load->second.binding.head.session==m.head.session) 
+        {
+            latestClientBindings_[d.playerId]=d;
+            // 加载中的 Actor 未进场且没有业务修改，不保存默认数据。
+            if(p && SameClientBinding(p->clientBinding(),d)) 
+                players_.remove(d.playerId);
+
+            playerLoads_.erase(load);
+            return;
+        }
         if(!p || p->session()!=m.head.session || !SameClientBinding(d,p->clientBinding())) 
             return;
         latestClientBindings_[d.playerId]=d;
@@ -323,6 +402,75 @@ void LogicThread::onPlayerBinding(Msg& m)
 Player* LogicThread::ensureActor(uint64_t playerId, uint64_t session, uint32_t& epochOut)
 {
     return players_.getOrCreate(playerId, session, epochOut);
+}
+
+void LogicThread::advancePlayerLoads()
+{
+    for(auto& [id,state]:playerLoads_) 
+    {
+        //加载失败/taskId == 0 /阻塞登录则跳过
+        if(state.failed || state.taskId || persistence_.blocksLogin(id)) 
+            continue;
+
+        //加载成功的则创建Player
+        uint32_t epoch=0;
+        auto* player=players_.getOrCreate(id,state.binding.head.session,epoch);
+        if(!player) 
+        { 
+            state.failed=true; 
+            continue; 
+        }
+        //创建成功就将client信息绑定到player并更新latestClientBindings_中的对应数据
+        player->set_clientBinding(state.binding.head.clientBinding);
+        latestClientBindings_[id]=state.binding.head.clientBinding;
+
+        Msg request;
+        request.head.msgType=MSGTYPE_DB_TASK_MYSQL;
+        request.head.playerId=id; 
+        request.head.epoch=epoch;
+        request.head.Module=Module::SYS; 
+        request.head.Method=Method::SYS_FLUSH;
+        request.head.taskId=PendingDbTasks::newTaskId();
+        request.body=PlayerSnapshotDao::buildLoad(id).Encode();
+
+        if(submitDbTask(request)) 
+        { 
+            state.taskId=request.head.taskId; 
+            state.actorEpoch=epoch; 
+        }
+    }
+}
+
+bool LogicThread::handlePlayerLoadResult(const Msg& message, const dbv::DbResult& result)
+{
+    auto it=playerLoads_.find(message.head.playerId);
+    if(it==playerLoads_.end() || it->second.taskId!=message.head.taskId) 
+        return false;
+
+    auto& state=it->second;
+    auto* player=players_.get(message.head.playerId);
+    if(!player || player->epoch()!=state.actorEpoch ||
+       !SameClientBinding(player->clientBinding(),state.binding.head.clientBinding)) 
+        return true;
+    
+    PlayerSaveSnapshot snapshot; std::string error;
+    if(!PlayerSnapshotDao::parseLoad(player->id(),result,snapshot,error) ||
+       snapshot.sceneId!=state.binding.head.clientBinding.sceneId || !player->restoreSaveSnapshot(snapshot)) 
+    {
+        state.failed=true;
+        LOG_ERROR << "player load failed, pid=" << message.head.playerId << " err=" << error;
+        if(state.enterRequest) 
+        { 
+            sendRetTip(*state.enterRequest,1010,"player load failed"); 
+            state.enterRequest.reset(); 
+        }
+        return true;
+    }
+    auto enter=std::move(state.enterRequest);
+    playerLoads_.erase(it);
+    if(enter) 
+        onNetMsg(*enter);
+    return true;
 }
 
 void LogicThread::sendRetTip(const Msg& request, int32_t code, const char* text)
@@ -363,13 +511,21 @@ void LogicThread::sendToSession(uint64_t session, const RouteTable::Route* route
 
 void LogicThread::onNetMsg(Msg& m)
 {
-    if(m.head.Module==GatewayPlayer::kModule) { onPlayerBinding(m); return; }
+    if(draining_) 
+        return;
+
+    //新玩家加载走这个分支
+    if(m.head.Module==GatewayPlayer::kModule) 
+    { 
+        onPlayerBinding(m); 
+        return; 
+    }
+
     const RouteTable::Route* route = RouteTable::FindC2S(m.head.Module, m.head.Method);
 
     // 顺序要求：先做路由校验，再创建 Actor
-    // 现在对无效路由直接 return：不创建 Actor、也不刷新活跃度
+    // 对无效路由直接 return：不创建 Actor、也不刷新活跃度
     uint32_t epoch = 0;
-
     if (route == nullptr)
     {
         LOG_WARNING << "worker " << threadId_ << " route not found, Module=" << m.head.Module
@@ -378,12 +534,37 @@ void LogicThread::onNetMsg(Msg& m)
         return;
     }
 
+    const auto loading=playerLoads_.find(m.head.playerId);
+    if(loading!=playerLoads_.end()) 
+    {
+        auto& state=loading->second;
+        if(!m.head.hasClientBinding || !SameClientBinding(m.head.clientBinding,state.binding.head.clientBinding) ||
+           m.head.session!=state.binding.head.session) 
+        { 
+            sendRetTip(m,1006,"stale loading session"); 
+            return; 
+        }
+
+        if(state.failed) 
+        { 
+            sendRetTip(m,1010,"player load failed"); 
+            return; 
+        }
+
+        if(m.head.Module==Module::PLAYER && m.head.Method==Method::PLAYER_ENTER_SCENE && !state.enterRequest)
+            state.enterRequest=m;
+        else 
+            sendRetTip(m,1009,"player loading or final save pending");
+        return;
+    }
+
     // 普通业务只使用已上线的当前绑定，不能隐式创建或重绑 Actor。
     if (m.head.playerId != 0)
     {
         Player* p = players_.get(m.head.playerId);
         if(!p || !m.head.hasClientBinding || p->session()!=m.head.session ||
-           !SameClientBinding(p->clientBinding(),m.head.clientBinding)) {
+           !SameClientBinding(p->clientBinding(),m.head.clientBinding)) 
+        {
             sendRetTip(m,1006,"player session is not online");
             return;
         }
@@ -410,7 +591,7 @@ void LogicThread::onNetMsg(Msg& m)
             const auto id = aoiService_.EntityOf(p->id());
             PlayerService::Result result = PlayerService::Result::kOk;
             if(!id || !aoiService_.IsEntityActive(*id))
-                result = playerService_.EnterScene(p->id(),0,0,0);
+                result = playerService_.EnterScene(p->id(),p->x(),p->y(),p->dir());
 
             gs::EnterSceneAck ack;
             if(result != PlayerService::Result::kOk) 
@@ -422,7 +603,9 @@ void LogicThread::onNetMsg(Msg& m)
                 for(const auto& ent : aoiService_.BuildOwnerSnapshot().ents)
                     if(ent.entityId == *entityId) 
                         ack.set_generation(ent.entityGeneration);
-                ack.set_x(p->x()); ack.set_y(p->y()); ack.set_dir(p->dir());
+                ack.set_x(p->x()); 
+                ack.set_y(p->y()); 
+                ack.set_dir(p->dir());
             }
             sendToSession(m.head.session,route,m.head.seq,m.head.playerId,ack.SerializeAsString());
             return;
@@ -476,8 +659,27 @@ void LogicThread::onDbResult(Msg& m)
         return;
     }
 
-    // Complete persistence delivery before Actor validation. Never rerun SQL on timeout.
-    if (m.head.taskId && !pendingTasks_.complete(m)) return;
+    // 在 Actor 校验前登记持久任务完成；绝不因超时重新执行 SQL。
+    if (m.head.taskId && !pendingTasks_.complete(m)) 
+    {
+        pendingTasks_.acknowledgeDuplicate(m);
+        pendingTasks_.tickControls(NowMs(), [this](const Msg& control) { 
+            return m_bus_->sendToDbControl(control); });
+        return;
+    }
+    // 在 Actor 处理前幂等登记完成结果；ACK 投递
+    if(handlePlayerLoadResult(m,res)) 
+        return;
+    // 在回调处理后的下一轮主循环尝试执行。
+
+    if (persistence_.owns(m.head.taskId)) 
+    {
+        if (!persistence_.complete(m.head.taskId,res,players_.get(m.head.playerId)))
+            LOG_ERROR << "persistence result identity mismatch, taskId=" << m.head.taskId;
+        else if (res.errcode || res.classification != dbv::ResultClass::kSuccess)
+            LOG_ERROR << "save blocked pending recovery, pid=" << m.head.playerId << " err=" << res.errmsg;
+        return;
+    }
 
     // 1. 先校验 Actor 生命周期：发起查询时可能已下线/Actor 已重建
     if (m.head.playerId != 0 && !players_.validateEpoch(m.head.playerId, m.head.epoch))
@@ -503,6 +705,8 @@ void LogicThread::onDbResult(Msg& m)
 
 void LogicThread::onTimer(Msg& m)
 {
+    if(draining_) 
+        return;
     if (m.head.Module == Module::TIMER && m.head.Method == Method::TIMER_LUA_FIRE)
     {
         // 逻辑层必须重新校验 Actor 是否还活着：TimerOp 里的 playerId/epoch是发起时刻的快照，不能当作"现在还存在"
@@ -684,49 +888,21 @@ void LogicThread::onIdle()
 
 void LogicThread::flushDirtyPlayers()
 {
-    if (players_.size() == 0)
+    if (!cfg_.persistenceEnabled) 
         return;
-
-    size_t saved = 0;
-    players_.forEach([&](Player& p) {
-        if (!p.dirty())
+    players_.forEach([&](Player& p) 
+    {
+        //若正在加载或正处于线程结束的排空状态则返回
+        if(playerLoads_.contains(p.id()) || draining_) 
             return true;
 
-        dbv::DbTask task;
-        task.kind = 2;   // exec
-        task.args.push_back(kSavePlayerSql);
-        task.args.push_back(I64ToStr((int64_t)p.id()));
-        task.args.push_back(I64ToStr(p.hp()));
-        task.args.push_back(I64ToStr(p.mp()));
-        task.args.push_back(I64ToStr((int64_t)p.gold()));
-        task.args.push_back(I64ToStr(p.x()));
-        task.args.push_back(I64ToStr(p.y()));
-        task.args.push_back(I64ToStr(p.dir()));
-
-        Msg db;
-        db.head.msgType = MsgType::MSGTYPE_DB_TASK_MYSQL;
-        db.head.Module = Module::SYS;
-        db.head.Method = Method::SYS_FLUSH;
-        db.head.playerId = p.id();
-        db.head.session = p.session();
-        db.head.epoch = p.epoch();
-        db.head.srcWorkerId = threadId_;
-        db.head.ctx = 0;              // 无 Lua 回调
-        db.body = task.Encode();
-
-        // Only clears the scheduling dirty bit after fixed task registration.
-        // This is NOT a persistence acknowledgment; save-version confirmation
-        // and database-error recovery remain the persistence layer's next step.
-        if (submitDbTask(std::move(db)))
-        {
-            p.clearDirty();
-            ++saved;
-        }
+        if (p.dirty() && !persistence_.request(p,false,
+                [this](Msg task) { 
+                    return submitDbTask(std::move(task)); 
+                }))
+            LOG_ERROR << "cannot retain player snapshot, pid=" << p.id();
         return true;
     });
-
-    if (saved > 0)
-        LOG_INFO << "worker " << threadId_ << " flushed " << saved << " players";
 }
 
 bool LogicThread::submitDbTask(Msg task)
