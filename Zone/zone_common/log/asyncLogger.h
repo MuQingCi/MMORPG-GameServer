@@ -25,6 +25,8 @@ using BufferVector = std::vector<BufferPtr>;
     }
 
     void start();
+    // Owner calls after producers stop (and detaches Logger's global sink).
+    // Drains accepted buffers and joins; does not promise fsync durability.
     void stop();
 
     void append(const char* data, size_t len);

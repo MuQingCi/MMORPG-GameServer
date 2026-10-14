@@ -22,20 +22,25 @@ constexpr uint16_t kModule = 200;
 constexpr uint16_t kOnline = 1;
 constexpr uint16_t kOffline = 2;
 constexpr size_t kHeaderSize = 32;
+
 inline bool Valid(const ClientData& d) {
     return d.playerId != 0 && d.clientSession != 0 && d.clientEpoch != 0 && d.gatewayId != 0 && d.sceneId != 0;
 }
+
 inline void Put(std::string& s, uint64_t v, unsigned bytes) {
     for(unsigned i=0;i<bytes;++i) s.push_back(char((v>>(8*i))&255));
 }
+
 inline uint64_t Get(const std::string& s, size_t pos, unsigned bytes) {
     uint64_t v=0; for(unsigned i=0;i<bytes;++i) v|=uint64_t(uint8_t(s[pos+i]))<<(8*i); return v;
 }
+
 inline std::string Pack(const ClientData& d, const std::string& payload = {}) {
     std::string s; Put(s,0x4750,2); Put(s,1,2);
     Put(s,d.playerId,8); Put(s,d.clientSession,8); Put(s,d.clientEpoch,4);
     Put(s,d.gatewayId,4); Put(s,d.sceneId,4); s += payload; return s;
 }
+
 inline bool Unpack(const std::string& s, ClientData& out, std::string& payload) {
     if(s.size()<kHeaderSize || Get(s,0,2)!=0x4750 || Get(s,2,2)!=1) return false;
     ClientData d{Get(s,4,8),Get(s,12,8),uint32_t(Get(s,20,4)),uint32_t(Get(s,24,4)),uint32_t(Get(s,28,4))};

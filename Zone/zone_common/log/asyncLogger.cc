@@ -19,8 +19,13 @@ void AsyncLogger::start()
 
 void AsyncLogger::stop()
 {
-    if(!running_) return;
-    running_ = false;
+    {
+        // Change the predicate under the same mutex as wait, preventing a
+        // notification from being lost between the predicate check and sleep.
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!running_) return;
+        running_ = false;
+    }
     cond_.notify_one();
 
     if(backThread_.joinable())
@@ -37,15 +42,8 @@ void AsyncLogger::append(const char* data, size_t len)
     if(currentBuffer_->writeableBytes() > len)
     {
         currentBuffer_->append(data, len);
-        // ★ 每次都唤醒后端线程（不只是"缓冲区写满"时）。
-        //
-        // 为什么：后端线程只在被唤醒时才 swap + 写盘，而**进程被信号杀死时不会走
-        // AsyncLogger::stop()**（没有 flush 的机会）。旧实现只在写满 1KB 缓冲时才唤醒，
-        // 于是"低日志量"场景下日志会长时间滞留内存：
-        //   实测：网关 40 次端到端里偶发"日志里看不到已经发生的注册行"，
-        //   而同一时刻同一条连接其实已经完全正常工作 —— 排障时会被彻底带偏。
-        // 唤醒频率的代价可以接受（一次条件变量通知 + 后端线程合并写出）；
-        // 想进一步降开销可加"1 秒定时 flush"，但那需要后端线程带超时等待。
+        // The wait predicate also checks currentBuffer_: notification alone
+        // cannot wake a predicate wait while all completed buffers are empty.
         cond_.notify_one();
         return;
     }
@@ -66,13 +64,13 @@ void AsyncLogger::threadFunc()
     BufferPtr buffB(new Buffer);
     BufferVector buffersToWrite;
 
-    while(running_)
+    while(true)
     {
         {
             std::unique_lock<std::mutex> lock(mutex_);
 
             cond_.wait(lock, [this] {
-                return !running_ || !buffers_.empty() ;}
+                return !running_ || !buffers_.empty() || currentBuffer_->readableBytes() > 0;}
             );
 
             if(!buffers_.empty() || currentBuffer_->readableBytes() > 0)
@@ -107,6 +105,8 @@ void AsyncLogger::threadFunc()
                 buffersToWrite.pop_back();
             }
         }
+        // All buffers in this batch are consumed; retain only the two spares.
+        buffersToWrite.clear();
     }
 }
 
