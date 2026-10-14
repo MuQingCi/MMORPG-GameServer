@@ -173,6 +173,11 @@ void RedisConnection::Execute(const dbv::DbTask& task, dbv::DbResult& out)
         Fail(out, kErrBadTask, "empty command");
         return;
     }
+    if (task.kind != 3) 
+    {
+        Fail(out, kErrBadTask, "Redis channel accepts command tasks only");
+        return;
+    }
 
     std::vector<const char*> argv;
     std::vector<size_t> argvLen;
