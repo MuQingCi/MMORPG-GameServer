@@ -31,6 +31,7 @@ set(SCENE_CORE_SOURCES
 
     src-cpp/db/dbThread.cc
     src-cpp/db/dbValue.cc
+    src-cpp/db/taskDelivery.cc
     src-cpp/db/mysqlConnection.cc
     src-cpp/db/redisConnection.cc
     src-cpp/db/redisKey.cc
@@ -38,6 +39,7 @@ set(SCENE_CORE_SOURCES
     src-cpp/logic/logicThread.cc
     src-cpp/logic/workerPushSink.cc
     src-cpp/service/aoi/aoiService.cc
+    src-cpp/service/aoi/aoiClientView.cc
     src-cpp/service/aoi/aoiReplica.cc
     src-cpp/service/aoi/aoiViewSet.cc
     src-cpp/service/aoi/aoiGrid.cc
@@ -51,6 +53,8 @@ set(SCENE_CORE_SOURCES
     src-cpp/player/bag.cc
     src-cpp/player/player.cc
     src-cpp/player/playerManager.cc
+    src-cpp/player/playerPersistence.cc
+    src-cpp/player/playerService.cc
 
     src-cpp/proto/pb_lua.cc
 

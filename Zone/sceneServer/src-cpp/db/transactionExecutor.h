@@ -122,7 +122,7 @@ inline DbResult executeTransaction(const DbTask& task, TransactionBackend& backe
             out.classification = ResultClass::kOutcomeUnknown;
         }
     };
-    
+
     DbResult result;
     backend.begin(result);
     if (result.errcode) 
@@ -180,6 +180,8 @@ inline DbResult executeTransaction(const DbTask& task, TransactionBackend& backe
                 return out;
             }
         }
+
+        //无论 kind==4 还是 kind==5 正常应用路径，都会走到这里
         std::vector<Val> results;
         for (const auto& step : task.steps) 
         {

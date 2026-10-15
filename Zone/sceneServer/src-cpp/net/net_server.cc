@@ -408,7 +408,8 @@ void NetServer::onPeerReadable(Conn& conn)
         if (savedErrno == EINTR)
             continue;
 
-        LOG_WARNING << "read failed, session=" << session << " errno=" << savedErrno;
+        LOG_WARNING << "read failed, session=" << session << " peer="
+                    << ServerIdName(conn.peerServiceID) << " errno=" << savedErrno;
         handleClose(conn);
         return;
     }
@@ -660,7 +661,8 @@ void NetServer::doWrite(Conn& conn)
             return;
         }
 
-        LOG_WARNING << "write failed, session=" << conn.session << " errno=" << savedErrno;
+        LOG_WARNING << "write failed, session=" << conn.session << " peer="
+                    << ServerIdName(conn.peerServiceID) << " errno=" << savedErrno;
         handleClose(conn);
         return;
     }

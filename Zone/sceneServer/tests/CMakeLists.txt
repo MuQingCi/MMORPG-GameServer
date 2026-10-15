@@ -6,12 +6,24 @@ add_executable(scene_tests
     test_buffer.cc
     test_proto.cc
     test_msgBus.cc
+    test_taskDelivery.cc
+    test_playerSnapshot.cc
+    test_playerEconomy.cc
+    test_playerPersistence.cc
+    test_dbTransaction.cc
     test_timer.cc
     test_config.cc
     test_pb_lua.cc
     test_redisKey.cc
     test_lua_redis.cc
     test_logicThread.cc
+    test_gatewayBinding.cc
+    test_aoiRouting.cc
+    test_aoiService.cc
+    test_aoiClientView.cc
+    test_aoiReplica.cc
+    test_aoiViewSet.cc
+    test_lua_aoi.cc
 )
 
 target_include_directories(scene_tests PRIVATE
@@ -28,6 +40,10 @@ target_compile_definitions(scene_tests PRIVATE
 target_link_libraries(scene_tests PRIVATE scene_core)
 
 add_test(NAME scene_tests COMMAND scene_tests)
+
+# 显式执行的隔离真实数据库验收，不连接配置中的业务数据库。
+add_executable(persistence_dao_probe persistence_dao_probe.cc)
+target_link_libraries(persistence_dao_probe PRIVATE scene_core)
 
 # ---------------------------------------------------------------------------
 # 进程级 smoke：无效路由的消息不得创建 Actor（阶段 1 任务 1.16 的回归守卫）

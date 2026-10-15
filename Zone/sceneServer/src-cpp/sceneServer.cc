@@ -9,6 +9,11 @@
 #include "timer/TimerThread.h"
 
 #include <sstream>
+#include <fstream>
+#include <cstdio>
+#include <unistd.h>
+#include <chrono>
+#include <thread>
 #include <utility>
 
 SceneServer::SceneServer(const SceneConfig& cfg)
@@ -100,6 +105,19 @@ bool SceneServer::start()
             LOG_WARNING << "connect gateway failed: " << peer.addr << ":" << peer.port;
     }
 
+    if (!cfg_.metricsPath.empty())
+    {
+        writeMetrics();
+        metricsThread_ = std::thread([this] {
+            while (started_.load(std::memory_order_acquire))
+            {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                if (started_.load(std::memory_order_acquire))
+                    writeMetrics();
+            }
+        });
+    }
+
     LOG_INFO << "scene server started, zoneId=" << cfg_.zone.zoneId << " sceneId=" << cfg_.sceneId
              << " logicThreads=" << cfg_.logicThreadNum << " luaDir=" << luaDir_
              << " dbEnable=" << (cfg_.zone.dbEnable ? 1 : 0)
@@ -113,6 +131,10 @@ void SceneServer::stop()
     // 也覆盖"start() 中途失败"的路径（此时也要把已创建的部分停干净）
     if (stopped_.exchange(true, std::memory_order_acq_rel))
         return;
+
+    started_.store(false, std::memory_order_release);
+    if (metricsThread_.joinable())
+        metricsThread_.join();
 
     // 逆序停止：先切断输入（网络），再停消费者（逻辑），最后停辅助线程
     if (netServer_)
@@ -140,6 +162,33 @@ void SceneServer::stop()
 
     // logic/timer/db 都停了才会走到这里，此时 bus 上不会再有生产者
     LOG_INFO << "scene server stopped";
+}
+
+void SceneServer::writeMetrics() const
+{
+    if (cfg_.metricsPath.empty() || !bus_)
+        return;
+    const std::string tmp = cfg_.metricsPath + ".tmp." + std::to_string(static_cast<long long>(::getpid()));
+    std::ofstream out(tmp, std::ios::trunc);
+    if (!out) return;
+    const auto depths = bus_->workerDepths();
+    out << "{\"logicThreads\":" << logicThreads_.size()
+        << ",\"netQueue\":" << bus_->netDepth()
+        << ",\"playerCount\":" << playerCount();
+    for (const auto& lt : logicThreads_)
+    {
+        if (!lt) continue;
+        const size_t id = lt->threadId();
+        out << ",\"worker" << id << "_queue\":"
+            << (id < depths.size() ? depths[id] : 0)
+            << ",\"worker" << id << "_handled\":" << lt->handledMessages()
+            << ",\"worker" << id << "_dropped\":" << lt->droppedCallbacks()
+            << ",\"worker" << id << "_busyUs\":" << lt->busyMicros()
+            << ",\"worker" << id << "_maxLoopUs\":" << lt->maxLoopMicros();
+    }
+    out << "}\n";
+    out.close();
+    ::rename(tmp.c_str(), cfg_.metricsPath.c_str());
 }
 
 void SceneServer::reloadLua(const std::string& newDir)
@@ -173,14 +222,19 @@ size_t SceneServer::playerCount() const
 std::string SceneServer::stats() const
 {
     std::ostringstream oss;
-    oss << "logicThreads=" << logicThreads_.size();
+    oss << "logicThreads=" << logicThreads_.size()
+        << " netQueue=" << bus_->netDepth();
+    const auto workerDepths = bus_->workerDepths();
     for (const auto& lt : logicThreads_)
     {
         if (!lt)
             continue;
         oss << " [w" << lt->threadId() << " handled=" << lt->handledMessages()
             << " players=" << lt->playerCount()
-            << " dropped=" << lt->droppedCallbacks() << "]";
+            << " dropped=" << lt->droppedCallbacks()
+            << " queue=" << (lt->threadId() < workerDepths.size() ? workerDepths[lt->threadId()] : 0)
+            << " busyUs=" << lt->busyMicros()
+            << " maxLoopUs=" << lt->maxLoopMicros() << "]";
     }
     if (timerThread_)
         oss << " timer(fired=" << timerThread_->firedCount() << " live=" << timerThread_->liveCount() << ")";

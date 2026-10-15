@@ -304,6 +304,14 @@ std::optional<EntityId> AoiService::EntityOf(uint64_t pid) const
     return it->second.id;
 }
 
+std::optional<uint64_t> AoiService::BusinessIdOf(EntityId id) const
+{
+    const auto* entity = replica_.findById(id);
+    if (entity == nullptr || entity->businessId == 0)
+        return std::nullopt;
+    return entity->businessId;
+}
+
 std::vector<workerId> AoiService::OwnersNeedingSnapshot() const
 {
     return {ownersNeedingSnapshot_.begin(), ownersNeedingSnapshot_.end()};

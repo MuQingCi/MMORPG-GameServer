@@ -44,7 +44,7 @@ TEST(MsgBusRouteByPlayerId)
         m.head.msgType = MsgType::MSGTYPE_CONN_DATA;
         m.head.playerId = pid;
         m.head.Module = Module::PLAYER;
-        CHECK(bus.sendToWorkerByPlayerId(pid, m));
+        CHECK(IsAccepted(bus.sendToWorkerByPlayerId(pid, m)));
     }
 
     // 每条消息都应出现在 hash(pid) 对应的队列里
@@ -68,12 +68,12 @@ TEST(MsgBusDbChannelsAreSeparate)
     Msg mysqlTask;
     mysqlTask.head.msgType = MsgType::MSGTYPE_DB_TASK_MYSQL;
     mysqlTask.head.ctx = 11;
-    CHECK(bus.sendToDb(mysqlTask));
+    CHECK(IsAccepted(bus.sendToDb(mysqlTask)));
 
     Msg redisTask;
     redisTask.head.msgType = MsgType::MSGTYPE_DB_TASK_REDIS;
     redisTask.head.ctx = 22;
-    CHECK(bus.sendToDb(redisTask));
+    CHECK(IsAccepted(bus.sendToDb(redisTask)));
 
     // 两条通道各自独立：Redis 任务不会出现在 MySQL 通道里（慢 SQL 不该堵住 Redis）
     Msg out;
@@ -99,7 +99,7 @@ TEST(MsgBusRedisShardRouting)
         m.head.msgType = MsgType::MSGTYPE_DB_TASK_REDIS;
         m.head.dbShard = shard;
         m.head.ctx = 100 + shard;
-        CHECK(bus.sendToDb(m));
+        CHECK(IsAccepted(bus.sendToDb(m)));
     }
 
     // 每个分片各取到自己的那一条，且互不串号
@@ -116,7 +116,7 @@ TEST(MsgBusRedisShardRouting)
     Msg bad;
     bad.head.msgType = MsgType::MSGTYPE_DB_TASK_REDIS;
     bad.head.dbShard = static_cast<uint16_t>(kShards);
-    CHECK(!bus.sendToDb(bad));
+    CHECK(!IsAccepted(bus.sendToDb(bad)));
 }
 
 // MPSC：多生产者 -> 单消费者，条数不超过队列容量时一条都不能丢
@@ -135,7 +135,7 @@ TEST(MsgBusMultiProducer)
                 Msg m;
                 m.head.msgType = MsgType::MSGTYPE_CONN_DATA;
                 m.head.seq = (uint64_t)i;
-                bus.sendToWorker(0, std::move(m));
+                IsAccepted(bus.sendToWorker(0, std::move(m)));
             }
         });
     }
@@ -160,7 +160,7 @@ TEST(MsgBusBackpressure)
     {
         Msg m;
         m.head.msgType = MsgType::MSGTYPE_CONN_DATA;
-        if (!bus.sendToWorker(0, std::move(m)))
+        if (!IsAccepted(bus.sendToWorker(0, std::move(m))))
             break;
         ++accepted;
     }

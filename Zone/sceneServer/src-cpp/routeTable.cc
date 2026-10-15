@@ -23,6 +23,7 @@ static const std::vector<Route> g_routes = {
     {Module::PLAYER, Method::PLAYER_PATH, "gs.PathReq", "gs.PathAck", "move.c2s_path"},
     {Module::PLAYER, Method::PLAYER_ENTER_SCENE, "gs.EnterSceneReq", "gs.EnterSceneAck", ""},
     {Module::PLAYER, Method::PLAYER_LOGOUT, "gs.LogoutReq", "gs.LogoutAck", ""},
+    {Module::AOI, Method::AOI_VIEW_RESYNC_REQ, "gs.ViewResyncReq", "gs.ViewResyncAck", ""},
 
     // ---------------- 仅出站的推送路由（无请求体）----------------
     // req_type 为空 => 只作为出站名字解析源，不参与入站分发

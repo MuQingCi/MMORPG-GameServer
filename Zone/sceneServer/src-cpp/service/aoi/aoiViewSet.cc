@@ -242,6 +242,15 @@ bool AoiViewSet::needResync(EntityId observerId) const
     return false;
 }
 
+bool AoiViewSet::committedBaseline(EntityId observerId, ViewBaseline& out) const
+{
+    const auto it = views_.find(observerId);
+    if (it == views_.end())
+        return false;
+    out = it->second.committedState_;
+    return true;
+}
+
 const std::vector<EntityId> AoiViewSet::forEachObserver() const
 {
     size_t sizew = views_.size();

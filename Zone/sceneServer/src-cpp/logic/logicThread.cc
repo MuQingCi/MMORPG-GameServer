@@ -11,6 +11,7 @@
 #include "routeTable.h"
 #include "logic/workerPushSink.h"
 #include "service/aoi/aoiServiceRouter.h"
+#include "service/aoi/aoiClientView.h"
 #include <limits>
 
 #include <atomic>
@@ -44,7 +45,13 @@ LogicThread::LogicThread(uint32_t threadId,
                          players_(threadId),
                          workerPushSink_(bus, players_),
                          aoiService_(threadId,aoiCfg,workerPushSink_,map,
-                              AoiServiceRouter::PublishHooks(threadId, bus.numWorker())),
+                              [&] {
+                                  auto hooks = AoiServiceRouter::PublishHooks(threadId, bus.numWorker());
+                                  hooks.processObserver = [](AoiService& service, EntityId observer) {
+                                      return ProcessAoiClientObserver(service, observer);
+                                  };
+                                  return hooks;
+                              }()),
                          playerService_(players_, aoiService_, map)
 {
 }
@@ -196,7 +203,16 @@ void LogicThread::run()
 
         if (m.head.msgType == MsgType::MSGTYPE_SHUTDOWN) { requestDrain(); continue; }
 
+        const auto handleStart = std::chrono::steady_clock::now();
         handleMsg(m);
+        const auto handleMicros = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - handleStart).count());
+        busyMicros_.fetch_add(handleMicros, std::memory_order_relaxed);
+        auto maxLoop = maxLoopMicros_.load(std::memory_order_relaxed);
+        while (handleMicros > maxLoop &&
+               !maxLoopMicros_.compare_exchange_weak(maxLoop, handleMicros,
+                                                     std::memory_order_relaxed)) {}
         handledMessages_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -633,6 +649,23 @@ void LogicThread::onNetMsg(Msg& m)
             if(!logoutPlayer(m.head.playerId)) 
                 ack.set_code(1008);
             sendToSession(m.head.session,route,m.head.seq,m.head.playerId,ack.SerializeAsString());
+            return;
+        }
+        if (m.head.Module == Module::AOI && m.head.Method == Method::AOI_VIEW_RESYNC_REQ)
+        {
+            gs::ViewResyncReq request;
+            if (!request.ParseFromString(m.body))
+            {
+                sendRetTip(m, 1007, "invalid view resync request");
+                return;
+            }
+            const auto* observerPlayer = players_.get(m.head.playerId);
+            const bool marked = observerPlayer != nullptr &&
+                aoiService_.OnViewResyncReq(m.head.playerId,
+                                             observerPlayer->clientBinding().clientEpoch);
+            gs::ViewResyncAck ack;
+            ack.set_code(marked ? 0 : 1008);
+            sendToSession(m.head.session, route, m.head.seq, m.head.playerId, ack.SerializeAsString());
             return;
         }
         sendRetTip(m, 1002, "handler not implemented");

@@ -86,6 +86,8 @@ public:
     // 统计（监控用）
     uint64_t handledMessages() const { return handledMessages_.load(std::memory_order_relaxed); }
     uint64_t droppedCallbacks() const { return droppedCallbacks_.load(std::memory_order_relaxed); }
+    uint64_t busyMicros() const { return busyMicros_.load(std::memory_order_relaxed); }
+    uint64_t maxLoopMicros() const { return maxLoopMicros_.load(std::memory_order_relaxed); }
 
 private:
     void run();
@@ -155,6 +157,8 @@ private:
 
     std::atomic<uint64_t> handledMessages_{0};
     std::atomic<uint64_t> droppedCallbacks_{0};
+    std::atomic<uint64_t> busyMicros_{0};
+    std::atomic<uint64_t> maxLoopMicros_{0};
 
     //可靠任务投递——待处理队列
     //根据state判断任务处于什么状态，用一个容器存储以减少同步数和产生空隙时间

@@ -33,6 +33,7 @@ struct SceneConfig
     std::string luaDir = "./lua_script";
     // 默认相对配置文件目录，不依赖进程工作目录。
     std::string mapPath;
+    std::string metricsPath;                 // 空 = 不导出运行指标
     uint64_t luaInstructionLimit = 10000000;  // 0 = 关闭 Lua 指令预算
 
     // ---------------- 逻辑线程 ----------------

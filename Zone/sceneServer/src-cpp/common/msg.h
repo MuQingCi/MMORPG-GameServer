@@ -163,6 +163,11 @@ namespace Method
     // 仅用于 worker 间内部服务消息，不属于客户端 C2S 路由。
     constexpr uint16_t AOI_OWNER_SNAPSHOT_REQ = 5;
     constexpr uint16_t AOI_OWNER_SNAPSHOT     = 6;
+    // AOI 客户端推送，仅由场景服发送；9 为客户端重同步请求。
+    constexpr uint16_t AOI_VIEW_DELTA         = 7;
+    constexpr uint16_t AOI_VIEW_SNAPSHOT      = 8;
+    constexpr uint16_t AOI_VIEW_RESYNC_REQ    = 9;
+    constexpr uint16_t AOI_VIEW_RESYNC_ACK    = 10;
 }   
 
 struct MsgHead

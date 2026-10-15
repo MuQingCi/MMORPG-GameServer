@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <thread>
 
 class NetServer;
 class TimerThread;
@@ -70,6 +71,8 @@ private:
     // stop() 的幂等标志：start() 中途失败时也必须能停掉已创建的部分
     std::atomic<bool> stopped_{false};
     std::string luaDir_;   // 当前生效的脚本目录（热更会替换）
+    std::thread metricsThread_;
+    void writeMetrics() const;
 };
 
 #endif

@@ -22,6 +22,9 @@ struct SentEntityState
     
     uint32_t entityGeneration = 0;    // 实体"进入场景"的世代：每次 ENTER 递增；LEAVE 后作废
     uint64_t spatialVersion   = 0;    // 仅位置/朝向的空间版本
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t dir = 0;
 };
 
 struct ObserverSnapshot
@@ -103,6 +106,9 @@ public:
     
     bool hasPending(EntityId observerId) const;
     bool needResync(EntityId observerId) const;
+
+    // 返回已成功提交到客户端基线的实体状态，仅供所属逻辑线程构造增量。
+    bool committedBaseline(EntityId observerId, ViewBaseline& out) const;
 
     const std::vector<EntityId> forEachObserver() const;
     bool markNeedResync(EntityId observerId, uint32_t clientEpoch);

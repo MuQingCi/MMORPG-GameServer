@@ -231,6 +231,20 @@ size_t MsgBus::depth(WorkerId wid) const
     return worker_queues_[wid]->current_size();
 }
 
+size_t MsgBus::netDepth() const
+{
+    return net_queue_->current_size();
+}
+
+std::vector<size_t> MsgBus::workerDepths() const
+{
+    std::vector<size_t> result;
+    result.reserve(worker_queues_.size());
+    for (const auto& queue : worker_queues_)
+        result.push_back(queue->current_size());
+    return result;
+}
+
 MsgBus::WorkerId MsgBus::leastLoadedWorker(uint64_t tieBreak) const
 {
     const size_t n = worker_queues_.size();

@@ -155,7 +155,9 @@ void MySqlConnection::begin(dbv::DbResult& result)
 
 void MySqlConnection::execute(const dbv::SqlStep& step, dbv::DbResult& result)
 {
-    dbv::DbTask statement; statement.kind = step.kind; statement.args = step.args;
+    dbv::DbTask statement; 
+    statement.kind = step.kind; 
+    statement.args = step.args;
     ExecuteStatement(statement, result);
 }
 

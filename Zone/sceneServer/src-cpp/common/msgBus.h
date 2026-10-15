@@ -105,6 +105,8 @@ public:
     size_t redisShardCount() const { return redis_queues_.size(); }
     // 队列积压深度（选线程的唯一依据：accept 时看不到"连接数"这种全局量）
     size_t depth(WorkerId wid) const;
+    size_t netDepth() const;
+    std::vector<size_t> workerDepths() const;
     // 选一个最空闲的逻辑线程，同分用 tieBreak 哈希打散，避免羊群效应
     WorkerId leastLoadedWorker(uint64_t tieBreak) const;
 

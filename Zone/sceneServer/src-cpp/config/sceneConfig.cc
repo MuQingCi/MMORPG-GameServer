@@ -155,6 +155,7 @@ bool SceneConfig::Load(const std::string& path, SceneConfig& out, std::string& e
     out.serviceId = (uint8_t)y.GetUInt("SceneServer.serviceId", out.serviceId);
     out.logicThreadNum = (uint32_t)y.GetUInt("SceneServer.logicThreadNum", out.logicThreadNum);
     out.luaDir = y.GetStr("SceneServer.luaDir", out.luaDir);
+    out.metricsPath = y.GetStr("SceneServer.metricsPath", out.metricsPath);
     auto mapPath = std::filesystem::path(y.GetStr("SceneServer.mapPath", "map.yaml"));
     if(mapPath.is_relative()) mapPath = std::filesystem::path(path).parent_path() / mapPath;
     out.mapPath = std::filesystem::absolute(mapPath).lexically_normal().string();

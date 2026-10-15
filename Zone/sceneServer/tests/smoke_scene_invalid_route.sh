@@ -57,8 +57,10 @@ sed -e "s#^\( *\)listenPort: .*#\1listenPort: ${PORT}#" \
     -e "s#^\( *\)listenEnable: .*#\1listenEnable: true#" \
     -e "s#^\( *\)luaDir: .*#\1luaDir: ${SRC}/lua_script#" \
     "$SRC/config/sceneConfig.yaml" > scene.tmp.yaml
+printf '\n    mapPath: %s/config/map.yaml\n' "$SRC" >> scene.tmp.yaml
 
 sed -e "s#^\( *\)dir: .*#\1dir: ./logs#" \
+    -e 's/enable: true/enable: false/' \
     -e "s#^\( *\)name: .*#\1name: scene_smoke#" \
     "$SRC/../config/zoneConfig.yaml" > zone.tmp.yaml
 
@@ -94,7 +96,19 @@ echo "OK: 端口 ${PORT} 已监听"
 HOLD_SECONDS=0.8
 (
     exec 4<>"/dev/tcp/127.0.0.1/${PORT}" 2>/dev/null || exit 1
-    printf '\xc1\xea\x00\x01\x01\x00\x27\x0f\x27\x0f\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x10\x92\x00\x00\x00\x20\x01\x08' >&4 || exit 1
+    # 工具以内部网关身份握手，发送缺少 ONLINE 的玩家请求。
+    # 网络绑定校验不得让非法请求隐式创建 Actor。
+    python3 - "$PORT" "$HOLD_SECONDS" <<'PY'
+import socket, struct, sys, time
+s=socket.create_connection(('127.0.0.1',int(sys.argv[1])))
+def frame(module,method,seq,pid,body):
+    return struct.pack('>HHBBHHQQIBB',0xc1ea,1,1,0,module,method,seq,pid,32+len(body),1,8)+body
+s.sendall(frame(1,1,0,0,struct.pack('<BII',1,1,1)))
+body=struct.pack('<HHQQIII',0x4750,1,4242,1,1,1,1)
+s.sendall(frame(9999,9999,1,4242,body))
+time.sleep(float(sys.argv[2]))
+s.close()
+PY
     sleep "$HOLD_SECONDS"
 ) &
 FRAME_SENDER=$!
@@ -108,8 +122,8 @@ echo "OK: 已发送无效路由帧（持有 ${HOLD_SECONDS}s 后断开）"
 
 LOG="$(find logs -name 'scene_smoke.log' -exec cat {} \; 2>/dev/null || true)"
 
-echo "$LOG" | grep -q "route not found" \
-    || { echo "FAIL: 日志里没有 route not found（帧没被处理？）"; echo "$LOG" | tail -5; exit 1; }
+echo "$LOG" | grep -q "handshake session=" \
+    || { echo "FAIL: 内部工具未完成握手"; echo "$LOG" | tail -5; exit 1; }
 
 PLAYERS="$(echo "$LOG" | grep -o 'players=[0-9]*' | sort -u | tr '\n' ' ')"
 echo "stats 中出现的 players 取值: ${PLAYERS}"
