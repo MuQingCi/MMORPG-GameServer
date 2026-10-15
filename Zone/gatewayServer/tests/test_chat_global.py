@@ -61,6 +61,7 @@ def main():
             fp.write(f"""gateway:
     zoneId: 1
     gatewayId: 1
+    backendChannels: 1
     publicConfig:
         listenAddr: 127.0.0.1
         listenPort: {public}
@@ -81,8 +82,8 @@ def main():
         processes = []
         clients = []
         try:
-            for command in ([gateway, config], [chat, "127.0.0.1", str(private), "1"],
-                            [global_server, "127.0.0.1", str(private), "1"]):
+            for command in ([gateway, config], [chat, "1", "127.0.0.1", str(private), "1"],
+                            [global_server, "1", "127.0.0.1", str(private), "1"]):
                 if len(processes) == 0:
                     processes.append(subprocess.Popen(command, cwd=temp, stdout=subprocess.DEVNULL,
                                                      stderr=subprocess.PIPE))
@@ -180,6 +181,7 @@ def multi_gateway(gateway, chat):
                     fp.write(f"""gateway:
     zoneId: 1
     gatewayId: {i + 1}
+    backendChannels: 1
     publicConfig:
         listenAddr: 127.0.0.1
         listenPort: {ports[2 * i]}
@@ -208,8 +210,8 @@ def multi_gateway(gateway, chat):
                         if time.monotonic() > deadline:
                             raise RuntimeError("gateway did not listen")
                         time.sleep(0.03)
-            processes.append(subprocess.Popen([chat, "127.0.0.1", str(ports[1]), "1",
-                                               "127.0.0.1", str(ports[3]), "1"], cwd=temp,
+            processes.append(subprocess.Popen([chat, "1", "127.0.0.1", str(ports[1]), "1",
+                                               "2", "127.0.0.1", str(ports[3]), "1"],
                                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE))
             time.sleep(0.45)
             a, b, c = auth(ports[0], 2001), auth(ports[2], 2002), auth(ports[0], 2003)

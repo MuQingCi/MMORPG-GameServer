@@ -5,6 +5,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <string>
 
 /**
  * @brief 一次"客户端请求 -> 后端响应"的回程记录
@@ -25,6 +26,11 @@ struct ReturnRoute
     uint64_t clientSessionId = 0;
     uint64_t clientRequestId = 0;
     uint8_t  backendServiceId = 0;
+    uint32_t backendZoneId = 0;
+    uint32_t backendSceneId = 0;
+    uint32_t backendChannelId = 0;
+    uint64_t backendSceneIncarnation = 0;
+    std::string backendConnName;
     uint64_t playerId         = 0;
     uint16_t module           = 0;
     uint16_t method           = 0;

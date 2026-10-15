@@ -66,6 +66,7 @@ cat > gw.tmp.yaml <<EOF
 gateway:
     zoneId: 1
     gatewayId: 3
+    backendChannels: 1
     publicConfig:
         listenAddr: 127.0.0.1
         listenPort: ${PUB}
@@ -89,10 +90,10 @@ sed -e "s#^\( *\)listenPort: .*#\1listenPort: ${SCENE_PORT}#" \
     "$SCENE_SRC/config/sceneConfig.yaml" > scene.tmp.yaml
 printf '\n    mapPath: %s/config/map.yaml\n' "$SCENE_SRC" >> scene.tmp.yaml
 
-sed -e "s#^\( *\)- 127.0.0.1:.*#\1- 127.0.0.1:${PRIV}#" \
+sed -e "s#^        - .*#        - 3=127.0.0.1:${PRIV}#" \
     -e 's/enable: true/enable: false/' \
-    -e "s#^\( *\)dir: .*#\1dir: ./logs#" \
-    -e "s#^\( *\)name: .*#\1name: scene_real_e2e#" \
+    -e 's#        dir: .*#        dir: ./logs#' \
+    -e 's#        name: .*#        name: scene_real_e2e#' \
     "$GW_SRC/../config/zoneConfig.yaml" > zone.tmp.yaml
 
 grep -q "127.0.0.1:${PRIV}" zone.tmp.yaml || { echo "FAIL: 临时 zoneConfig 未指向网关内网端口"; exit 1; }

@@ -254,18 +254,18 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                    const Clock::time_point deadline)
 {
     const int fd = Connect(options);
-    if (fd < 0) { stats.recordError(); return; }
+    if (fd < 0) { stats.recordResult(Result::TransportError); return; }
     Buffer input;
     if (!Authenticate(fd, options, options.playerBase + index, input))
     {
-        stats.recordError();
+        stats.recordResult(Result::TransportError);
         ::close(fd);
         return;
     }
 
     if (options.scene && !EnterScene(fd, input))
     {
-        stats.recordError();
+        stats.recordResult(Result::TransportError);
         ::close(fd);
         return;
     }
@@ -288,7 +288,7 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
             const std::string frame = Encode(options.ping ? ClientKind::kControl : ClientKind::kRequest,
                                              module, method, id, body);
             stats.recordAttempt(frame.size());
-            if (!SendAll(fd, frame)) { stats.recordError(); ::close(fd); return; }
+            if (!SendAll(fd, frame)) { stats.recordResult(Result::TransportError); ::close(fd); return; }
             pending.emplace(id, Clock::now());
             nextSend += interval;
             if (nextSend > now + std::chrono::seconds(1)) break;
@@ -301,7 +301,7 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
         if (ready <= 0) continue;
         char bytes[16384];
         const ssize_t n = ::recv(fd, bytes, sizeof(bytes), 0);
-        if (n <= 0) { stats.recordError(); break; }
+        if (n <= 0) { stats.recordResult(Result::TransportError); break; }
         input.append(bytes, static_cast<size_t>(n));
         for (;;)
         {
@@ -309,15 +309,23 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
             std::string body;
             const auto status = DecodeClientFrame(input, header, body);
             if (status == DecodeStatus::kNeedMore) break;
-            if (status == DecodeStatus::kError) { stats.recordError(); break; }
+            if (status == DecodeStatus::kError) { stats.recordResult(Result::DecodeError); break; }
+            if (header.kind == ClientKind::kPush) continue;
             const auto sent = pending.find(header.requestId);
-            if (sent == pending.end()) { stats.recordError(); continue; }
+            if (sent == pending.end()) { stats.recordResult(Result::UnknownResponse); continue; }
             const auto latency = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - sent->second).count());
-            stats.recordSuccess(latency, body.size());
+            Result result = Result::UnknownResponse;
+            if (header.kind == ClientKind::kResponse)
+                result = header.module == kClientSysModule && header.method == ClientSysMethod::kPong
+                    ? Result::ControlResponse : Result::BusinessResponse;
+            else if (header.kind == ClientKind::kError)
+                result = header.module == kClientSysModule && header.method == ClientSysMethod::kReject
+                    ? Result::GatewayReject : Result::BusinessError;
+            stats.recordResult(result, latency, body.size());
             pending.erase(sent);
         }
     }
-    for (size_t i = 0; i < pending.size(); ++i) stats.recordTimeout();
+    for (size_t i = 0; i < pending.size(); ++i) stats.recordResult(Result::Timeout);
     ::close(fd);
 }
 }
@@ -346,15 +354,24 @@ int main(int argc, char** argv)
               << " completed=" << result.completed
               << " errors=" << result.errors
               << " timeouts=" << result.timeouts
+              << " business_succeeded=" << result.businessSucceeded
+              << " business_failed=" << result.businessFailed
+              << " gateway_rejected=" << result.gatewayRejected
+              << " transport_failed=" << result.transportFailed
+              << " unknown_responses=" << result.unknownResponses
+              << " decode_errors=" << result.decodeErrors
               << " p50_us=" << result.p50Us
               << " p95_us=" << result.p95Us
               << " p99_us=" << result.p99Us << '\n';
     std::FILE* file = std::fopen(options.output.c_str(), "w");
     if (file == nullptr) return 1;
-    std::fprintf(file, "{\"connections\":%u,\"rps_per_connection\":%u,\"duration_sec\":%u,\"attempted\":%llu,\"completed\":%llu,\"errors\":%llu,\"timeouts\":%llu,\"bytes_sent\":%llu,\"bytes_received\":%llu,\"min_us\":%llu,\"p50_us\":%llu,\"p95_us\":%llu,\"p99_us\":%llu,\"max_us\":%llu}\n",
+    std::fprintf(file, "{\"connections\":%u,\"rps_per_connection\":%u,\"duration_sec\":%u,\"attempted\":%llu,\"completed\":%llu,\"errors\":%llu,\"timeouts\":%llu,\"business_succeeded\":%llu,\"business_failed\":%llu,\"gateway_rejected\":%llu,\"transport_failed\":%llu,\"unknown_responses\":%llu,\"decode_errors\":%llu,\"bytes_sent\":%llu,\"bytes_received\":%llu,\"min_us\":%llu,\"p50_us\":%llu,\"p95_us\":%llu,\"p99_us\":%llu,\"max_us\":%llu}\n",
                  options.connections, options.rpsPerConnection, options.durationSec,
                  (unsigned long long)result.attempted, (unsigned long long)result.completed,
                  (unsigned long long)result.errors, (unsigned long long)result.timeouts,
+                 (unsigned long long)result.businessSucceeded, (unsigned long long)result.businessFailed,
+                 (unsigned long long)result.gatewayRejected, (unsigned long long)result.transportFailed,
+                 (unsigned long long)result.unknownResponses, (unsigned long long)result.decodeErrors,
                  (unsigned long long)result.bytesSent, (unsigned long long)result.bytesReceived,
                  (unsigned long long)result.minUs, (unsigned long long)result.p50Us,
                  (unsigned long long)result.p95Us, (unsigned long long)result.p99Us,

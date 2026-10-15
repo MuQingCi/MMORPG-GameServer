@@ -44,6 +44,7 @@ cat > e2e.tmp.yaml <<EOF
 gateway:
     zoneId: 1
     gatewayId: 7
+    backendChannels: 1
     publicConfig:            # 公网：客户端
         listenAddr: 127.0.0.1
         listenPort: ${PUB}
@@ -92,7 +93,7 @@ fi
 
 # ---- 跑端到端用例（本工具扮演场景服 + 多个客户端）----
 echo "---- e2e client output ----"
-GW_PUBLIC_PORT="$PUB" GW_PRIVATE_PORT="$PRIV" "$E2E" > e2e.out 2>&1
+GW_PUBLIC_PORT="$PUB" GW_PRIVATE_PORT="$PRIV" GW_GATEWAY_ID=7 "$E2E" > e2e.out 2>&1
 RC=$?
 cat e2e.out
 if [ "$RC" -ne 0 ]; then

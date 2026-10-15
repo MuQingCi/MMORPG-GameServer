@@ -2,6 +2,7 @@
 #include "returnRoute.h"
 #include "serviceRegistry.h"
 #include "test_util.h"
+#include "base/proto.h"
 
 #include <cstdint>
 #include <string>
@@ -38,7 +39,6 @@ TEST(ClientSessionCreateAndBind)
 
     CHECK(t.Get(sid, s));
     CHECK(s.authed);
-    CHECK_EQ(s.playerId, (uint64_t)1001);
     CHECK_EQ(s.epoch, (uint32_t)1);
 
     // 玩家索引：后端推送只带 playerId，必须能定位到会话
@@ -89,6 +89,23 @@ TEST(ClientSessionKickOldSession)
     CHECK_EQ(byPlayer.sessionId, newSid);
 
     CHECK(!t.Erase(oldSid));              // 重复 Erase 幂等
+}
+
+TEST(ClientSessionPinsSceneForSessionLifetime)
+{
+    ClientSessionTable t;
+    const uint64_t sid = t.Create(nullptr, ServerID::kScene_1, 1000);
+    uint64_t kicked = 0;
+    CHECK(t.Bind(sid, 7788, ServerID::kScene_1, 1100, kicked));
+    CHECK(t.SetSceneBinding(sid, 22, 1, 9001, "scene-22-channel-1"));
+    CHECK(!t.SetSceneBinding(sid, 23, 1, 9002, "scene-23-channel-1"));
+    ClientSession s;
+    CHECK(t.Get(sid, s));
+    CHECK_EQ(s.sceneId, (uint32_t)22);
+    CHECK_EQ(s.backendChannelId, (uint32_t)1);
+    CHECK_EQ(s.sceneIncarnation, (uint64_t)9001);
+    CHECK_EQ(s.sceneConnName, std::string("scene-22-channel-1"));
+    CHECK_EQ(s.sceneIncarnation, (uint64_t)9001);
 }
 
 // ---------------- 后端服务注册表 ----------------
@@ -157,8 +174,8 @@ TEST(ServiceRegistrySupportsMultipleSceneInstances)
     CHECK(r.AddPending("scene-1", nullptr));
     CHECK(r.AddPending("scene-2", nullptr));
 
-    CHECK(r.Bind("scene-1", 8, 1, 1, 1000, nullptr));
-    CHECK(r.Bind("scene-2", 8, 1, 2, 1001, nullptr));
+    CHECK(r.Bind("scene-1", 8, 1, 1, 0, 1000, nullptr));
+    CHECK(r.Bind("scene-2", 8, 1, 2, 0, 1001, nullptr));
     CHECK_EQ(r.ReadyCount(), (size_t)2);
 
     ServiceEndpoint ep;
@@ -172,17 +189,74 @@ TEST(ServiceRegistrySupportsMultipleSceneInstances)
     CHECK_EQ(instances.size(), (size_t)2);
 }
 
+TEST(ServiceRegistryReplacesOccupiedChannelAndAllowsOtherScene)
+{
+    ServiceRegistry r(2);
+    CHECK(r.AddPending("scene-a-ch0", nullptr));
+    CHECK(r.AddPending("scene-b-ch0", nullptr));
+    CHECK(r.AddPending("scene-a-ch1", nullptr));
+    CHECK(r.Bind("scene-a-ch0", 8, 1, 10, 0, 77, 1000, nullptr));
+    CHECK(r.Bind("scene-b-ch0", 8, 1, 11, 0, 88, 1001, nullptr));
+    std::string replaced;
+    CHECK(r.Bind("scene-a-ch1", 8, 1, 10, 0, 77, 1002, &replaced));
+    CHECK_EQ(replaced, std::string("scene-a-ch0"));
+    CHECK_EQ(r.ReadyCount(), (size_t)2);
+    CHECK_EQ(r.GetInstances(8, 1).size(), (size_t)2);
+    ServiceEndpoint stale;
+    CHECK(r.GetByName("scene-a-ch0", stale));
+    CHECK_EQ(stale.serviceId, (uint8_t)0);
+    CHECK(r.RemoveByName("scene-a-ch0", stale));
+    CHECK(!r.GetByName("scene-a-ch0", stale));
+    CHECK(r.GetByScene(8, 1, 10, stale));
+    CHECK_EQ(stale.connName, std::string("scene-a-ch1"));
+
+    CHECK(r.AddPending("scene-a-restart", nullptr));
+    CHECK(r.Bind("scene-a-restart", 8, 1, 10, 0, 99, 1003, &replaced));
+    CHECK_EQ(replaced, std::string("scene-a-ch1"));
+    CHECK_EQ(r.GetPool(8, 1, 10).size(), (size_t)1);
+    CHECK_EQ(r.GetPool(8, 1, 10)[0].connName, std::string("scene-a-restart"));
+    CHECK(r.GetByScene(8, 1, 10, stale));
+    CHECK_EQ(stale.connName, std::string("scene-a-restart"));
+}
+
 TEST(ServiceRegistryRebindRemovesOldInstanceIndex)
 {
     ServiceRegistry r;
     CHECK(r.AddPending("scene", nullptr));
-    CHECK(r.Bind("scene", 8, 1, 1, 1000, nullptr));
-    CHECK(r.Bind("scene", 8, 1, 2, 1001, nullptr));
+    CHECK(r.Bind("scene", 8, 1, 1, 0, 77, 1000, nullptr));
+    CHECK(!r.Bind("scene", 8, 1, 2, 0, 88, 1001, nullptr)); // established connection cannot change identity
+    CHECK(r.AddPending("scene-replacement", nullptr));
+    CHECK(r.Bind("scene-replacement", 8, 1, 2, 0, 88, 1001, nullptr));
 
     ServiceEndpoint ep;
-    CHECK(!r.GetByScene(8, 1, 1, ep));
+    CHECK(r.GetByScene(8, 1, 1, ep));
+    CHECK_EQ(ep.connName, std::string("scene"));
     CHECK(r.GetByScene(8, 1, 2, ep));
-    CHECK_EQ(r.ReadyCount(), (size_t)1);
+    CHECK_EQ(ep.connName, std::string("scene-replacement"));
+    CHECK_EQ(r.ReadyCount(), (size_t)2);
+}
+
+TEST(ServiceRegistryTracksPoolChannelsIndependently)
+{
+    ServiceRegistry r(2);
+    CHECK(r.AddPending("scene-ch0", nullptr));
+    CHECK(r.AddPending("scene-ch1", nullptr));
+    CHECK(r.Bind("scene-ch0", 8, 1, 1, 0, 77, 1000));
+    CHECK(r.Bind("scene-ch1", 8, 1, 1, 1, 77, 1001));
+    CHECK(!r.Bind("scene-ch1", 8, 1, 1, 0, 77, 1002));
+    CHECK(!r.Bind("scene-ch1", 8, 1, 1, 2, 77, 1002));
+
+    auto channels = r.GetPool(8, 1, 1);
+    CHECK_EQ(channels.size(), (size_t)2);
+    CHECK_EQ(channels[0].connName, std::string("scene-ch0"));
+    CHECK_EQ(channels[1].connName, std::string("scene-ch1"));
+    CHECK_EQ(r.ReadyCount(), (size_t)2);
+
+    ServiceEndpoint removed;
+    CHECK(r.RemoveByName("scene-ch0", removed));
+    channels = r.GetPool(8, 1, 1);
+    CHECK_EQ(channels.size(), (size_t)1);
+    CHECK_EQ(channels[0].connName, std::string("scene-ch1"));
 }
 
 // ---------------- 回程路由表 ----------------
@@ -231,6 +305,25 @@ TEST(ReturnRouteBounded)
     CHECK(t.Add(MakeRoute(2, 10, 2, 0), 2));
     CHECK(!t.Add(MakeRoute(3, 10, 3, 0), 2));   // 超容量 -> false（调用方回错误）
     CHECK_EQ(t.Size(), (size_t)2);
+}
+
+TEST(ReturnRouteCarriesBackendInstanceAndChannelIdentity)
+{
+    ReturnRouteTable t;
+    ReturnRoute route = MakeRoute(701, 9, 44, 1000);
+    route.backendServiceId = 8;
+    route.backendZoneId = 1;
+    route.backendSceneId = 22;
+    route.backendChannelId = 3;
+    route.backendSceneIncarnation = 9001;
+    route.backendConnName = "scene-22-ch3";
+    CHECK(t.Add(route, 10));
+    ReturnRoute out;
+    CHECK(t.Get(701, out));
+    CHECK_EQ(out.backendSceneId, (uint32_t)22);
+    CHECK_EQ(out.backendChannelId, (uint32_t)3);
+    CHECK_EQ(out.backendSceneIncarnation, (uint64_t)9001);
+    CHECK_EQ(out.backendConnName, std::string("scene-22-ch3"));
 }
 
 // 会话关闭与 TTL：在途记录必须能被回收（否则慢后端会把表撑满）

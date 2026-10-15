@@ -73,7 +73,7 @@ const char* ClientKindName(ClientKind k)
 }  // namespace
 
 GatewayDispatcher::GatewayDispatcher(const DispatcherConfig& cfg)
-    : cfg_(cfg)
+    : cfg_(cfg), services_(cfg.backendChannels)
 {
     LOG_INFO << "dispatcher: zoneId=" << cfg_.zoneId << " gatewayId=" << cfg_.gatewayId
              << " defaultDst=" << ServerIdName(cfg_.defaultDstService)
@@ -122,8 +122,15 @@ void GatewayDispatcher::OnClientClosed(uint64_t sessionId)
 void GatewayDispatcher::NotifySceneBinding(const ClientSession& s, bool online)
 {
     if(!s.authed || s.playerId==0 || s.dstService!=ServerID::kScene_1) return;
+    // A session without a scene assignment has not sent scene traffic yet.
+    // Do not announce it to an arbitrary instance during auth/disconnect.
+    if (s.sceneId == 0 || s.sceneConnName.empty()) return;
     ServiceEndpoint ep;
-    if(!services_.GetByService(s.dstService,ep) || !ep.conn || ep.sceneId==0) return;
+    const bool found = services_.GetByChannel(s.sceneConnName, ep);
+    if(!found || !ep.conn || ep.sceneId==0) return;
+    if (s.sceneId != 0 && (ep.serviceId != s.dstService || ep.zoneId != cfg_.zoneId ||
+        ep.sceneId != s.sceneId || ep.channelId != s.backendChannelId ||
+        ep.sceneIncarnation != s.sceneIncarnation)) return;
     ClientData d{s.playerId,s.sessionId,s.epoch,cfg_.gatewayId,ep.sceneId};
     Buffer out;
     EncodeFrame(out,MakeHeader(LinkTypeOf(ep.serviceId),GatewayPlayer::kModule,
@@ -510,10 +517,47 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     }
 
     ServiceEndpoint ep;
-    const bool selectedScene = dst == ServerID::kScene_1 && cfg_.defaultSceneId != 0;
-    const bool found = selectedScene
-        ? services_.GetByScene(dst, cfg_.zoneId, cfg_.defaultSceneId, ep)
-        : services_.GetByService(dst, ep);
+    bool found = false;
+    if (dst == ServerID::kScene_1)
+    {
+        if (s.sceneId != 0)
+            found = services_.GetByChannel(s.sceneConnName, ep) && ep.conn &&
+                    ep.serviceId == dst && ep.zoneId == cfg_.zoneId && ep.sceneId == s.sceneId &&
+                    ep.channelId == s.backendChannelId && ep.sceneIncarnation == s.sceneIncarnation;
+        else if (cfg_.defaultSceneId != 0)
+            found = services_.SelectByScene(dst, cfg_.zoneId, cfg_.defaultSceneId, ep);
+        else
+        {
+            const auto instances = services_.GetInstances(dst, cfg_.zoneId);
+            if (!instances.empty())
+            {
+                const size_t start = static_cast<size_t>(s.playerId % instances.size());
+                for (size_t i = 0; i < instances.size(); ++i)
+                {
+                    const auto& candidate = instances[(start + i) % instances.size()];
+                    if (services_.SelectByScene(dst, cfg_.zoneId, candidate.sceneId, ep))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (found && s.sceneId == 0)
+        {
+            sessions_.SetSceneBinding(sessionId, ep.sceneId, ep.channelId,
+                                      ep.sceneIncarnation, ep.connName);
+            if (!sessions_.Get(sessionId, s))
+                found = false;
+            else
+                found = services_.GetByChannel(s.sceneConnName, ep) && ep.conn &&
+                        ep.serviceId == dst && ep.zoneId == cfg_.zoneId &&
+                        ep.sceneId == s.sceneId && ep.channelId == s.backendChannelId &&
+                        ep.sceneIncarnation == s.sceneIncarnation;
+        }
+    }
+    else
+        found = services_.GetByService(dst, ep);
     if (!found || !ep.conn)
     {
         // 后端未注册（或刚断开）：明确回错误，不静默丢弃
@@ -529,6 +573,11 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     r.clientSessionId = sessionId;
     r.clientRequestId = h.requestId;
     r.backendServiceId = dst;
+    r.backendZoneId = ep.zoneId;
+    r.backendSceneId = ep.sceneId;
+    r.backendChannelId = ep.channelId;
+    r.backendSceneIncarnation = ep.sceneIncarnation;
+    r.backendConnName = ep.connName;
     r.playerId = s.playerId;
     r.module = h.module;
     r.method = h.method;
@@ -613,6 +662,13 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
 
         // 两条硬校验：白名单 + 区服一致。二者都不通过就断开，
         // 而不是"注册失败但连接留着"（否则后面每个业务帧都要重复判断）。
+        if (!ValidBackendHandshake(hs) || hs.targetGatewayId != cfg_.gatewayId ||
+            (hs.serviceId == ServerID::kScene_1 && hs.channelId >= cfg_.backendChannels))
+        {
+            backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+            conn->forceClose("backend handshake identity mismatch");
+            return;
+        }
         if (!IsAllowedService(hs.serviceId))
         {
             LOG_WARNING << "reject backend " << conn->name() << ": service="
@@ -631,7 +687,8 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         }
 
         std::string oldConn;
-        if (!services_.Bind(conn->name(), hs.serviceId, hs.zoneId, hs.sceneId, nowMs, &oldConn))
+        if (!services_.Bind(conn->name(), hs.serviceId, hs.zoneId, hs.sceneId,
+                            hs.channelId, hs.sceneIncarnation, nowMs, &oldConn))
         {
             LOG_WARNING << "bind backend failed: " << conn->name()
                         << " (conn not accepted by this gateway?)";
@@ -669,6 +726,18 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         return;
     }
 
+    // A replaced/disconnected endpoint may still have a socket object long
+    // enough for queued callbacks to arrive. It is no longer authoritative.
+    ServiceEndpoint activeEndpoint;
+    if (self.sceneId != 0 &&
+        (!services_.GetByChannel(conn->name(), activeEndpoint) ||
+         activeEndpoint.sceneIncarnation != self.sceneIncarnation ||
+         activeEndpoint.channelId != self.channelId))
+    {
+        backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     if (h.srcServiceID != self.serviceId || h.dstServiceID != cfg_.selfServiceId || h.retrFlag != 0)
     {
         LOG_WARNING << "backend header identity/retry mismatch from " << conn->name();
@@ -681,8 +750,14 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
     ReturnRoute r;
     if (h.seq != 0 && routes_.Get(h.seq, r))
     {
+        const bool legacyTestRoute = r.backendConnName.empty() && r.backendZoneId == 0 &&
+                                     r.backendSceneIncarnation == 0;
         if (r.backendServiceId != self.serviceId || r.playerId != h.playerId ||
-            r.module != h.module || r.method != h.method)
+            r.module != h.module || r.method != h.method ||
+            (!legacyTestRoute && (r.backendConnName != conn->name() ||
+            r.backendZoneId != self.zoneId || r.backendSceneId != self.sceneId ||
+            r.backendChannelId != self.channelId ||
+            r.backendSceneIncarnation != self.sceneIncarnation)))
         {
             LOG_WARNING << "backend response context mismatch: seq=" << h.seq;
             conn->forceClose("backend response context mismatch");
@@ -690,6 +765,20 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         }
         if (!routes_.Take(h.seq, r))
             return;
+        if (!legacyTestRoute && self.serviceId == ServerID::kScene_1 &&
+            r.backendConnName == conn->name())
+        {
+            ClientSession current;
+            if (sessions_.Get(r.clientSessionId, current) && current.sceneId != 0 &&
+                (current.sceneId != r.backendSceneId ||
+                 current.backendChannelId != r.backendChannelId ||
+                 current.sceneIncarnation != r.backendSceneIncarnation ||
+                 current.sceneConnName != r.backendConnName))
+            {
+                backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
         ClientSession s;
         if (sessions_.Get(r.clientSessionId, s) && s.authed && s.epoch == r.sessionEpoch && s.conn)
         {

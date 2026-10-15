@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -22,6 +23,10 @@ struct ClientSession
     uint32_t epoch      = 0;    // 该玩家在本网关的会话世代：鉴权（绑玩家）时递增
     uint64_t playerId   = 0;    // 0 = 未鉴权；非 0 之后才允许业务请求
     uint8_t  dstService = 0;    // 后续业务请求默认投递的后端服务号
+    uint32_t sceneId = 0;       // 0=尚未分配；分配后在此客户端会话生命周期内固定
+    uint32_t backendChannelId = 0;
+    uint64_t sceneIncarnation = 0;
+    std::string sceneConnName;
     bool     authed     = false;
 
     TcpConnectionPtr conn;
@@ -57,6 +62,8 @@ public:
               uint64_t& kickedSessionId);
 
     bool SetDstService(uint64_t sessionId, uint8_t dstService);
+    bool SetSceneBinding(uint64_t sessionId, uint32_t sceneId, uint32_t channelId,
+                         uint64_t sceneIncarnation, const std::string& connName);
 
     // 连接关闭：移除会话与玩家索引（只允许移除"仍指向该会话"的索引，避免误删新会话）
     bool Erase(uint64_t sessionId);

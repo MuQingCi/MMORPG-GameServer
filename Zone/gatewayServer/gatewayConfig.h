@@ -28,6 +28,7 @@ class GatewayConfig
 public:
     uint32_t    zoneId = 1;                     // 所属区服（后端握手上报的 zoneId 必须与它一致）
     uint32_t    gatewayId = 1;                  // 本网关在集群内的编号（用于会话/日志区分）
+    uint32_t    backendChannels = 1;             // 接受的场景 channel 数，必须与区服配置一致
 
     // ---- 公网（客户端）监听 ----
     std::string publicListenAddr = "127.0.0.1";

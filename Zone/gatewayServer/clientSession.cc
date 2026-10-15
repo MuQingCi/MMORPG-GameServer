@@ -1,4 +1,5 @@
 #include "clientSession.h"
+#include "base/proto.h"
 #include <limits>
 
 uint64_t ClientSessionTable::Create(const TcpConnectionPtr& conn, uint8_t defaultDstService, int64_t nowMs)
@@ -73,8 +74,16 @@ bool ClientSessionTable::Bind(uint64_t sessionId, uint64_t playerId, uint8_t dst
     }
 
     const uint32_t epoch = ++playerEpoch_[playerId];
+    const bool serviceChanged = it->second.dstService != dstService;
     it->second.playerId = playerId;
     it->second.dstService = dstService;
+    if (serviceChanged)
+    {
+        it->second.sceneId = 0;
+        it->second.backendChannelId = 0;
+        it->second.sceneIncarnation = 0;
+        it->second.sceneConnName.clear();
+    }
     it->second.authed = true;
     it->second.epoch = epoch;
     it->second.authedAtMs = nowMs;
@@ -89,12 +98,41 @@ bool ClientSessionTable::SetDstService(uint64_t sessionId, uint8_t dstService)
     auto it = sessions_.find(sessionId);
     if (it == sessions_.end())
         return false;
-    if(it->second.dstService != dstService && it->second.authed) {
+    const bool changed = it->second.dstService != dstService;
+    if(changed && it->second.authed) {
         auto& epoch=playerEpoch_[it->second.playerId];
         if(epoch==std::numeric_limits<uint32_t>::max()) return false;
         it->second.epoch=++epoch;
     }
     it->second.dstService = dstService;
+    if (changed)
+    {
+        it->second.sceneId = 0;
+        it->second.backendChannelId = 0;
+        it->second.sceneIncarnation = 0;
+        it->second.sceneConnName.clear();
+    }
+    return true;
+}
+
+bool ClientSessionTable::SetSceneBinding(uint64_t sessionId, uint32_t sceneId,
+                                         uint32_t channelId, uint64_t sceneIncarnation,
+                                         const std::string& connName)
+{
+    if (sceneId == 0 || sceneIncarnation == 0 || connName.empty())
+        return false;
+    std::lock_guard<std::mutex> lk(mtx_);
+    auto it = sessions_.find(sessionId);
+    if (it == sessions_.end() || !it->second.authed || it->second.dstService != ServerID::kScene_1)
+        return false;
+    ClientSession& session = it->second;
+    if (session.sceneId != 0)
+        return session.sceneId == sceneId && session.backendChannelId == channelId &&
+               session.sceneIncarnation == sceneIncarnation && session.sceneConnName == connName;
+    session.sceneId = sceneId;
+    session.backendChannelId = channelId;
+    session.sceneIncarnation = sceneIncarnation;
+    session.sceneConnName = connName;
     return true;
 }
 

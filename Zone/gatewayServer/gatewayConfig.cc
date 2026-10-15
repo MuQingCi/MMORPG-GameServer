@@ -73,6 +73,7 @@ bool GatewayConfig::Load(const std::string& path, GatewayConfig& out, std::strin
 
     out.zoneId = (uint32_t)y.GetUInt("gateway.zoneId", out.zoneId);
     out.gatewayId = (uint32_t)y.GetUInt("gateway.gatewayId", out.gatewayId);
+    out.backendChannels = (uint32_t)y.GetUInt("gateway.backendChannels", out.backendChannels);
 
     // ---------------- 公网监听（客户端）----------------
     out.publicListenAddr = y.GetStr("gateway.publicConfig.listenAddr", out.publicListenAddr);
@@ -162,6 +163,8 @@ std::vector<std::string> GatewayConfig::Validate() const
 
     if (gatewayId == 0)
         errs.push_back("gateway.gatewayId must be >= 1");
+    if (backendChannels == 0 || backendChannels > 64)
+        errs.push_back("gateway.backendChannels must be in [1, 64]");
 
     if (publicListenAddr.empty())
         errs.push_back("gateway.publicConfig.listenAddr must not be empty");

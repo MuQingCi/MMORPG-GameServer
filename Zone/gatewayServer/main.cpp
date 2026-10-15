@@ -123,6 +123,7 @@ int main(int argc, char** argv)
     dcfg.selfServiceId      = ServerID::kGateway;
     dcfg.zoneId             = cfg.zoneId;
     dcfg.gatewayId          = cfg.gatewayId;
+    dcfg.backendChannels    = cfg.backendChannels;
     dcfg.defaultDstService  = cfg.defaultServiceId;
     dcfg.defaultSceneId     = cfg.defaultSceneId;
     dcfg.allowedServices    = cfg.allowedServices;

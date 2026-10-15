@@ -23,6 +23,7 @@ struct DispatcherConfig
     uint8_t  selfServiceId      = 1;    // 本网关在服务间链路里的服务号（ServerID::kGateway）
     uint32_t zoneId             = 1;    // 所属区服：与后端握手上报的 zoneId 必须一致
     uint32_t gatewayId          = 1;
+    uint32_t backendChannels     = 1;
     uint8_t  defaultDstService  = 8;    // 客户端未显式绑定后端服务时的默认目标（ServerID::kScene_1）
     uint32_t defaultSceneId     = 0;    // 0 = 兼容旧单实例选择；非 0 = 优先选择指定场景实例
     std::vector<uint8_t> allowedServices;  // 允许注册的后端服务号白名单（空 = 不允许任何后端注册）
@@ -37,13 +38,13 @@ struct DispatcherConfig
 };
 
 /**
- * @brief 网关数据面：**把两类链路彻底分开处理**
+ * @brief 网关数据面：两类链路分开处理
  *
  * 两类链路（这与"两个 Acceptor"是同一个区分的两个层面：传输层端口 + 协议层帧）：
  *
  *   Client  链路（公网端口）
-     *     帧格式 : base/clientProto.h 的 ClientFrame v2（32B 头、魔数 0xC1EB、有 kind/requestId/roleName）
- *     信任级别: **不可信**。playerId/zoneId 一律由网关在鉴权后绑定，客户端包头里的任何
+*     帧格式 : base/clientProto.h 的 ClientFrame v2（32B 头、魔数 0xC1EB、有 kind/requestId/roleName）
+ *     信任级别: 不可信,playerId/zoneId 一律由网关在鉴权后绑定，客户端包头里的任何
  *              身份字段都不参与路由；未鉴权连接只能发控制帧。
  *     入站   : 鉴权 / 绑定后端服务 / 心跳 / 业务请求
  *     出站   : 响应（按内部 seq 反查回程路由）、推送（按 playerId 反查会话）、错误
@@ -115,7 +116,7 @@ private:
                       const char* reason);
 
     // 每连接的流量守卫（decode 错误计数 + 帧速率）：越界则返回 false，调用方必须断开连接
-    // 注意：速率是**按帧**计数的（见 AllowFrame），不是按"收包回调次数"——
+    // 注意：速率是 按帧 计数的，不是按"收包回调次数"
     // 一次回调可能解出成千上万帧，按回调计数等于没拦（1MB 突发 ≈ 5 万个最小帧）。
     bool CheckReadBuffer(const TcpConnectionPtr& conn);
     bool AllowFrame(const TcpConnectionPtr& conn, int64_t nowMs);

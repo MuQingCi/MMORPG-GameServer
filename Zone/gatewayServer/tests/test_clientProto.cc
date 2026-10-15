@@ -318,26 +318,64 @@ TEST(ClientControlBodyBounds)
     CHECK_EQ(svc, (uint8_t)8);
 }
 
-// 服务间握手体：与场景服既有小端布局必须完全一致（9 字节）
+// 服务间握手体：v1 身份字段采用小端编码，且拒绝旧版/畸形体。
 TEST(BackendHandshakeCodec)
 {
     BackendHandshake hs;
+    hs.protocolVersion = BackendHandshake::kProtocolVersion;
     hs.serviceId = ServerID::kScene_1;
     hs.zoneId = 0x01020304;
-    hs.sceneId = 1;
+    hs.sceneId = 0x11223344;
+    hs.sceneIncarnation = 0x0102030405060708ULL;
+    hs.targetGatewayId = 0x55667788;
+    hs.channelId = 0x99aabbcc;
 
     const std::string body = PackBackendHandshake(hs);
-    CHECK_EQ(body.size(), (size_t)9);
-    CHECK_EQ((uint8_t)body[0], (uint8_t)8);
-    CHECK_EQ((uint8_t)body[1], (uint8_t)0x04);   // 小端
-    CHECK_EQ((uint8_t)body[4], (uint8_t)0x01);
+    CHECK_EQ(body.size(), BackendHandshake::kEncodedSize);
+    CHECK_EQ((uint8_t)body[0], (uint8_t)1); // version u16 LE
+    CHECK_EQ((uint8_t)body[1], (uint8_t)0);
+    CHECK_EQ((uint8_t)body[2], (uint8_t)8);
+    CHECK_EQ((uint8_t)body[3], (uint8_t)0x04); // zone u32 LE
+    CHECK_EQ((uint8_t)body[7], (uint8_t)0x44); // scene u32 LE
+    CHECK_EQ((uint8_t)body[11], (uint8_t)0x08); // incarnation u64 LE
+    CHECK_EQ((uint8_t)body[19], (uint8_t)0x88); // gateway u32 LE
+    CHECK_EQ((uint8_t)body[23], (uint8_t)0xcc); // channel u32 LE
 
     BackendHandshake out;
     CHECK(UnpackBackendHandshake(body, out));
     CHECK_EQ(out.serviceId, (uint8_t)ServerID::kScene_1);
     CHECK_EQ(out.zoneId, (uint32_t)0x01020304);
-    CHECK_EQ(out.sceneId, (uint32_t)1);
+    CHECK_EQ(out.sceneId, (uint32_t)0x11223344);
+    CHECK_EQ(out.sceneIncarnation, (uint64_t)0x0102030405060708ULL);
+    CHECK_EQ(out.targetGatewayId, (uint32_t)0x55667788);
+    CHECK_EQ(out.channelId, (uint32_t)0x99aabbcc);
 
-    CHECK(!UnpackBackendHandshake(std::string(8, 'x'), out));   // 短包拒绝
-    CHECK(!UnpackBackendHandshake(body + "x", out));             // 尾随字节拒绝
+    CHECK(!UnpackBackendHandshake(std::string(9, 'x'), out)); // legacy refused
+    CHECK(!UnpackBackendHandshake(body.substr(0, body.size()-1), out));
+    CHECK(!UnpackBackendHandshake(body + "x", out));
+    std::string badVersion = body;
+    badVersion[0] = 2;
+    CHECK(!UnpackBackendHandshake(badVersion, out));
+}
+
+TEST(BackendHandshakeSemanticValidation)
+{
+    BackendHandshake hs;
+    hs.serviceId = ServerID::kScene_1;
+    hs.zoneId = 1;
+    hs.sceneId = 1;
+    hs.sceneIncarnation = 1;
+    hs.targetGatewayId = 1;
+    CHECK(ValidBackendHandshake(hs));
+    hs.targetGatewayId = 0;
+    CHECK(!ValidBackendHandshake(hs));
+    hs.targetGatewayId = 1;
+    hs.sceneIncarnation = 0;
+    CHECK(!ValidBackendHandshake(hs));
+    hs.serviceId = ServerID::kChat;
+    hs.sceneId = 0;
+    hs.sceneIncarnation = 0;
+    CHECK(ValidBackendHandshake(hs));
+    hs.channelId = 1;
+    CHECK(!ValidBackendHandshake(hs));
 }

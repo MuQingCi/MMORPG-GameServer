@@ -40,6 +40,10 @@ uint16_t EnvPort(const char* name)
 
 uint16_t PublicPort()  { return EnvPort("GW_PUBLIC_PORT"); }
 uint16_t PrivatePort() { return EnvPort("GW_PRIVATE_PORT"); }
+uint32_t GatewayId() {
+    const char* value = std::getenv("GW_GATEWAY_ID");
+    return value && *value ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 1;
+}
 
 bool EnvReady()
 {
@@ -74,15 +78,34 @@ bool AuthClient(e2e::Conn& c, uint64_t playerId, uint64_t ticket, uint32_t& epoc
 }
 
 // 场景服侧握手：上报服务身份（这是后端唯一的注册入口）
-bool SendBackendHandshake(e2e::Conn& c, uint8_t serviceId, uint32_t zoneId, uint32_t sceneId)
+bool SendBackendHandshake(e2e::Conn& c, uint8_t serviceId, uint32_t zoneId,
+                          uint32_t sceneId, uint32_t gatewayId,
+                          uint32_t channelId = 0, uint64_t incarnation = 1)
 {
     BackendHandshake hs;
     hs.serviceId = serviceId;
     hs.zoneId = zoneId;
     hs.sceneId = sceneId;
+    hs.sceneIncarnation = sceneId == 0 ? 0 : incarnation;
+    hs.targetGatewayId = gatewayId;
+    hs.channelId = channelId;
     return c.sendGateFrame(NetMessageType::kSceneMsg, SysModule::kSYS, SysMethod::kHandshake,
                            /*seq=*/0, /*playerId=*/0, serviceId, ServerID::kGateway,
                            PackBackendHandshake(hs));
+}
+
+TEST(E2eBackendHandshakeRejectsWrongGatewayAndChannel)
+{
+    if (!EnvReady()) { CHECK(false); return; }
+    for (const auto& identity : {std::pair<uint32_t, uint32_t>{GatewayId() + 1, 0},
+                                 std::pair<uint32_t, uint32_t>{GatewayId(), 1}})
+    {
+        e2e::Conn backend;
+        CHECK(backend.open(PrivatePort()));
+        CHECK(SendBackendHandshake(backend, ServerID::kScene_1, 1, 1,
+                                   identity.first, identity.second));
+        CHECK(backend.expectClosedByPeer(1000));
+    }
 }
 
 bool IsSceneOnlineBinding(const Header& h, const std::string& body)
@@ -283,7 +306,7 @@ TEST(E2eFullPathAndNoCrossTalk)
     // ---- 3.1 场景服上线：连内网端口 + 握手（不发握手 ack，注册成功由后续转发证明）----
     auto backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, /*zoneId=*/1, /*sceneId=*/1));
+    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1, GatewayId()));
 
     // ---- 3.2 两个客户端鉴权：**playerId 由网关绑定** ----
     e2e::Conn ca;
@@ -424,7 +447,7 @@ TEST(E2eBackendResponseContextGuard)
 
     auto backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1));
+    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1, GatewayId()));
     Header req;
     std::string body;
     // 握手没有 ACK；用有界轮询等待注册完成，避免异步事件循环的时间竞态。
@@ -460,26 +483,22 @@ TEST(E2eBackendResponseContextGuard)
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
                                  req.seq, req.playerId, ServerID::kDB, ServerID::kGateway, "spoof"));
     CHECK(backend->expectClosedByPeer(1000));
-    backend.reset();
-    backend = std::make_unique<e2e::Conn>();
-    CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1));
+    // The original backend connection remains authoritative for this route.
 
     // 正确服务号但错误玩家/方法，同样不能抢占尚未消费的路由。
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
                                  req.seq, 4002, ServerID::kScene_1, ServerID::kGateway, "wrong-player"));
     CHECK(backend->expectClosedByPeer(1000));
+    // A malformed response closes the original connection and invalidates its
+    // routes. A newly registered connection must not claim that old seq.
     backend.reset();
     backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1));
+    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1, GatewayId()));
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
-                                 req.seq, req.playerId, ServerID::kScene_1, ServerID::kGateway, "valid"));
+                                 req.seq, req.playerId, ServerID::kScene_1, ServerID::kGateway, "stale"));
     ClientHeader response;
-    CHECK(client.readClientFrame(response, body, 2000));
-    CHECK(response.kind == ClientKind::kResponse);
-    CHECK_EQ(response.requestId, (uint64_t)42);
-    CHECK(body == "valid");
+    CHECK(!client.readClientFrame(response, body, 300));
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ gateway:
     # 键名统一小驼峰：与 config/zoneConfig.yaml 的 zoneId 写法一致。
     zoneId: 1               # 所属区服（后端握手上报的 zoneId 必须与它一致，否则连接被拒）
     gatewayId: 1            # 本网关在集群内的编号（多网关部署时区分）
+    backendChannels: 1       # scene 后端 channel 数，须与 ZoneServer.backendChannels 对齐 [1,64]
 
     # ------------------------------------------------------------------
     # 公网监听：只接客户端（ClientFrame 协议，魔数 0xC1EB）

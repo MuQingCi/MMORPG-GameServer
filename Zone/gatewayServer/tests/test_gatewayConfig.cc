@@ -93,6 +93,20 @@ TEST(GatewayConfigLoadsReusePort)
     std::remove(kTmpPath);
 }
 
+TEST(GatewayConfigRejectsInvalidBackendChannelCount)
+{
+    CHECK(WriteFile(kTmpPath,
+        "gateway:\n    zoneId: 1\n    gatewayId: 2\n    backendChannels: 65\n"
+        "    publicConfig:\n        listenAddr: 127.0.0.1\n        listenPort: 20001\n"
+        "    privateConfig:\n        listenAddr: 127.0.0.1\n        listenPort: 20002\n"
+        "        allowedServices:\n            - 8\n    eventThreadNum: 2\n"));
+    GatewayConfig cfg;
+    std::string err;
+    CHECK(!GatewayConfig::Load(kTmpPath, cfg, err));
+    CHECK(err.find("backendChannels") != std::string::npos);
+    std::remove(kTmpPath);
+}
+
 // 直接读取两份部署用配置，防止后端目标误指向客户端公网端口。
 TEST(GatewayPrivateEndpointMatchesZoneConfig)
 {
@@ -114,10 +128,13 @@ TEST(GatewayPrivateEndpointMatchesZoneConfig)
     CHECK(!endpoints.empty());
     for (const auto& endpoint : endpoints)
     {
+        const auto equal = endpoint.find('=');
+        CHECK(equal != std::string::npos);
+        if (equal == std::string::npos) continue;
         const auto separator = endpoint.rfind(':');
         CHECK(separator != std::string::npos);
         if (separator == std::string::npos) continue;
-        CHECK_EQ(endpoint.substr(0, separator), gateway.privateListenAddr);
+        CHECK_EQ(endpoint.substr(equal + 1, separator - equal - 1), gateway.privateListenAddr);
         CHECK_EQ(endpoint.substr(separator + 1), std::to_string(gateway.privateListenPort));
     }
 }
