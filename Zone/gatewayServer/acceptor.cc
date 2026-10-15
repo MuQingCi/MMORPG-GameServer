@@ -4,12 +4,15 @@
 #include <cerrno>
 #include <sys/socket.h>
 
-Acceptor::Acceptor(EventLoop* loop, const InetAddress& addr,connRole role) 
+Acceptor::Acceptor(EventLoop* loop, const InetAddress& addr, connRole role, bool reusePort)
                  : loop_(loop), 
                    listenSock_(AF_INET), acceptChannel_(loop, listenSock_.Fd()),
-                   role_(role)
+                   role_(role),
+                   reusePort_(reusePort)
 {
     listenSock_.setReuseAddress(true);
+    if (reusePort_)
+        listenSock_.setReusePort(true);
     listenSock_.setNonBlocking(true);
     listenSock_.bind(addr);
     // 同线程回调：channel 的读事件由本 EventLoop 分发，Acceptor 的生命周期由 GatewayServer 保证

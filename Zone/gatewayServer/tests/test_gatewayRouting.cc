@@ -128,7 +128,8 @@ TEST(ServiceRegistryReRegisterReplacesOld)
     CHECK(r.Bind("b-old", 8, 1, 1, 1000, &oldConn));
     CHECK(oldConn.empty());
 
-    CHECK(r.Bind("b-new", 8, 1, 2, 2000, &oldConn));
+    // 同一实例的重连才替换；不同 sceneId 属于两个并存实例。
+    CHECK(r.Bind("b-new", 8, 1, 1, 2000, &oldConn));
     CHECK_EQ(oldConn, std::string("b-old"));   // 调用方据此关闭旧连接
 
     ServiceEndpoint ep;
@@ -148,6 +149,40 @@ TEST(ServiceRegistryReRegisterReplacesOld)
     CHECK(!r.GetByService(8, ep));
     CHECK_EQ(r.ReadyCount(), (size_t)0);
     CHECK(!r.RemoveByName("b-new", removed));  // 重复移除幂等
+}
+
+TEST(ServiceRegistrySupportsMultipleSceneInstances)
+{
+    ServiceRegistry r;
+    CHECK(r.AddPending("scene-1", nullptr));
+    CHECK(r.AddPending("scene-2", nullptr));
+
+    CHECK(r.Bind("scene-1", 8, 1, 1, 1000, nullptr));
+    CHECK(r.Bind("scene-2", 8, 1, 2, 1001, nullptr));
+    CHECK_EQ(r.ReadyCount(), (size_t)2);
+
+    ServiceEndpoint ep;
+    CHECK(r.GetByScene(8, 1, 1, ep));
+    CHECK_EQ(ep.connName, std::string("scene-1"));
+    CHECK(r.GetByScene(8, 1, 2, ep));
+    CHECK_EQ(ep.connName, std::string("scene-2"));
+    CHECK(!r.GetByScene(8, 1, 3, ep));
+
+    const auto instances = r.GetInstances(8, 1);
+    CHECK_EQ(instances.size(), (size_t)2);
+}
+
+TEST(ServiceRegistryRebindRemovesOldInstanceIndex)
+{
+    ServiceRegistry r;
+    CHECK(r.AddPending("scene", nullptr));
+    CHECK(r.Bind("scene", 8, 1, 1, 1000, nullptr));
+    CHECK(r.Bind("scene", 8, 1, 2, 1001, nullptr));
+
+    ServiceEndpoint ep;
+    CHECK(!r.GetByScene(8, 1, 1, ep));
+    CHECK(r.GetByScene(8, 1, 2, ep));
+    CHECK_EQ(r.ReadyCount(), (size_t)1);
 }
 
 // ---------------- 回程路由表 ----------------
@@ -215,4 +250,16 @@ TEST(ReturnRouteEraseBySessionAndSweep)
     CHECK_EQ(t.Size(), (size_t)1);
     CHECK_EQ(t.Sweep(1000 + 15100, 15000), (size_t)1);
     CHECK_EQ(t.Size(), (size_t)0);
+}
+
+TEST(ReturnRouteSweepExpiredReturnsContext)
+{
+    ReturnRouteTable t;
+    CHECK(t.Add(MakeRoute(11, 21, 301, 1000), 100));
+    CHECK(t.Add(MakeRoute(12, 22, 302, 1000), 100));
+    const auto expired = t.SweepExpired(17001, 15000);
+    CHECK_EQ(expired.size(), (size_t)2);
+    CHECK_EQ(t.Size(), (size_t)0);
+    CHECK((expired[0].clientRequestId == 301 || expired[1].clientRequestId == 301));
+    CHECK((expired[0].clientRequestId == 302 || expired[1].clientRequestId == 302));
 }

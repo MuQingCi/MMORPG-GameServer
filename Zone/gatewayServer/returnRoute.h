@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 /**
  * @brief 一次"客户端请求 -> 后端响应"的回程记录
@@ -48,6 +49,7 @@ public:
 
     size_t EraseBySession(uint64_t clientSessionId);
     size_t Sweep(int64_t nowMs, uint32_t ttlMs);
+    std::vector<ReturnRoute> SweepExpired(int64_t nowMs, uint32_t ttlMs);
 
     size_t Size() const;
 

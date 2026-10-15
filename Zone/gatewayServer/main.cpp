@@ -32,6 +32,9 @@
 #include <cstdio>
 #include <string>
 #include <sys/stat.h>
+#include <fstream>
+#include <cstdio>
+#include <unistd.h>
 
 namespace
 {
@@ -44,6 +47,31 @@ void EnsureDir(const std::string& dir)
 {
     if (!dir.empty())
         ::mkdir(dir.c_str(), 0755);
+}
+
+void WriteGatewayMetrics(const std::string& path, const GatewayDispatcher::Stats& st)
+{
+    if (path.empty()) return;
+    const std::string tmp = path + ".tmp." + std::to_string(static_cast<long long>(::getpid()));
+    std::ofstream out(tmp, std::ios::trunc);
+    if (!out) return;
+    out << "{\"clientSessions\":" << st.clientSessions
+        << ",\"backendReady\":" << st.backendReady
+        << ",\"backendPending\":" << st.backendPending
+        << ",\"pendingRoutes\":" << st.pendingRoutes
+        << ",\"clientFramesRecv\":" << st.clientFramesRecv
+        << ",\"clientFramesSent\":" << st.clientFramesSent
+        << ",\"backendFramesRecv\":" << st.backendFramesRecv
+        << ",\"backendFramesSent\":" << st.backendFramesSent
+        << ",\"clientFramesRejected\":" << st.clientFramesRejected
+        << ",\"backendFramesDropped\":" << st.backendFramesDropped
+        << ",\"clientDecodeErrors\":" << st.clientDecodeErrors
+        << ",\"backendDecodeErrors\":" << st.backendDecodeErrors
+        << ",\"protocolMismatch\":" << st.protocolMismatch
+        << ",\"kickedSessions\":" << st.kickedSessions
+        << ",\"timedOutRoutes\":" << st.timedOutRoutes << "}\n";
+    out.close();
+    ::rename(tmp.c_str(), path.c_str());
 }
 }  // namespace
 
@@ -76,7 +104,8 @@ int main(int argc, char** argv)
     LOG_INFO << "gateway config ready, zoneId=" << cfg.zoneId << " gatewayId=" << cfg.gatewayId
              << " public=" << cfg.publicListenAddr << ":" << cfg.publicListenPort
              << " private=" << cfg.privateListenAddr << ":" << cfg.privateListenPort
-             << " eventThreadNum=" << cfg.eventThreadNum;
+             << " eventThreadNum=" << cfg.eventThreadNum
+             << " reusePort=" << (cfg.reusePort ? "true" : "false");
 
     if (cfg.clientToken == 0)
         LOG_WARNING << "gateway.clientToken == 0：客户端鉴权校验已关闭（仅联调可用，勿用于生产）";
@@ -95,18 +124,21 @@ int main(int argc, char** argv)
     dcfg.zoneId             = cfg.zoneId;
     dcfg.gatewayId          = cfg.gatewayId;
     dcfg.defaultDstService  = cfg.defaultServiceId;
+    dcfg.defaultSceneId     = cfg.defaultSceneId;
     dcfg.allowedServices    = cfg.allowedServices;
     dcfg.clientToken        = cfg.clientToken;
     dcfg.maxClientSessions  = cfg.maxClientSessions;
     dcfg.maxPendingRoutes   = cfg.maxPendingRoutes;
     dcfg.routeTtlMs         = cfg.routeTtlMs;
+    dcfg.maxFramesPerSec    = cfg.maxFramesPerSec;
 
     GatewayServer server(&baseLoop,
                          [](EventLoop*) { Current::setThreadName("gateway-io"); },
                          publicAddr,
                          privateAddr,
                          dcfg,
-                         cfg.eventThreadNum);
+                         cfg.eventThreadNum,
+                         cfg.reusePort);
 
     // 连接生命周期只在这里打日志（协议/鉴权/路由都在 GatewayDispatcher 内完成）。
     // c/b 前缀 + 角色名让"这条连接属于哪类数据"在日志里一眼可分。
@@ -116,6 +148,14 @@ int main(int argc, char** argv)
     });
 
     server.start();
+    TimerId metricsTimer;
+    if (!cfg.metricsPath.empty())
+    {
+        WriteGatewayMetrics(cfg.metricsPath, server.dispatcherSnapshot());
+        metricsTimer = baseLoop.runEvery(1.0, [&server, &cfg] {
+            WriteGatewayMetrics(cfg.metricsPath, server.dispatcherSnapshot());
+        });
+    }
     LOG_INFO << "gateway started, public(clients) on " << cfg.publicListenAddr << ":"
              << cfg.publicListenPort << ", private(servers) on " << cfg.privateListenAddr << ":"
              << cfg.privateListenPort;
@@ -125,6 +165,8 @@ int main(int argc, char** argv)
     baseLoop.loop();
 
     server.stop();
+    if (metricsTimer.valid())
+        baseLoop.cancel(metricsTimer);
     LOG_INFO << "gateway stopped";
 
     Logger::set_AsyncLogger(nullptr);   // 先摘后端再停线程，避免日志线程退出后仍被写入

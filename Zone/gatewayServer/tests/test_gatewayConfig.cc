@@ -80,6 +80,17 @@ TEST(GatewayConfigLoadFromRealFile)
     CHECK_EQ(cfg.clientToken, (uint64_t)998877);
     CHECK_EQ(cfg.eventThreadNum, (uint32_t)4);
     CHECK(cfg.logLevel == "info");
+    CHECK(!cfg.reusePort);
+}
+
+TEST(GatewayConfigLoadsReusePort)
+{
+    CHECK(WriteFile(kTmpPath, Cfg("20001", "20002", "    reusePort: true\n")));
+    GatewayConfig cfg;
+    std::string err;
+    CHECK(Load(kTmpPath, cfg, err));
+    CHECK(cfg.reusePort);
+    std::remove(kTmpPath);
 }
 
 // 直接读取两份部署用配置，防止后端目标误指向客户端公网端口。

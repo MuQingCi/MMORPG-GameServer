@@ -24,6 +24,9 @@ void Channel::handleEvent()
     if((revents_ & EPOLLERR ))
     {
         if(errorCallback_) errorCallback_();
+        // errorCallback_ 通常会关闭并摘除 channel；不能再继续调用同一连接的
+        // read/write 回调，否则会在一次 epoll 事件中二次访问已关闭的连接。
+        return;
     }
 
     //Read
@@ -36,6 +39,7 @@ void Channel::handleEvent()
     if((revents_ & EPOLLHUP) && !(revents_ & EPOLLIN))
     {
         if(errorCallback_) errorCallback_();
+        return;
     }
 
 

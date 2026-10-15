@@ -25,6 +25,7 @@ gateway:
             - 8
 
     eventThreadNum: 4       # IO 线程数（>=1）：acceptor 与连接分摊到这些线程的 EventLoop 上
+    reusePort: false        # 多 gateway 进程共享 public/private 监听地址和端口时启用 SO_REUSEPORT
 
     # ------------------------------------------------------------------
     # 公网接入策略
@@ -33,6 +34,7 @@ gateway:
     # 正式方案是登录服签发 token（阶段 5/7），这里先把"未鉴权不得访问业务路由"这条不变量立住。
     clientToken: 998877
     defaultServiceId: 8     # 客户端未显式绑定后端服务时的默认目标（8=SCENE_1）
+    defaultSceneId: 0       # 0=兼容旧单实例；设置为具体 sceneId 后优先路由该实例
     maxClientSessions: 4096 # 公网连接数上限（超过则拒绝新连接）
     maxPendingRoutes: 10000 # 在途请求上限（有界：满了回错误，不让内存无界增长）
     routeTtlMs: 15000       # 回程路由 TTL(ms)：后端超时不响应时回收记录

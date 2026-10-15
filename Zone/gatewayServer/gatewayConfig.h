@@ -36,6 +36,7 @@ public:
     // ---- 内网（区服内其它服务器）监听 ----
     std::string privateListenAddr = "127.0.0.1";
     uint16_t    privateListenPort = 13145;
+    bool        reusePort = false;              // 多 gateway 进程共享相同监听地址/端口
     std::vector<uint8_t> allowedServices{8};    // 允许注册的后端服务号白名单（8 = SCENE_1）
 
     uint32_t    eventThreadNum = 4;             // IO 线程数（>=1）
@@ -43,14 +44,17 @@ public:
     // ---- 公网接入策略 ----
     uint64_t    clientToken = 0;                // 客户端最小鉴权票据；0 = 关闭校验（仅联调）
     uint8_t     defaultServiceId = 8;           // 客户端未绑定后端服务时的默认目标
+    uint32_t    defaultSceneId = 0;              // 0 = 兼容旧单实例；非 0 = 指定场景实例
     uint32_t    maxClientSessions = 4096;       // 公网连接数上限
     uint32_t    maxPendingRoutes = 10000;       // 在途请求上限（有界，防内存无界增长）
     uint32_t    routeTtlMs = 15000;             // 回程路由 TTL：后端不响应时回收
+    uint32_t    maxFramesPerSec = 500;          // 单连接入站帧速率上限
 
     // 日志级别：debug / info / warn / error
     // （网关原先写死 INFO，排障时只能改代码重编；这里先做成配置项，
     //   与 zoneConfig 的 log.level 统一是阶段 4 的收尾项）
     std::string logLevel = "info";
+    std::string metricsPath;                    // 空 = 不导出运行指标
 
     // 加载：失败返回 false 并填充 err（文件不存在 / 语法错误 / 未知键 / 缺白名单 / 字段非法）
     static bool Load(const std::string& path, GatewayConfig& out, std::string& err);

@@ -71,6 +71,23 @@ size_t ReturnRouteTable::Sweep(int64_t nowMs, uint32_t ttlMs)
     return n;
 }
 
+std::vector<ReturnRoute> ReturnRouteTable::SweepExpired(int64_t nowMs, uint32_t ttlMs)
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    std::vector<ReturnRoute> expired;
+    for (auto it = routes_.begin(); it != routes_.end();)
+    {
+        if (nowMs - it->second.createdAtMs > static_cast<int64_t>(ttlMs))
+        {
+            expired.push_back(it->second);
+            it = routes_.erase(it);
+        }
+        else
+            ++it;
+    }
+    return expired;
+}
+
 size_t ReturnRouteTable::Size() const
 {
     std::lock_guard<std::mutex> lk(mtx_);

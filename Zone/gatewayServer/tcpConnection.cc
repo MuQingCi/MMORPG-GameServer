@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <fcntl.h>
 #include <random>
 #include <sys/sendfile.h>
@@ -162,16 +163,21 @@ void TcpConnection::shutdown()
 {
     if(state_.load(std::memory_order_acquire) == kConnected)
     {
+        LOG_WARNING << "tcp shutdown requested: conn=" << name_ << " role="
+                    << (role() == connRole::Client ? "client" : "backend");
         setState(kDisConnecting);
         auto self = shared_from_this();
         loop_->runInLoop([self] { self->shutdownInLoop(); });
     }
 }
 
-void TcpConnection::forceClose()
+void TcpConnection::forceClose(const char* reason)
 {
     if(state_.load(std::memory_order_acquire) == kConnected || state_.load(std::memory_order_acquire) == kDisConnecting)
     {
+        LOG_WARNING << "tcp force close requested: conn=" << name_ << " role="
+                    << (role() == connRole::Client ? "client" : "backend")
+                    << " reason=" << reason;
         setState(kDisConnecting);
         auto self = shared_from_this();
         loop_->runInLoop([self]{ self->forceCloseInLoop(); });
@@ -314,10 +320,14 @@ void TcpConnection::sendInLoop(const void* data, size_t len)
         else
         {
             n = 0;
-            if(errno != EAGAIN)
+            const int savedErrno = errno;
+            if(savedErrno != EAGAIN && savedErrno != EWOULDBLOCK)
             {
-                //TODO 错误处理
-                LOG_ERROR<<"Has a Error!";
+                if (savedErrno == EINTR)
+                    return sendInLoop(data, len);
+                LOG_ERROR << "tcp send error: conn=" << name_ << " role="
+                          << (role() == connRole::Client ? "client" : "backend")
+                          << " errno=" << savedErrno << " (" << std::strerror(savedErrno) << ")";
                 handleClose();
             }
         }
@@ -391,11 +401,15 @@ void TcpConnection::handleRead()
     }
     else if(n == 0)
     {
+        LOG_WARNING << "tcp read EOF: conn=" << name_ << " role="
+                    << (role() == connRole::Client ? "client" : "backend");
         handleClose();
     }
     else {
         if(savedErrno != EAGAIN)
-        LOG_ERROR << "read Buffer error!";
+        LOG_ERROR << "tcp read error: conn=" << name_ << " role="
+                  << (role() == connRole::Client ? "client" : "backend")
+                  << " errno=" << savedErrno;
         handleError();
     }
         
@@ -424,7 +438,12 @@ void TcpConnection::handleWrite()
         }
         else {
             if(savedErrno != EAGAIN)
+            {
+                LOG_ERROR << "tcp write buffer error: conn=" << name_ << " role="
+                          << (role() == connRole::Client ? "client" : "backend")
+                          << " errno=" << savedErrno;
                 handleError();
+            }
         }
         // 如果 writeBuffer_ 还有数据未发完，等待下次 EPOLLOUT
         if(writeBuffer_.readableBytes() > 0)
@@ -497,7 +516,8 @@ void TcpConnection::handleWrite()
 
 void TcpConnection::handleClose()
 {
-    LOG_INFO << "Handle Close";
+    LOG_WARNING << "tcp handle close: conn=" << name_ << " role="
+                << (role() == connRole::Client ? "client" : "backend");
     
     loop_->assertInLoopThread();
     
@@ -556,13 +576,18 @@ void TcpConnection::handleClose()
 
 void TcpConnection::handleError()
 {
-    LOG_ERROR<<"Has a Error!";
+    LOG_ERROR << "tcp handle error: conn=" << name_ << " role="
+              << (role() == connRole::Client ? "client" : "backend");
     handleClose();
 }
 
 void TcpConnection::shutdownInLoop()
 {
     loop_->assertInLoopThread();
+    LOG_WARNING << "tcp shutdown in loop: conn=" << name_ << " role="
+                << (role() == connRole::Client ? "client" : "backend")
+                << " writing=" << channel_.isWriting()
+                << " buffered=" << writeBuffer_.readableBytes();
     if(!channel_.isWriting())
     {
         // 无待写数据：关闭写端并立即清理连接
@@ -581,6 +606,8 @@ void TcpConnection::shutdownInLoop()
 void TcpConnection::forceCloseInLoop()
 {
     loop_->assertInLoopThread();
+    LOG_WARNING << "tcp force close in loop: conn=" << name_ << " role="
+                << (role() == connRole::Client ? "client" : "backend");
     if(state_.load(std::memory_order_acquire) == kConnected || state_.load(std::memory_order_acquire) == kDisConnecting)
         handleClose();
 }
@@ -660,6 +687,9 @@ void TcpConnection::onIdleTimeout()
     //距上次活动已超过空闲阈值：断开连接
     if(elapsedUs >= timeoutUs)
     {
+        LOG_WARNING << "tcp idle timeout: conn=" << name_ << " role="
+                    << (role() == connRole::Client ? "client" : "backend")
+                    << " elapsedUs=" << elapsedUs;
         forceCloseInLoop();
         return;
     }

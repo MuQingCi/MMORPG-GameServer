@@ -34,11 +34,12 @@ GatewayServer::GatewayServer(EventLoop* loop,
                              const InetAddress& clientListenAddr,
                              const InetAddress& backendListenAddr,
                              const DispatcherConfig& dispatcherCfg,
-                             size_t eventThreadNum)
+                             size_t eventThreadNum,
+                             bool reusePort)
     : baseloop_(loop),
       eventThreadPool_(cb, "ClearMoon", eventThreadNum),
-      cAcceptor_(loop, clientListenAddr, connRole::Client),
-      bAcceptor_(loop, backendListenAddr, connRole::Backend),
+      cAcceptor_(loop, clientListenAddr, connRole::Client, reusePort),
+      bAcceptor_(loop, backendListenAddr, connRole::Backend, reusePort),
       threadName_("ClearMoon"),
       dispatcher_(dispatcherCfg)
 {
@@ -95,7 +96,7 @@ void GatewayServer::stop()
 
     auto conns = connections_;
     for (auto& kv : conns)
-        kv.second->forceClose();
+        kv.second->forceClose("gateway stop");
 
     // 刻意不在主线程里清空 connections_：TcpConnection 必须在**自己的 IO 线程**里析构，
     // 由 removeConnectionInLoop / connectDestroyed 完成（channel/poller 都是线程亲和的）。
@@ -117,7 +118,8 @@ void GatewayServer::LogStats() const
              << " dropped=" << st.backendFramesDropped
              << " decodeErrors(c/b)=" << st.clientDecodeErrors << "/" << st.backendDecodeErrors
              << " protoMismatch=" << st.protocolMismatch
-             << " kicked=" << st.kickedSessions;
+             << " kicked=" << st.kickedSessions
+             << " timedOutRoutes=" << st.timedOutRoutes;
 }
 
 /**

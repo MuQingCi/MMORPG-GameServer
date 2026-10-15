@@ -31,7 +31,7 @@ public:
    
 
     void shutdown();   //优雅关闭
-    void forceClose(); //强制关闭
+    void forceClose(const char* reason = "unspecified"); //强制关闭
 
     //设置回调函数
     void setConnectionCallback(const ConnectionCallback& cb) { connectionCallback_ = cb; }

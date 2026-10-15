@@ -24,6 +24,7 @@ struct DispatcherConfig
     uint32_t zoneId             = 1;    // 所属区服：与后端握手上报的 zoneId 必须一致
     uint32_t gatewayId          = 1;
     uint8_t  defaultDstService  = 8;    // 客户端未显式绑定后端服务时的默认目标（ServerID::kScene_1）
+    uint32_t defaultSceneId     = 0;    // 0 = 兼容旧单实例选择；非 0 = 优先选择指定场景实例
     std::vector<uint8_t> allowedServices;  // 允许注册的后端服务号白名单（空 = 不允许任何后端注册）
     uint64_t clientToken        = 0;    // 客户端最小鉴权票据；0 = 不校验（仅联调，启动时告警）
 
@@ -72,6 +73,7 @@ public:
         uint64_t backendDecodeErrors   = 0;
         uint64_t protocolMismatch      = 0;   // 端口上出现另一套协议的魔数
         uint64_t kickedSessions        = 0;
+        uint64_t timedOutRoutes        = 0;
 
         size_t   clientSessions        = 0;
         size_t   backendReady          = 0;
@@ -142,6 +144,7 @@ private:
     std::atomic<uint64_t> backendDecodeErrors_{0};
     std::atomic<uint64_t> protocolMismatch_{0};
     std::atomic<uint64_t> kickedSessions_{0};
+    std::atomic<uint64_t> timedOutRoutes_{0};
 };
 
 #endif

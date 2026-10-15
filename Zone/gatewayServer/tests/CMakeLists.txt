@@ -11,8 +11,11 @@ add_executable(gateway_tests
     test_clientProto.cc
     test_gatewayConfig.cc
     test_gatewayRouting.cc
+    test_loadStats.cc
+    test_metricsReader.cc
     test_buffer.cc
     test_eventLoop.cc
+    test_channel.cc
     test_tcpConnection.cc
 )
 
@@ -27,7 +30,23 @@ target_compile_definitions(gateway_tests PRIVATE
 
 target_link_libraries(gateway_tests PRIVATE gateway_core)
 
+target_sources(gateway_tests PRIVATE loadStats.cc)
+target_sources(gateway_tests PRIVATE metricsReader.cc)
+
 add_test(NAME gateway_tests COMMAND gateway_tests)
+
+add_executable(gateway_load_client
+    load_client.cc
+    loadStats.cc
+    metricsReader.cc
+)
+set_property(TARGET gateway_load_client APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_scene_load.sh)
+target_include_directories(gateway_load_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(gateway_load_client PRIVATE gateway_core)
+set_target_properties(gateway_load_client PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # ---------------------------------------------------------------------------
 # 进程级端到端工具：扮演"一个场景服 + 多个客户端"，

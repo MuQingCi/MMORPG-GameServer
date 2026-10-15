@@ -39,6 +39,25 @@ bool HasMagic(const Buffer* buf, uint16_t magic)
     return be == magic;
 }
 
+// seq == 0 且带 playerId 的服务间帧是“主动推送”，不是请求回包。
+// 场景服允许推送玩家状态和 AOI 视野变化；其它模块仍保持 fail-closed，
+// 防止后端连接伪造 Chat/Global 推送或未知业务推送。
+bool IsAllowedScenePush(const Header& h, uint8_t serviceId)
+{
+    constexpr uint8_t kSceneService = 8; // ServerID::kScene_1
+    constexpr uint16_t kPlayerModule = 3;
+    constexpr uint16_t kPlayerPushState = 1;
+    constexpr uint16_t kAoiModule = 100;
+    constexpr uint16_t kAoiViewDelta = 7;
+    constexpr uint16_t kAoiViewSnapshot = 8;
+
+    if (serviceId != kSceneService || h.seq != 0 || h.playerId == 0)
+        return false;
+    return (h.module == kPlayerModule && h.method == kPlayerPushState) ||
+           (h.module == kAoiModule &&
+            (h.method == kAoiViewDelta || h.method == kAoiViewSnapshot));
+}
+
 const char* ClientKindName(ClientKind k)
 {
     switch (k)
@@ -77,7 +96,7 @@ uint64_t GatewayDispatcher::OnClientConnected(const TcpConnectionPtr& conn, int6
         // 有界：公网入口的连接数必须封顶，否则一个 IP 就能把网关内存吃光
         LOG_WARNING << "too many client sessions (" << sessions_.Size()
                     << " > " << cfg_.maxClientSessions << "), close " << conn->name();
-        conn->forceClose();
+        conn->forceClose("client session limit");
         return id;
     }
     return id;
@@ -133,9 +152,20 @@ void GatewayDispatcher::OnBackendClosed(const TcpConnectionPtr& conn)
 
 size_t GatewayDispatcher::SweepRoutes(int64_t nowMs)
 {
-    const size_t n = routes_.Sweep(nowMs, cfg_.routeTtlMs);
+    const auto expired = routes_.SweepExpired(nowMs, cfg_.routeTtlMs);
+    const size_t n = expired.size();
+    for (const auto& route : expired)
+    {
+        ClientSession session;
+        if (!sessions_.Get(route.clientSessionId, session) || !session.authed ||
+            session.epoch != route.sessionEpoch || !session.conn)
+            continue;
+        SendToClient(session.conn, ClientKind::kError, route.module, route.method,
+                     route.clientRequestId, "request timeout");
+    }
+    timedOutRoutes_.fetch_add(n, std::memory_order_relaxed);
     if (n > 0)
-        LOG_WARNING << "sweep: dropped " << n << " expired pending routes (backend not responding?)";
+        LOG_WARNING << "sweep: timed out " << n << " pending routes (backend not responding?)";
     return n;
 }
 
@@ -166,7 +196,7 @@ bool GatewayDispatcher::CheckProtocolMagic(const TcpConnectionPtr& conn, Buffer*
                                : "backend link got CLIENT frame (magic=0xC1EB)")
                 << ", close " << conn->name()
                 << " (wrong protocol on this port: 端口与协议必须匹配)";
-    conn->forceClose();
+    conn->forceClose("protocol magic mismatch");
     return false;
 }
 
@@ -176,7 +206,7 @@ bool GatewayDispatcher::CheckReadBuffer(const TcpConnectionPtr& conn)
     if (conn->readBufferBytes() > cfg_.maxReadBufferBytes)
     {
         LOG_WARNING << "read buffer overflow (" << conn->readBufferBytes() << "), close " << conn->name();
-        conn->forceClose();
+        conn->forceClose("read buffer overflow");
         return false;
     }
     return true;
@@ -195,7 +225,7 @@ bool GatewayDispatcher::AllowFrame(const TcpConnectionPtr& conn, int64_t nowMs)
     if (++g.framesInWindow > cfg_.maxFramesPerSec)
     {
         LOG_WARNING << "frame rate exceeded (" << g.framesInWindow << "/s), close " << conn->name();
-        conn->forceClose();
+        conn->forceClose("client frame rate exceeded");
         return false;
     }
     return true;
@@ -226,7 +256,7 @@ void GatewayDispatcher::OnClientMessage(const TcpConnectionPtr& conn, Buffer* bu
             {
                 clientDecodeErrors_.fetch_add(g.decodeErrors, std::memory_order_relaxed);
                 LOG_WARNING << "too many client decode errors, close " << conn->name();
-                conn->forceClose();
+                conn->forceClose("too many client decode errors");
                 return;
             }
             continue;
@@ -267,7 +297,7 @@ void GatewayDispatcher::OnBackendMessage(const TcpConnectionPtr& conn, Buffer* b
             {
                 backendDecodeErrors_.fetch_add(g.decodeErrors, std::memory_order_relaxed);
                 LOG_WARNING << "too many backend decode errors, close " << conn->name();
-                conn->forceClose();
+                conn->forceClose("too many backend decode errors");
                 return;
             }
             continue;
@@ -364,7 +394,7 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
                 {
                     RejectClient(conn, h.requestId, ClientSysMethod::kAuthFail, "bad ticket");
                     // 鉴权失败必须断开：否则公网侧可以无限试票据
-                    conn->shutdown();
+                    conn->forceClose("bad authentication ticket");
                     return;
                 }
 
@@ -380,7 +410,7 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
                     routes_.EraseBySession(kicked);
                     ClientSession old;
                     if (sessions_.Get(kicked, old) && old.conn)
-                        old.conn->forceClose();
+                        old.conn->forceClose("client session replaced by newer login");
                     sessions_.Erase(kicked);
                     LOG_WARNING << "session " << kicked << " kicked by new login, player=" << playerId;
                 }
@@ -480,7 +510,11 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     }
 
     ServiceEndpoint ep;
-    if (!services_.GetByService(dst, ep) || !ep.conn)
+    const bool selectedScene = dst == ServerID::kScene_1 && cfg_.defaultSceneId != 0;
+    const bool found = selectedScene
+        ? services_.GetByScene(dst, cfg_.zoneId, cfg_.defaultSceneId, ep)
+        : services_.GetByService(dst, ep);
+    if (!found || !ep.conn)
     {
         // 后端未注册（或刚断开）：明确回错误，不静默丢弃
         RejectClient(conn, h.requestId, h.method, "backend service unavailable");
@@ -566,14 +600,14 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         {
             LOG_WARNING << "bad handshake body from " << conn->name();
             backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
-            conn->forceClose();
+            conn->forceClose("bad backend handshake body");
             return;
         }
 
         if (h.srcServiceID != hs.serviceId || h.seq != 0 || h.playerId != 0 || h.retrFlag != 0)
         {
             LOG_WARNING << "invalid backend handshake header from " << conn->name();
-            conn->forceClose();
+            conn->forceClose("invalid backend handshake header");
             return;
         }
 
@@ -584,7 +618,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
             LOG_WARNING << "reject backend " << conn->name() << ": service="
                         << ServerIdName(hs.serviceId) << " not in allowedServices";
             backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
-            conn->forceClose();
+            conn->forceClose("backend service not allowed");
             return;
         }
         if (hs.zoneId != cfg_.zoneId)
@@ -592,7 +626,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
             LOG_WARNING << "reject backend " << conn->name() << ": zone=" << hs.zoneId
                         << " != gateway zone=" << cfg_.zoneId << " (跨区服连接被拒绝)";
             backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
-            conn->forceClose();
+            conn->forceClose("backend zone mismatch");
             return;
         }
 
@@ -601,7 +635,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         {
             LOG_WARNING << "bind backend failed: " << conn->name()
                         << " (conn not accepted by this gateway?)";
-            conn->forceClose();
+            conn->forceClose("backend bind failed");
             return;
         }
 
@@ -614,7 +648,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
                 LOG_WARNING << "backend " << ServerIdName(hs.serviceId) << " re-registered by "
                             << conn->name() << ", close stale conn " << oldConn;
                 if (old.conn)
-                    old.conn->forceClose();
+                    old.conn->forceClose("stale backend connection replaced");
             }
         }
 
@@ -631,14 +665,14 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
         LOG_WARNING << "business frame from UNREGISTERED backend conn=" << conn->name()
                     << " (module=" << h.module << " method=" << h.method << "), close it";
-        conn->forceClose();
+        conn->forceClose("unregistered backend business frame");
         return;
     }
 
     if (h.srcServiceID != self.serviceId || h.dstServiceID != cfg_.selfServiceId || h.retrFlag != 0)
     {
         LOG_WARNING << "backend header identity/retry mismatch from " << conn->name();
-        conn->forceClose();
+        conn->forceClose("backend identity or retry mismatch");
         return;
     }
 
@@ -651,7 +685,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
             r.module != h.module || r.method != h.method)
         {
             LOG_WARNING << "backend response context mismatch: seq=" << h.seq;
-            conn->forceClose();
+            conn->forceClose("backend response context mismatch");
             return;
         }
         if (!routes_.Take(h.seq, r))
@@ -709,11 +743,29 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
     }
     if (h.seq == 0 && h.playerId != 0)
     {
-        // 聊天推送只能来自聊天服务，不能让其它后端伪造聊天内容。
+        if (IsAllowedScenePush(h, self.serviceId))
+        {
+            ClientSession s;
+            if (sessions_.FindByPlayer(h.playerId, s) && s.conn)
+            {
+                SendToClient(s.conn, ClientKind::kPush, h.module, h.method, 0, body);
+                LOG_INFO << "scene push b->c: player=" << h.playerId
+                         << " session=" << s.sessionId << " module=" << h.module
+                         << " method=" << h.method << " bodyLen=" << body.size();
+            }
+            else
+            {
+                backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
+            }
+            return;
+        }
+
+        // 聊天/全局推送只能来自对应服务，不能让其它后端伪造内容；
+        // 未列入白名单的场景推送同样拒绝。
         if ((h.module == ServiceModule::kChat && self.serviceId != ServerID::kChat) ||
             (h.module == ServiceModule::kGlobal && self.serviceId != ServerID::kGlobal))
         {
-            conn->forceClose();
+            conn->forceClose("forged backend push");
             return;
         }
         ClientSession s;
@@ -774,6 +826,7 @@ GatewayDispatcher::Stats GatewayDispatcher::Snapshot() const
     st.backendDecodeErrors  = backendDecodeErrors_.load(std::memory_order_relaxed);
     st.protocolMismatch     = protocolMismatch_.load(std::memory_order_relaxed);
     st.kickedSessions       = kickedSessions_.load(std::memory_order_relaxed);
+    st.timedOutRoutes       = timedOutRoutes_.load(std::memory_order_relaxed);
 
     st.clientSessions = sessions_.Size();
     st.backendReady   = services_.ReadyCount();

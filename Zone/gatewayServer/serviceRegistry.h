@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 /**
  * @brief 后端节点身份（**握手认证后**才绑定）
@@ -28,6 +29,26 @@ struct ServiceEndpoint
     int64_t          registeredAtMs = 0;
 };
 
+struct ServiceInstanceKey
+{
+    uint8_t serviceId = 0;
+    uint32_t zoneId = 0;
+    uint32_t sceneId = 0;
+
+    bool operator==(const ServiceInstanceKey&) const = default;
+};
+
+struct ServiceInstanceKeyHash
+{
+    size_t operator()(const ServiceInstanceKey& key) const noexcept
+    {
+        size_t value = key.serviceId;
+        value = value * 31u + key.zoneId;
+        value = value * 31u + key.sceneId;
+        return value;
+    }
+};
+
 /**
  * @brief 后端服务注册表：<serviceId> -> 连接
  *
@@ -46,6 +67,9 @@ public:
               int64_t nowMs, std::string* oldConnName = nullptr);
 
     bool GetByService(uint8_t serviceId, ServiceEndpoint& out) const;
+    bool GetByScene(uint8_t serviceId, uint32_t zoneId, uint32_t sceneId,
+                    ServiceEndpoint& out) const;
+    std::vector<ServiceEndpoint> GetInstances(uint8_t serviceId, uint32_t zoneId) const;
     bool GetByName(const std::string& connName, ServiceEndpoint& out) const;
 
     // 连接关闭：移除该连接（含 serviceId 索引）
@@ -57,7 +81,9 @@ public:
 private:
     mutable std::mutex mtx_;
     std::unordered_map<std::string, ServiceEndpoint> byName_;
-    std::unordered_map<uint8_t, std::string> byService_;   // serviceId -> connName（单实例语义）
+    // 兼容旧调用方：serviceId -> 最近注册的连接。
+    std::unordered_map<uint8_t, std::string> byService_;
+    std::unordered_map<ServiceInstanceKey, std::string, ServiceInstanceKeyHash> byInstance_;
 };
 
 #endif

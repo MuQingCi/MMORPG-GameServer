@@ -89,6 +89,7 @@ bool GatewayConfig::Load(const std::string& path, GatewayConfig& out, std::strin
         err = path + ": " + err;
         return false;
     }
+    out.reusePort = y.GetBool("gateway.reusePort", out.reusePort);
 
     // 后端服务号白名单：**必须显式配置**（安全边界不拿默认值兜底）
     if (!y.Has("gateway.privateConfig.allowedServices"))
@@ -127,11 +128,14 @@ bool GatewayConfig::Load(const std::string& path, GatewayConfig& out, std::strin
         err = path + ": " + err;
         return false;
     }
+    out.defaultSceneId = (uint32_t)y.GetUInt("gateway.defaultSceneId", out.defaultSceneId);
     out.maxClientSessions = (uint32_t)y.GetUInt("gateway.maxClientSessions", out.maxClientSessions);
     out.maxPendingRoutes = (uint32_t)y.GetUInt("gateway.maxPendingRoutes", out.maxPendingRoutes);
     out.routeTtlMs = (uint32_t)y.GetUInt("gateway.routeTtlMs", out.routeTtlMs);
+    out.maxFramesPerSec = (uint32_t)y.GetUInt("gateway.maxFramesPerSec", out.maxFramesPerSec);
 
     out.logLevel = y.GetStr("gateway.logLevel", out.logLevel);
+    out.metricsPath = y.GetStr("gateway.metricsPath", out.metricsPath);
 
     // 键名检查放在读取之后：到这里"代码认识的键"都已消费完，剩下的都是没人读的
     if (!CheckUnknownKeys(y, path, err))
@@ -216,6 +220,9 @@ std::vector<std::string> GatewayConfig::Validate() const
 
     if (routeTtlMs == 0)
         errs.push_back("gateway.routeTtlMs must be >= 1");
+
+    if (maxFramesPerSec == 0)
+        errs.push_back("gateway.maxFramesPerSec must be >= 1");
 
     // 日志级别必须是已知值：拼错（例如 "warning"）如果不报错，
     // 就会静默落到默认级别，排障时"我明明开了 debug"却看不到任何调试日志

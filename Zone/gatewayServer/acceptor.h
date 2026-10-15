@@ -17,7 +17,7 @@ class Acceptor : public noncopyable
 public:
 using newConnectionCallback = std::function<void(Socket, InetAddress, connRole)>;
 
-    Acceptor(EventLoop* loop, const InetAddress& addr, connRole role);
+    Acceptor(EventLoop* loop, const InetAddress& addr, connRole role, bool reusePort = false);
     ~Acceptor();
 
     void setConnectionCallback(const newConnectionCallback& cb) { connCallback_ = cb; }
@@ -36,6 +36,7 @@ private:
 
     newConnectionCallback connCallback_;
     connRole role_;
+    bool reusePort_ = false;
     bool listening_ = false;
 };
 #endif

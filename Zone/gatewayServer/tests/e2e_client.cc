@@ -1,5 +1,6 @@
 #include "e2e_conn.h"
 #include "test_util.h"
+#include "base/gatewayPlayer.h"
 
 #include <chrono>
 #include <cstdint>
@@ -82,6 +83,39 @@ bool SendBackendHandshake(e2e::Conn& c, uint8_t serviceId, uint32_t zoneId, uint
     return c.sendGateFrame(NetMessageType::kSceneMsg, SysModule::kSYS, SysMethod::kHandshake,
                            /*seq=*/0, /*playerId=*/0, serviceId, ServerID::kGateway,
                            PackBackendHandshake(hs));
+}
+
+bool IsSceneOnlineBinding(const Header& h, const std::string& body)
+{
+    if (h.msgType != static_cast<uint8_t>(NetMessageType::kSceneMsg) ||
+        h.module != GatewayPlayer::kModule || h.method != GatewayPlayer::kOnline ||
+        h.seq != 0 || h.srcServiceID != ServerID::kGateway ||
+        h.dstServiceID != ServerID::kScene_1)
+        return false;
+    ClientData binding;
+    std::string payload;
+    return GatewayPlayer::Unpack(body, binding, payload) && payload.empty();
+}
+
+bool ReadNextSceneMove(e2e::Conn& backend, Header& moveHeader, std::string& moveBody,
+                       int& onlineBindingsSeen)
+{
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        Header h;
+        std::string body;
+        if (!backend.readGateFrame(h, body, 2000))
+            return false;
+        if (IsSceneOnlineBinding(h, body))
+        {
+            ++onlineBindingsSeen;
+            continue;
+        }
+        moveHeader = h;
+        moveBody = std::move(body);
+        return true;
+    }
+    return false;
 }
 }  // namespace
 
@@ -272,11 +306,12 @@ TEST(E2eFullPathAndNoCrossTalk)
     uint64_t seqFor[2] = {0, 0};
     uint64_t pidFor[2] = {0, 0};
     std::string bodyFor[2];
+    int onlineBindingsSeen = 0;
     for (int i = 0; i < 2; ++i)
     {
         Header h;
         std::string body;
-        CHECK(backend->readGateFrame(h, body, 2000));
+        CHECK(ReadNextSceneMove(*backend, h, body, onlineBindingsSeen));
         CHECK_EQ(h.dstServiceID, (uint8_t)ServerID::kScene_1);
         CHECK_EQ(h.srcServiceID, (uint8_t)ServerID::kGateway);
         CHECK_EQ(h.msgType, (uint8_t)NetMessageType::kSceneMsg);
@@ -287,6 +322,10 @@ TEST(E2eFullPathAndNoCrossTalk)
         pidFor[i] = h.playerId;
         bodyFor[i] = body;
     }
+    // 上线通知是鉴权/后端注册之间的异步通知：若后端尚未完成注册，
+    // 网关会跳过该次通知；业务请求仍会在同一条后端连接上完成绑定校验。
+    // 收到通知时由 ReadNextSceneMove 校验其完整协议，不把通知出现次数
+    // 作为业务转发成功的必要条件。
     CHECK(seqFor[0] != seqFor[1]);                 // 网关内部号唯一 = 不串包的前提
     CHECK(pidFor[0] != pidFor[1]);                 // 两个客户端身份不同
     CHECK(pidFor[0] == 1001 || pidFor[0] == 1002);
@@ -403,6 +442,17 @@ TEST(E2eBackendResponseContextGuard)
         }
     }
     CHECK(routed);
+    while (routed && req.seq == 0)
+    {
+        Header next;
+        std::string nextBody;
+        if (!backend->readGateFrame(next, nextBody, 2000))
+            break;
+        if (IsSceneOnlineBinding(next, nextBody))
+            continue;
+        req = next;
+        body = std::move(nextBody);
+    }
     CHECK(req.seq != 0);
     CHECK_EQ(req.playerId, (uint64_t)4001);
 

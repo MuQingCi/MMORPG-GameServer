@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -29,6 +30,75 @@ bool FileContains(const std::string& path, const std::string& needle)
     return all.find(needle) != std::string::npos;
 }
 }  // namespace
+
+namespace {
+std::string LogPath(const std::string& directory, const std::string& name)
+{
+    char day[32];
+    const auto now=std::time(nullptr); std::tm tm{};
+    ::localtime_r(&now,&tm);
+    std::strftime(day,sizeof(day),"%Y-%m-%d",&tm);
+    return directory+"/"+day+"/"+name+".log";
+}
+
+bool WaitForMarker(const std::string& path, const std::string& marker)
+{
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+    do {
+        if(FileContains(path,marker)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while(std::chrono::steady_clock::now()<deadline);
+    return FileContains(path,marker);
+}
+}
+
+TEST(AsyncLoggerFlushesSuccessiveSmallBatches)
+{
+    const auto directory=kDir+"_batches";
+    std::filesystem::remove_all(directory);
+    AsyncLogger logger("batches",64*1024*1024,directory);
+    logger.start();
+    const auto path=LogPath(directory,"batches");
+    // Prime and recycle buffers with capacity greater than a small record.
+    // A brand-new Buffer may rotate on its first append and mask the predicate bug.
+    for(int i=0;i<4;++i) {
+        const auto marker="prime-"+std::to_string(i)+"-"+std::string(4096,'p')+"\n";
+        logger.append(marker.data(),marker.size());
+        CHECK(WaitForMarker(path,marker));
+    }
+    for(int i=0;i<3;++i) {
+        const auto marker="small-batch-"+std::to_string(i)+"\n";
+        logger.append(marker.data(),marker.size());
+        CHECK(WaitForMarker(path,marker));
+    }
+    logger.stop();
+    std::filesystem::remove_all(directory);
+}
+
+TEST(AsyncLoggerStopDrainsAllAcceptedBatches)
+{
+    const auto directory=kDir+"_drain";
+    std::filesystem::remove_all(directory);
+    AsyncLogger logger("drain",64*1024*1024,directory);
+    logger.start();
+    // Enough records to cross buffer boundaries while the consumer writes.
+    constexpr int count=4000;
+    for(int i=0;i<count;++i) {
+        const auto marker="drain-record-"+std::to_string(i)+"-"+std::string(128,'x')+"\n";
+        logger.append(marker.data(),marker.size());
+    }
+    logger.stop();
+    logger.stop(); // Idempotent after the consumer has joined.
+    std::ifstream input(LogPath(directory,"drain"));
+    std::string line;
+    int seen=0;
+    while(std::getline(input,line)) {
+        CHECK_EQ(line,"drain-record-"+std::to_string(seen)+"-"+std::string(128,'x'));
+        ++seen;
+    }
+    CHECK_EQ(seen,count);
+    std::filesystem::remove_all(directory);
+}
 
 TEST(AsyncLoggerFlushesWithoutStop)
 {

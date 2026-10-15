@@ -50,7 +50,8 @@ public:
                   const InetAddress& clientListenAddr,
                   const InetAddress& backendListenAddr,
                   const DispatcherConfig& dispatcherCfg,
-                  size_t eventThreadNum = 0);
+                  size_t eventThreadNum = 0,
+                  bool reusePort = false);
     ~GatewayServer();
 
     // 设置回调（仅用于观测/日志；会话与路由逻辑在 GatewayDispatcher 内）
@@ -62,6 +63,7 @@ public:
 
     // 输出两类链路的统计（停服时打一行，e2e 测试也据此断言）
     void LogStats() const;
+    GatewayDispatcher::Stats dispatcherSnapshot() const { return dispatcher_.Snapshot(); }
 
 private:
     void newConnection(Socket socket, InetAddress peerAddress, connRole role);
