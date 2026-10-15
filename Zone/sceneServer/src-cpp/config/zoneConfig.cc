@@ -4,27 +4,47 @@
 #include "log/logger.h"
 
 #include <cstdlib>
+#include <arpa/inet.h>
 #include <fstream>
 #include <sstream>
 #include <string>
 
 namespace
 {
-// 从 "1.2.3.4:10000" 解析出 PeerConfig
+// 从 "gatewayId=1.2.3.4:10000" 解析出 PeerConfig
 bool ParsePeer(const std::string& spec, uint8_t serviceId, PeerConfig& out, std::string& err)
 {
+    const size_t equal = spec.find('=');
     const size_t colon = spec.rfind(':');
-    if (colon == std::string::npos || colon == 0 || colon + 1 >= spec.size())
+    if (equal == std::string::npos || equal == 0 || colon == std::string::npos ||
+        colon <= equal + 1 || colon + 1 >= spec.size())
     {
-        err = "bad peer spec: " + spec + " (expect ip:port)";
+        err = "bad gateway peer spec: " + spec + " (expect gatewayId=ip:port)";
+        return false;
+    }
+
+    const std::string idText = spec.substr(0, equal);
+    char* idEnd = nullptr;
+    const unsigned long id = std::strtoul(idText.c_str(), &idEnd, 10);
+    if (!idEnd || *idEnd || id == 0 || id > UINT32_MAX)
+    {
+        err = "bad gateway ID: " + idText;
         return false;
     }
 
     out.serviceId = serviceId;
-    out.addr = spec.substr(0, colon);
+    out.gatewayId = static_cast<uint32_t>(id);
+    out.addr = spec.substr(equal + 1, colon - equal - 1);
+    in_addr parsedAddress{};
+    if (::inet_pton(AF_INET, out.addr.c_str(), &parsedAddress) != 1)
+    {
+        err = "bad gateway address: " + out.addr;
+        return false;
+    }
 
-    const int port = std::atoi(spec.c_str() + colon + 1);
-    if (port <= 0 || port > 65535)
+    char* portEnd = nullptr;
+    const unsigned long port = std::strtoul(spec.c_str() + colon + 1, &portEnd, 10);
+    if (!portEnd || *portEnd || port == 0 || port > 65535)
     {
         err = "bad peer port: " + spec;
         return false;
@@ -120,6 +140,7 @@ bool ZoneConfig::Load(const std::string& path, ZoneConfig& out, std::string& err
         }
         out.gateways.push_back(pc);
     }
+    out.backendChannels = static_cast<uint32_t>(y.GetUInt("ZoneServer.backendChannels", out.backendChannels));
 
     // ---------------- 日志 ----------------
     out.logLevel = y.GetStr("ZoneServer.log.level", out.logLevel);
@@ -150,6 +171,19 @@ std::vector<std::string> ZoneConfig::Validate() const
 
     if (zoneId == 0)
         errs.push_back("zoneId must be >= 1");
+
+    if (backendChannels == 0 || backendChannels > 64)
+        errs.push_back("backendChannels must be in [1, 64]");
+
+    for (size_t i = 0; i < gateways.size(); ++i)
+    {
+        if (gateways[i].gatewayId == 0)
+            errs.push_back("gateway ID must be >= 1");
+        for (size_t j = 0; j < i; ++j)
+            if (gateways[i].gatewayId == gateways[j].gatewayId ||
+                (gateways[i].addr == gateways[j].addr && gateways[i].port == gateways[j].port))
+                errs.push_back("duplicate gateway ID or endpoint");
+    }
 
     // 日志名必须显式指定：多服务共用 zoneConfig，空值会让它们写同一个文件
     if (logName.empty())

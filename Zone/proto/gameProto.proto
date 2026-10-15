@@ -72,6 +72,42 @@ message SCPushState
 }
 
 // ---------------------------------------------------------------------------
+// AOI 客户端视野推送（S2C）
+// ---------------------------------------------------------------------------
+message ViewEntity
+{
+    uint64 entity_id = 1;
+    uint64 business_id = 2;
+    uint32 entity_kind = 3;
+    uint32 entity_generation = 4;
+    uint64 spatial_version = 5;
+    uint32 actor_epoch = 6;
+    int32 x = 7;
+    int32 y = 8;
+    int32 dir = 9;
+}
+
+message SCPushViewDelta
+{
+    uint64 view_seq = 1;
+    repeated ViewEntity entered = 2;
+    repeated ViewEntity moved = 3;
+    repeated ViewEntity left = 4;
+}
+
+message SCPushViewSnapshotPart
+{
+    uint64 snapshot_id = 1;
+    uint64 view_seq = 2;
+    uint32 part_index = 3;
+    uint32 part_count = 4;
+    repeated ViewEntity entities = 5;
+}
+
+message ViewResyncReq {}
+message ViewResyncAck { int32 code = 1; }
+
+// ---------------------------------------------------------------------------
 // GM（Module::SYS）
 // ---------------------------------------------------------------------------
 message GMCmdReq

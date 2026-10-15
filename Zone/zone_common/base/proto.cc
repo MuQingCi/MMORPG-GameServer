@@ -72,35 +72,65 @@ Header MakeHeader(uint8_t msgType,
     return h;
 }
 
-// 握手体：u8 + u32(little) + u32(little) = 9 字节。
-// 这里**不**用 Buffer::readUint32（它是网络序），必须与小端布局严格一致。
+namespace
+{
+template <typename T>
+void AppendLE(std::string& out, T value)
+{
+    for (size_t i = 0; i < sizeof(T); ++i)
+        out.push_back(static_cast<char>((value >> (8 * i)) & 0xff));
+}
+
+template <typename T>
+T ReadLE(const std::string& in, size_t offset)
+{
+    T value = 0;
+    for (size_t i = 0; i < sizeof(T); ++i)
+        value |= static_cast<T>(static_cast<uint8_t>(in[offset + i])) << (8 * i);
+    return value;
+}
+}
+
+bool ValidBackendHandshake(const BackendHandshake& h)
+{
+    if (h.protocolVersion != BackendHandshake::kProtocolVersion || h.serviceId == 0 ||
+        h.zoneId == 0 || h.targetGatewayId == 0)
+        return false;
+    const bool scene = h.serviceId == ServerID::kScene_1;
+    return scene ? h.sceneId != 0 && h.sceneIncarnation != 0
+                 : h.sceneId == 0 && h.sceneIncarnation == 0 && h.channelId == 0;
+}
+
 std::string PackBackendHandshake(const BackendHandshake& h)
 {
     std::string s;
-    s.reserve(9);
-    s.push_back(static_cast<char>(h.serviceId));
-    for (int i = 0; i < 4; ++i)
-        s.push_back(static_cast<char>((h.zoneId >> (8 * i)) & 0xFF));
-    for (int i = 0; i < 4; ++i)
-        s.push_back(static_cast<char>((h.sceneId >> (8 * i)) & 0xFF));
+    s.reserve(BackendHandshake::kEncodedSize);
+    AppendLE(s, h.protocolVersion);
+    AppendLE(s, h.serviceId);
+    AppendLE(s, h.zoneId);
+    AppendLE(s, h.sceneId);
+    AppendLE(s, h.sceneIncarnation);
+    AppendLE(s, h.targetGatewayId);
+    AppendLE(s, h.channelId);
     return s;
 }
 
 bool UnpackBackendHandshake(const std::string& body, BackendHandshake& out)
 {
-    if (body.size() != 9)
+    if (body.size() != BackendHandshake::kEncodedSize)
         return false;
-
-    out.serviceId = static_cast<uint8_t>(body[0]);
-    uint32_t zoneId = 0;
-    uint32_t sceneId = 0;
-    for (int i = 0; i < 4; ++i)
-    {
-        zoneId |= uint32_t(static_cast<uint8_t>(body[1 + i])) << (8 * i);
-        sceneId |= uint32_t(static_cast<uint8_t>(body[5 + i])) << (8 * i);
-    }
-    out.zoneId = zoneId;
-    out.sceneId = sceneId;
+    BackendHandshake parsed;
+    size_t offset = 0;
+    parsed.protocolVersion = ReadLE<uint16_t>(body, offset); offset += 2;
+    parsed.serviceId = ReadLE<uint8_t>(body, offset); offset += 1;
+    parsed.zoneId = ReadLE<uint32_t>(body, offset); offset += 4;
+    parsed.sceneId = ReadLE<uint32_t>(body, offset); offset += 4;
+    parsed.sceneIncarnation = ReadLE<uint64_t>(body, offset); offset += 8;
+    parsed.targetGatewayId = ReadLE<uint32_t>(body, offset); offset += 4;
+    parsed.channelId = ReadLE<uint32_t>(body, offset);
+    if (!ValidBackendHandshake(parsed))
+        return false;
+    out = parsed;
     return true;
 }
 

@@ -99,10 +99,16 @@ bool SceneServer::start()
     // 设计文档 3.1.3：场景服启动时主动连网关（可连多个做冗余），
     // 而不是等网关拿连接池来连 —— 否则响应无法与请求匹配、回程地址无法表达。
     // 网关列表来自 ZoneConfig（区服共享：场景服/全局服/聊天服连同一批）。
-    for (const auto& peer : cfg_.zone.gateways)
+    for (const auto& configuredPeer : cfg_.zone.gateways)
     {
-        if (!netServer_->connectTo(peer))
-            LOG_WARNING << "connect gateway failed: " << peer.addr << ":" << peer.port;
+        for (uint32_t channel = 0; channel < cfg_.zone.backendChannels; ++channel)
+        {
+            PeerConfig peer = configuredPeer;
+            peer.channelId = channel;
+            if (!netServer_->connectTo(peer))
+                LOG_WARNING << "connect gateway failed: gatewayId=" << peer.gatewayId
+                            << " channel=" << channel << " " << peer.addr << ":" << peer.port;
+        }
     }
 
     if (!cfg_.metricsPath.empty())

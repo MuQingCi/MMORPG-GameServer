@@ -5,10 +5,12 @@
 #include "log/logger.h"
 
 #include <cstring>
+#include <chrono>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace
 {
@@ -25,6 +27,7 @@ const MigratedKey kMigratedKeys[] = {
     {"zoneId", "ZoneServer.zoneId"},
     {"db", "ZoneServer.db.*"},
     {"gateways", "ZoneServer.gateways"},
+    {"backendChannels", "ZoneServer.backendChannels"},
     {"log", "ZoneServer.log.*"},
 };
 
@@ -103,6 +106,14 @@ bool SceneConfig::AttachZone(const ZoneConfig& z, std::string& err)
     net.serviceId = serviceId;
     net.zoneId = zone.zoneId;
     net.sceneId = sceneId;
+    net.backendChannels = zone.backendChannels;
+    if (net.sceneIncarnation == 0)
+    {
+        const uint64_t now = static_cast<uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        net.sceneIncarnation = (static_cast<uint64_t>(static_cast<uint32_t>(::getpid())) << 32) ^ now;
+        if (net.sceneIncarnation == 0) net.sceneIncarnation = 1;
+    }
 
     // 3. 场景服自身约束
     if (logicThreadNum == 0)

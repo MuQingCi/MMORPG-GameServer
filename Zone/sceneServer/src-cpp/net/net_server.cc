@@ -202,6 +202,8 @@ bool NetServer::connectTo(const PeerConfig& peer)
     conn.fd = fd;
     conn.session = nextSession_.fetch_add(1, std::memory_order_relaxed);
     conn.peerServiceID = peer.serviceId;
+    conn.gatewayId = peer.gatewayId;
+    conn.channelId = peer.channelId;
     conn.linkType = LinkTypeOf(peer.serviceId);
     conn.outbound = true;
     conn.connecting = true;
@@ -484,6 +486,9 @@ void NetServer::onPeerWritable(Conn& conn)
     hs.serviceId = cfg_.serviceId;
     hs.zoneId = cfg_.zoneId;
     hs.sceneId = cfg_.sceneId;
+    hs.sceneIncarnation = cfg_.sceneIncarnation;
+    hs.targetGatewayId = conn.gatewayId;
+    hs.channelId = conn.channelId;
 
     const std::string body = PackBackendHandshake(hs);
     Buffer frame;
@@ -582,6 +587,14 @@ void NetServer::handleHandshake(Conn& conn, const std::string& body)
     if (!UnpackBackendHandshake(body, hs))
     {
         LOG_WARNING << "bad handshake body, session=" << conn.session;
+        return;
+    }
+
+    if (conn.outbound || hs.serviceId != conn.peerServiceID ||
+        hs.zoneId != cfg_.zoneId || hs.sceneId != cfg_.sceneId)
+    {
+        LOG_WARNING << "invalid peer handshake identity, session=" << conn.session;
+        handleClose(conn);
         return;
     }
 

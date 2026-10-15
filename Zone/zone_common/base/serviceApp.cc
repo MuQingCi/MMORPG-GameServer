@@ -220,35 +220,40 @@ bool ParseChatBody(const std::string& body, uint64_t& playerId, std::string& nam
 
 int RunService(int argc, char** argv, uint8_t id)
 {
-    if (argc < 4 || (argc - 1) % 3 != 0 || (id != ServerID::kChat && argc != 4))
+    if (argc < 5 || (argc - 1) % 4 != 0 || (id != ServerID::kChat && argc != 5))
     {
-        std::fprintf(stderr, "usage: %s <gateway private IPv4> <port> <zoneId> [<IPv4> <port> <zoneId> ...]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <gatewayId> <gateway private IPv4> <port> <zoneId> [<gatewayId> <IPv4> <port> <zoneId> ...]\n", argv[0]);
         return 2;
     }
-    const size_t count = static_cast<size_t>((argc - 1) / 3);
+    const size_t count = static_cast<size_t>((argc - 1) / 4);
     if (count + 1 > Queue::kCapacity) return 2;
     struct Link { int fd = -1; Buffer input; Buffer output; };
     std::vector<Link> links(count);
     uint32_t zoneId = 0;
+    std::vector<uint32_t> gatewayIds(count);
     auto closeLinks = [&] { for (auto& link : links) if (link.fd >= 0) ::close(link.fd); };
     for (size_t i = 0; i < count; ++i)
     {
         char* end = nullptr;
-        const unsigned long port = std::strtoul(argv[3 * i + 2], &end, 10);
+        const unsigned long gatewayId = std::strtoul(argv[4 * i + 1], &end, 10);
+        if (*end || gatewayId == 0 || gatewayId > UINT32_MAX) { closeLinks(); return 2; }
+        gatewayIds[i] = static_cast<uint32_t>(gatewayId);
+        const unsigned long port = std::strtoul(argv[4 * i + 3], &end, 10);
         if (*end || port == 0 || port > 65535) { closeLinks(); return 2; }
-        const unsigned long zone = std::strtoul(argv[3 * i + 3], &end, 10);
+        const unsigned long zone = std::strtoul(argv[4 * i + 4], &end, 10);
         if (*end || zone == 0 || zone > UINT32_MAX || (zoneId != 0 && zone != zoneId))
             { closeLinks(); return 2; }
         zoneId = static_cast<uint32_t>(zone);
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(static_cast<uint16_t>(port));
-        if (::inet_pton(AF_INET, argv[3 * i + 1], &addr.sin_addr) != 1)
+        if (::inet_pton(AF_INET, argv[4 * i + 2], &addr.sin_addr) != 1)
             { closeLinks(); return 2; }
         // 禁止重复配置同一网关，否则单一玩家会收到重复推送。
         for (size_t j = 0; j < i; ++j)
-            if (argv[3 * i + 1] == std::string(argv[3 * j + 1]) &&
-                port == std::strtoul(argv[3 * j + 2], nullptr, 10))
+            if (gatewayIds[i] == gatewayIds[j] ||
+                (argv[4 * i + 2] == std::string(argv[4 * j + 2]) &&
+                 port == std::strtoul(argv[4 * j + 3], nullptr, 10)))
                 { closeLinks(); return 2; }
         links[i].fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (links[i].fd < 0 || ::connect(links[i].fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
@@ -261,7 +266,8 @@ int RunService(int argc, char** argv, uint8_t id)
         EncodeFrame(links[i].output,
                     MakeHeader(id == ServerID::kChat ? NetMessageType::kChatMsg : NetMessageType::kGlobalMsg,
                                SysModule::kSYS, SysMethod::kHandshake, 0, 0, id, ServerID::kGateway),
-                    PackBackendHandshake({id, zoneId, 0}));
+                    PackBackendHandshake(BackendHandshake{BackendHandshake::kProtocolVersion,
+                        id, zoneId, 0, 0, gatewayIds[i], 0}));
     }
     std::signal(SIGTERM, Stop);
     std::signal(SIGINT, Stop);

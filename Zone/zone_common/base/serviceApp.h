@@ -12,7 +12,7 @@ std::string ChatBody(uint64_t playerId, const std::string& name, const std::stri
 bool ParseChatBody(const std::string& body, uint64_t& playerId, std::string& name, std::string& text);
 
 // 最小区服服务：网络线程独占 socket/读写缓冲，逻辑线程独占业务处理。
-// 用法：chatServer|globalServer <网关内网IP> <端口> <zoneId>
+// 用法：chatServer|globalServer <gatewayId> <网关内网IPv4> <端口> <zoneId>
 int RunService(int argc, char** argv, uint8_t serviceId);
 
 #endif

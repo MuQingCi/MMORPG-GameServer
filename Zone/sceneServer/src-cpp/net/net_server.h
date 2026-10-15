@@ -31,6 +31,8 @@ struct NetConfig
     uint8_t     serviceId    = ServerID::kScene_1;  // 本服务 id（出站帧 srcServiceID）
     uint32_t    zoneId       = 1;             // 区服 id（握手时上报网关）
     uint32_t    sceneId      = 1;             // 场景 id（握手时上报网关）
+    uint64_t    sceneIncarnation = 0;          // 进程世代，启动时生成一次
+    uint32_t    backendChannels = 1;           // 每个 gateway 的静态 channel 数
 
     size_t   maxReadBufferBytes  = 1 * 1024 * 1024;
     size_t   maxWriteBufferBytes = 4 * 1024 * 1024;
@@ -48,8 +50,10 @@ struct NetConfig
 struct PeerConfig
 {
     uint8_t     serviceId = ServerID::kGateway;
+    uint32_t    gatewayId = 0;
     std::string addr = "127.0.0.1";
     uint16_t    port = 10000;
+    uint32_t    channelId = 0;
 };
 
 /**
@@ -86,6 +90,7 @@ private:
         int      fd = -1;
         uint64_t session = 0;
         uint32_t gatewayId = 0;
+        uint32_t channelId = 0;
         uint8_t  peerServiceID = ServerID::kServiceAny;
         uint8_t  linkType = NetMessageType::kSceneMsg;  // 出站帧的链路标识
         bool     outbound = false;           // 本端主动发起的连接

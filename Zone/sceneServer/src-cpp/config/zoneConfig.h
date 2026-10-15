@@ -37,6 +37,7 @@ struct ZoneConfig
 
     // ---------------- 网关集群（各服务都要反向连）----------------
     std::vector<PeerConfig> gateways;
+    uint32_t backendChannels = 1;
 
     // ---------------- 日志（区服统一策略）----------------
     std::string logLevel = "info";

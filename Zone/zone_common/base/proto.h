@@ -130,18 +130,26 @@ constexpr uint16_t kGlobalPing = 1;
 /**
  * @brief 服务间握手体（后端服务 -> 网关）
  *
- * 布局：serviceId(u8) + zoneId(u32) + sceneId(u32) = 9 字节，整数为**小端**
- * （与 sceneServer 既有 HandshakeBody 的 PutU32 布局一致，因此线上格式未变）。
+ * v1 布局：protocolVersion(u16) + serviceId(u8) + zoneId(u32) + sceneId(u32) +
+ * sceneIncarnation(u64) + targetGatewayId(u32) + channelId(u32) = 27 字节，整数为小端。
  * 握手体属于链路控制信息，不需要 protobuf，也**不允许客户端伪造**：
  * 客户端链路上根本没有这个 method（客户端协议是独立的 ClientFrame）。
  */
 struct BackendHandshake
 {
+    static constexpr uint16_t kProtocolVersion = 1;
+    static constexpr size_t kEncodedSize = 27;
+
+    uint16_t protocolVersion = kProtocolVersion;
     uint8_t  serviceId = 0;
     uint32_t zoneId    = 0;
     uint32_t sceneId   = 0;
+    uint64_t sceneIncarnation = 0;
+    uint32_t targetGatewayId = 0;
+    uint32_t channelId = 0;
 };
 
+bool        ValidBackendHandshake(const BackendHandshake& h);
 std::string PackBackendHandshake(const BackendHandshake& h);
 bool        UnpackBackendHandshake(const std::string& body, BackendHandshake& out);
 
