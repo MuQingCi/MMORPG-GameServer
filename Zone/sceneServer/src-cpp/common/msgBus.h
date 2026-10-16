@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <array>
+#include <atomic>
+#include <cstdint>
 #include <vector>
 
 struct Msg;
@@ -69,6 +72,10 @@ public:
     DispatchResult sendToWorkerByPlayerId(PlayerId pid, Msg m);
     // 精准投递（结果回投 / 会话亲和 / 定时器到期）
     DispatchResult sendToWorker(WorkerId wid, Msg m);
+
+    uint64_t enqueuedBusinessCount(WorkerId wid) const;
+    uint64_t enqueuedInternalCount(WorkerId wid) const;
+
     // 广播到全部逻辑线程（热更、全服公告等），msgs 必须可拷贝
     std::vector<DispatchResult> broadcastToLogic(const Msg& m);
     DispatchResult broadcastToLogicExcept(WorkerId except, const Msg& m, std::vector<uint8_t>* perWorkerOk);
@@ -112,6 +119,9 @@ public:
 
 private:
     std::vector<std::unique_ptr<MsgQueue<Msg>>> worker_queues_;
+
+    std::vector<std::unique_ptr<std::array<std::atomic<uint64_t>, 2>>> workerEnqueuedClassCounts_;
+    
     std::unique_ptr<MsgQueue<Msg>> net_queue_;
     std::unique_ptr<MsgQueue<Msg>> mysql_queue_;
     // 每个 Redis 分片一条队列：慢 SQL（MySQL 通道）与 Redis 互不影响，

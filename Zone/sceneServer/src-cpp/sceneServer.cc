@@ -7,6 +7,7 @@
 #include "net/net_server.h"
 #include "player/playerManager.h"
 #include "timer/TimerThread.h"
+#include "metrics/metricsJson.h"
 
 #include <sstream>
 #include <fstream>
@@ -14,10 +15,12 @@
 #include <unistd.h>
 #include <chrono>
 #include <thread>
+#include <condition_variable>
+#include <mutex>
 #include <utility>
 
 SceneServer::SceneServer(const SceneConfig& cfg)
-    : cfg_(cfg), luaDir_(cfg.luaDir)
+    : cfg_(cfg), metrics_(cfg.logicThreadNum), luaDir_(cfg.luaDir)
 {
     // bus 最先创建：net/timer/db/logic 全都依赖它。
     // Redis 分片数必须在这里定下来：MsgBus 的 Redis 队列数 = 分片数，
@@ -83,7 +86,7 @@ bool SceneServer::start()
     logicThreads_.reserve(cfg_.logicThreadNum);
     for (uint32_t i = 0; i < cfg_.logicThreadNum; ++i)
     {
-        auto lt = std::make_unique<LogicThread>(i, *bus_, logicCfg, cfg_.aoi, map_);
+        auto lt = std::make_unique<LogicThread>(i, *bus_, logicCfg, cfg_.aoi, map_, metrics_.worker(i));
         //  必须注入定时器服务：否则 Lua 里的 timer.after 会拿到空服务
         lt->bindTimer(timerThread_.get());
         if (!lt->start())
@@ -111,16 +114,26 @@ bool SceneServer::start()
         }
     }
 
-    if (!cfg_.metricsPath.empty())
     {
-        writeMetrics();
+        metricsStart_ = std::chrono::steady_clock::now();
+        sampleMetrics();
+        writeMetrics(); // metricsPath 为空时仅维护内存快照，不写文件。
         metricsThread_ = std::thread([this] {
             while (started_.load(std::memory_order_acquire))
             {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+                std::unique_lock<std::mutex> waitLock(metricsWaitMutex_);
+                metricsWaitCv_.wait_for(waitLock, std::chrono::seconds(1), [this] {
+                    return !started_.load(std::memory_order_acquire);
+                });
+                waitLock.unlock();
                 if (started_.load(std::memory_order_acquire))
+                {
+                    sampleMetrics();
                     writeMetrics();
+                }
             }
+            sampleMetrics();
+            writeMetrics();
         });
     }
 
@@ -139,6 +152,7 @@ void SceneServer::stop()
         return;
 
     started_.store(false, std::memory_order_release);
+    metricsWaitCv_.notify_all();
     if (metricsThread_.joinable())
         metricsThread_.join();
 
@@ -153,6 +167,7 @@ void SceneServer::stop()
     {
         if (lt) {
             lt->stop();
+            if (!lt->drainFinished()) metrics_.worker(lt->threadId()).setLifecycle(WorkerLifecycle::Failed);
             if(!lt->drainSucceeded()) LOG_ERROR << "worker shutdown not durably drained, worker=" << lt->threadId();
         }
     }
@@ -166,35 +181,52 @@ void SceneServer::stop()
     if (dbThread_)
         dbThread_->stop();
 
+    if (!logicThreads_.empty())
+    {
+        sampleMetrics();
+        writeMetrics(); // 最终采样总是执行；文件导出仍由 metricsPath 控制。
+    }
+
     // logic/timer/db 都停了才会走到这里，此时 bus 上不会再有生产者
     LOG_INFO << "scene server stopped";
 }
 
 void SceneServer::writeMetrics() const
 {
-    if (cfg_.metricsPath.empty() || !bus_)
+    if (cfg_.metricsPath.empty())
         return;
     const std::string tmp = cfg_.metricsPath + ".tmp." + std::to_string(static_cast<long long>(::getpid()));
     std::ofstream out(tmp, std::ios::trunc);
     if (!out) return;
-    const auto depths = bus_->workerDepths();
-    out << "{\"logicThreads\":" << logicThreads_.size()
-        << ",\"netQueue\":" << bus_->netDepth()
-        << ",\"playerCount\":" << playerCount();
-    for (const auto& lt : logicThreads_)
-    {
-        if (!lt) continue;
-        const size_t id = lt->threadId();
-        out << ",\"worker" << id << "_queue\":"
-            << (id < depths.size() ? depths[id] : 0)
-            << ",\"worker" << id << "_handled\":" << lt->handledMessages()
-            << ",\"worker" << id << "_dropped\":" << lt->droppedCallbacks()
-            << ",\"worker" << id << "_busyUs\":" << lt->busyMicros()
-            << ",\"worker" << id << "_maxLoopUs\":" << lt->maxLoopMicros();
-    }
-    out << "}\n";
+    const SceneMetricsSnapshot snapshot = metricsSnapshot();
+    out << serializeSceneMetrics(snapshot);
     out.close();
     ::rename(tmp.c_str(), cfg_.metricsPath.c_str());
+}
+
+void SceneServer::sampleMetrics()
+{
+    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    std::vector<uint64_t> depths;
+    uint64_t netDepth = 0;
+    if (bus_)
+    {
+        const auto busDepths = bus_->workerDepths();
+        depths.assign(busDepths.begin(), busDepths.end());
+        netDepth = bus_->netDepth();
+        for (const auto& thread : logicThreads_)
+        {
+            if (!thread) continue;
+            const auto id = thread->threadId();
+            metrics_.worker(id).setEnqueued(bus_->enqueuedBusinessCount(id), bus_->enqueuedInternalCount(id));
+        }
+    }
+    std::lock_guard lock(metricsSnapshotMutex_);
+    metricsSnapshot_ = metricsSampler_.sample(metrics_, now, depths, netDepth);
+    const auto startMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        metricsStart_.time_since_epoch()).count());
+    metricsSnapshot_.uptimeMs = now >= startMs ? now - startMs : 0;
 }
 
 void SceneServer::reloadLua(const std::string& newDir)
@@ -227,30 +259,27 @@ size_t SceneServer::playerCount() const
 
 std::string SceneServer::stats() const
 {
+    const auto sampledMetrics = metricsSnapshot();
     std::ostringstream oss;
-    oss << "logicThreads=" << logicThreads_.size()
-        << " netQueue=" << bus_->netDepth();
-    const auto workerDepths = bus_->workerDepths();
-    for (const auto& lt : logicThreads_)
+        oss << "logicThreads=" << sampledMetrics.workers.size()
+        << " netQueue=" << sampledMetrics.netQueueDepth;
+    for (size_t workerId = 0; workerId < sampledMetrics.workers.size(); ++workerId)
     {
-        if (!lt)
-            continue;
-        oss << " [w" << lt->threadId() << " handled=" << lt->handledMessages()
-            << " players=" << lt->playerCount()
-            << " dropped=" << lt->droppedCallbacks()
-            << " queue=" << (lt->threadId() < workerDepths.size() ? workerDepths[lt->threadId()] : 0)
-            << " busyUs=" << lt->busyMicros()
-            << " maxLoopUs=" << lt->maxLoopMicros() << "]";
-    }
-    if (timerThread_)
-        oss << " timer(fired=" << timerThread_->firedCount() << " live=" << timerThread_->liveCount() << ")";
-    if (dbThread_)
-    {
-        oss << " db(mysql=" << dbThread_->mysqlTasks() << " redis=" << dbThread_->redisTasks()
-            << " errors=" << dbThread_->errors() << " redisShards=" << dbThread_->redisShardCount();
-        for (size_t i = 0; i < dbThread_->redisShardCount(); ++i)
-            oss << (dbThread_->redisConnected(i) ? " up" : " down");
-        oss << ")";
+        const auto& sampled = sampledMetrics.workers[workerId];
+        oss << " [w" << workerId << " handled=" << sampled.handled
+            << " players=" << sampled.players
+            << " dropped=" << sampled.dropped
+            << " queue=" << sampled.queueDepth
+            << " busyUs=" << sampled.busyUs
+            << " maxLoopUs=" << sampled.maxLoopUs
+            << " health=" << static_cast<unsigned>(sampled.health)
+            << " activePermille=" << sampled.activePermille << "]";
     }
     return oss.str();
+}
+
+SceneMetricsSnapshot SceneServer::metricsSnapshot() const
+{
+    std::lock_guard lock(metricsSnapshotMutex_);
+    return metricsSnapshot_;
 }

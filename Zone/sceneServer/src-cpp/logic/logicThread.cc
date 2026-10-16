@@ -38,10 +38,12 @@ LogicThread::LogicThread(uint32_t threadId,
                          MsgBus& bus, 
                          const Config& cfg, 
                          const AoiConfig& aoiCfg, 
-                         const Map& map)
+                         const Map& map,
+                         WorkerMetrics& metrics)
                        : threadId_(threadId), 
                          cfg_(cfg),
                          m_bus_(&bus),
+                          metrics_(&metrics),
                          players_(threadId),
                          workerPushSink_(bus, players_),
                          aoiService_(threadId,aoiCfg,workerPushSink_,map,
@@ -59,6 +61,17 @@ LogicThread::LogicThread(uint32_t threadId,
 LogicThread::~LogicThread()
 {
     stop();
+}
+
+void LogicThread::WorkerMetricsRecorder::publish(WorkerMetrics& target) noexcept
+{
+    target.recordHandled(handled);
+    target.recordDropped(dropped);
+    target.addHandlerDurationTotal(handlerUs);
+    if (handlerMaxUs) target.recordHandlerMax(handlerMaxUs);
+    target.addActiveUs(activeUs);
+    if (cycleMaxUs) target.recordCycleDuration(cycleMaxUs);
+    handled = dropped = handlerUs = activeUs = handlerMaxUs = cycleMaxUs = 0;
 }
 
 PlayerManager& LogicThread::players()
@@ -86,6 +99,7 @@ bool LogicThread::start()
     apiCtx_.workerId = threadId_;
     apiCtx_.redisNs = cfg_.redisNs;   // 脚本的 Redis 命令按此命名空间校验/分片
 
+    metrics_->setLifecycle(WorkerLifecycle::Starting);
     started_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run(); });
     return true;
@@ -113,21 +127,35 @@ void LogicThread::bindTimer(ITimerService* timer)
 void LogicThread::run()
 {
     LOG_INFO << "logic thread start, worker=" << threadId_;
+    const auto monotonicMs = [] {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    metrics_->setPhase(WorkerPhase::Initializing, monotonicMs());
 
     // lua_State 在本线程内创建，保证 state 与线程一一对应
     lua_ = std::make_unique<LuaEnv>();
     lua_->setInstructionLimit(cfg_.luaInstructionLimit);
-    if (!lua_->Init(cfg_.luaDir, &apiCtx_))
+    const bool luaReady = lua_->Init(cfg_.luaDir, &apiCtx_);
+    metrics_->setLuaReady(luaReady);
+    if (!luaReady)
     {
         LOG_ERROR << "lua init failed, worker=" << threadId_ << " dir=" << cfg_.luaDir;
     }
     apiCtx_.env = lua_.get();
+    metrics_->setLifecycle(WorkerLifecycle::Running);
+    metrics_->setPhase(WorkerPhase::Maintenance, monotonicMs());
+    metrics_->setProgress(monotonicMs());
 
     lastFlushMs_ = NowMs();
     lastScanMs_ = NowMs();
 
     while (started_.load(std::memory_order_acquire))
     {
+        metrics_->setPlayers(players_.size());
+        const auto cycleStart = std::chrono::steady_clock::now();
+        metrics_->setProgress(monotonicMs());
+        metrics_->setPhase(WorkerPhase::Maintenance, monotonicMs());
         // 安全点：热更只在"没有正在处理的消息"时发生
         doReloadIfNeeded();
 
@@ -137,6 +165,7 @@ void LogicThread::run()
         if(drainRequested_.load() && !draining_)
         {
             draining_=true;
+            metrics_->setLifecycle(WorkerLifecycle::Draining);
             drainDeadline_=nowMs+cfg_.shutdownDrainMs;
             for(const auto& [id,state]:playerLoads_) 
             { 
@@ -194,33 +223,94 @@ void LogicThread::run()
         //取事件并消费
         Msg m;
         // 单段等待：队列空则最多阻塞 idleWaitMs，非空立即取出
+        const auto waitStart = std::chrono::steady_clock::now();
+
+        metrics_->setPhase(WorkerPhase::Waiting, monotonicMs());
+
+        //无事件到达时
         if (!m_bus_->waitPopWorker(threadId_, m,
                                    std::chrono::milliseconds(cfg_.idleWaitMs)))
         {
+            const auto waitEnd = std::chrono::steady_clock::now();
+            const auto waitUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waitEnd - waitStart).count());
+            metrics_->addWaitUs(waitUs, true);
+
+            const auto preWaitUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waitStart - cycleStart).count());
+            metrics_->addMaintenanceUs(preWaitUs);
+
+            const auto idleStart = std::chrono::steady_clock::now();
             onIdle();
+
+            const auto idleEnd = std::chrono::steady_clock::now();
+            const auto idleWorkUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(idleEnd - idleStart).count());
+
+            recorder_.activeUs += preWaitUs + idleWorkUs;
+            const auto duration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(idleEnd - cycleStart).count());
+            recorder_.cycleMaxUs = std::max(recorder_.cycleMaxUs, duration);
+            recorder_.lifetimeCycleMaxUs = std::max(recorder_.lifetimeCycleMaxUs, duration);
+
+            metrics_->setProgress(monotonicMs());
+            metrics_->addBusyUs(idleWorkUs);
+            metrics_->addMaintenanceUs(idleWorkUs);
+            metrics_->addCycleUs(duration);
+            recorder_.publish(*metrics_);
             continue;
         }
 
-        if (m.head.msgType == MsgType::MSGTYPE_SHUTDOWN) { requestDrain(); continue; }
+        const auto waitEnd = std::chrono::steady_clock::now();
+        metrics_->setProgress(monotonicMs());
+        metrics_->addWaitUs(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waitEnd - waitStart).count()), false);
+        metrics_->setProgress(monotonicMs());
+
+        //-----------------处理事件----------------
+
+        if (m.head.msgType == MsgType::MSGTYPE_SHUTDOWN) 
+        {
+            requestDrain();
+            metrics_->addCycleUs(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - cycleStart).count()));
+            recorder_.publish(*metrics_);
+            continue;
+        }
+
+        const uint64_t phaseStartMs = monotonicMs();
+        metrics_->setPhase(WorkerPhase::Handling, phaseStartMs);
+        metrics_->setCurrentMessage(m.head.msgType, m.head.Method);
 
         const auto handleStart = std::chrono::steady_clock::now();
+        
         handleMsg(m);
+
+        metrics_->recordMessageType(m.head.msgType, m.head.Method);
         const auto handleMicros = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - handleStart).count());
-        busyMicros_.fetch_add(handleMicros, std::memory_order_relaxed);
-        auto maxLoop = maxLoopMicros_.load(std::memory_order_relaxed);
-        while (handleMicros > maxLoop &&
-               !maxLoopMicros_.compare_exchange_weak(maxLoop, handleMicros,
-                                                     std::memory_order_relaxed)) {}
-        handledMessages_.fetch_add(1, std::memory_order_relaxed);
+        const auto cycleEnd = std::chrono::steady_clock::now();
+        const auto preWaitUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waitStart - cycleStart).count());
+        const auto postWaitUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(cycleEnd - waitEnd).count() - handleMicros);
+        const auto cycleDuration = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(cycleEnd - cycleStart).count());
+        recorder_.cycleMaxUs = std::max(recorder_.cycleMaxUs, cycleDuration);
+        recorder_.lifetimeCycleMaxUs = std::max(recorder_.lifetimeCycleMaxUs, cycleDuration);
+        ++recorder_.handled;
+        recorder_.handlerUs += handleMicros;
+        recorder_.handlerMaxUs = std::max(recorder_.handlerMaxUs, handleMicros);
+        recorder_.activeUs += preWaitUs + postWaitUs + handleMicros;
+        metrics_->setProgress(monotonicMs());
+        metrics_->setCurrentMessage(0, 0);
+        metrics_->addBusyUs(handleMicros);
+        metrics_->collectMaxLoopWindow(handleMicros);
+        metrics_->addMaintenanceUs(preWaitUs + postWaitUs);
+        metrics_->addCycleUs(cycleDuration);
+        recorder_.publish(*metrics_);
     }
 
     started_.store(false);
+    recorder_.publish(*metrics_);
+    metrics_->setPhase(WorkerPhase::Stopping, monotonicMs());
+    metrics_->setLifecycle(WorkerLifecycle::Stopped);
     if (lua_)
         lua_->Shutdown();
     LOG_INFO << "logic thread stopped, worker=" << threadId_
-             << " handled=" << handledMessages_.load();
+             << " handled=" << metrics_->readRaw().handled;
 }
 
 void LogicThread::handleMsg(Msg& m)
@@ -725,7 +815,7 @@ void LogicThread::onDbResult(Msg& m)
     // 1. 先校验 Actor 生命周期：发起查询时可能已下线/Actor 已重建
     if (m.head.playerId != 0 && !players_.validateEpoch(m.head.playerId, m.head.epoch))
     {
-        droppedCallbacks_.fetch_add(1, std::memory_order_relaxed);
+        ++recorder_.dropped;
         LOG_INFO << "worker " << threadId_ << " drop stale db result, pid=" << m.head.playerId
                  << " epoch=" << m.head.epoch << " ctx=" << m.head.ctx;
         return;
@@ -754,7 +844,7 @@ void LogicThread::onTimer(Msg& m)
         if (m.head.playerId != 0 &&
             !players_.validateEpoch(m.head.playerId, m.head.epoch))
         {
-            droppedCallbacks_.fetch_add(1, std::memory_order_relaxed);
+            ++recorder_.dropped;
             LOG_DEBUG << "worker " << threadId_ << " drop stale lua timer, pid="
                       << m.head.playerId << " timerId=" << m.head.ctx;
             return;

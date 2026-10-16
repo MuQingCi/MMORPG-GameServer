@@ -25,8 +25,12 @@ MsgBus::MsgBus(size_t numWorkers, size_t redisShards)
         redisShards = 1;
 
     worker_queues_.reserve(numWorkers);
+    workerEnqueuedClassCounts_.reserve(numWorkers);
     for (size_t i = 0; i < numWorkers; ++i)
+    {
         worker_queues_.emplace_back(std::make_unique<MsgQueue<Msg>>());
+        workerEnqueuedClassCounts_.emplace_back(std::make_unique<std::array<std::atomic<uint64_t>, 2>>());
+    }
 
     redis_queues_.reserve(redisShards);
     for (size_t i = 0; i < redisShards; ++i)
@@ -66,11 +70,27 @@ DispatchResult MsgBus::sendToWorker(WorkerId wid, Msg m)
         return DispatchResult::kInvalidTarget;
     }
 
+    const uint16_t messageType = m.head.msgType;
+    const bool business = messageType == MSGTYPE_CONN_DATA && !m.head.hasClientBinding;
     const bool ok = worker_queues_[wid]->try_push(std::move(m));
+    if (ok)
+    {
+        (*workerEnqueuedClassCounts_[wid])[business ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
+    }
     if (!ok)
         LOG_WARNING << "sendToWorker: queue full, wid=" << wid;
 
     return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+}
+
+uint64_t MsgBus::enqueuedBusinessCount(WorkerId wid) const
+{
+    return wid < workerEnqueuedClassCounts_.size() ? (*workerEnqueuedClassCounts_[wid])[0].load(std::memory_order_relaxed) : 0;
+}
+
+uint64_t MsgBus::enqueuedInternalCount(WorkerId wid) const
+{
+    return wid < workerEnqueuedClassCounts_.size() ? (*workerEnqueuedClassCounts_[wid])[1].load(std::memory_order_relaxed) : 0;
 }
 
 std::vector<DispatchResult> MsgBus::broadcastToLogic(const Msg& m)

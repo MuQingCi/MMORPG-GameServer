@@ -9,9 +9,11 @@
 #include "lua/luaApiCtx.h"
 #include "service/aoi/aoiService.h"
 #include "logic/workerPushSink.h"
+#include "metrics/sceneMetrics.h"
 #include "player/playerService.h"
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -63,7 +65,8 @@ public:
         int64_t shutdownDrainMs = 5000;
     };
 
-    LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg, const AoiConfig& aoiCfg, const Map& map);
+    LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg, const AoiConfig& aoiCfg,
+                const Map& map, WorkerMetrics& metrics);
 
     ~LogicThread();
 
@@ -83,13 +86,13 @@ public:
     PlayerManager& players();   // 定义在 .cc：头文件里 PlayerManager 还是不完整类型
     size_t playerCount() const; // 同样定义在 .cc
 
-    // 统计（监控用）
-    uint64_t handledMessages() const { return handledMessages_.load(std::memory_order_relaxed); }
-    uint64_t droppedCallbacks() const { return droppedCallbacks_.load(std::memory_order_relaxed); }
-    uint64_t busyMicros() const { return busyMicros_.load(std::memory_order_relaxed); }
-    uint64_t maxLoopMicros() const { return maxLoopMicros_.load(std::memory_order_relaxed); }
-
 private:
+    struct WorkerMetricsRecorder
+    {
+        uint64_t handled = 0, dropped = 0, handlerUs = 0, activeUs = 0;
+        uint64_t handlerMaxUs = 0, cycleMaxUs = 0, lifetimeCycleMaxUs = 0;
+        void publish(WorkerMetrics& target) noexcept;
+    } recorder_;
     void run();
     void handleMsg(Msg& m);
 
@@ -125,6 +128,7 @@ private:
 
     Config cfg_;
     MsgBus* m_bus_ = nullptr;
+    WorkerMetrics* metrics_ = nullptr;
 
     std::unique_ptr<LuaEnv> lua_;
     // std::unique_ptr<PlayerManager> players_;
@@ -154,11 +158,6 @@ private:
 
     int64_t lastFlushMs_ = 0;
     int64_t lastScanMs_ = 0;
-
-    std::atomic<uint64_t> handledMessages_{0};
-    std::atomic<uint64_t> droppedCallbacks_{0};
-    std::atomic<uint64_t> busyMicros_{0};
-    std::atomic<uint64_t> maxLoopMicros_{0};
 
     //可靠任务投递——待处理队列
     //根据state判断任务处于什么状态，用一个容器存储以减少同步数和产生空隙时间
