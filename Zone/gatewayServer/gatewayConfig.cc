@@ -136,6 +136,8 @@ bool GatewayConfig::Load(const std::string& path, GatewayConfig& out, std::strin
     out.maxFramesPerSec = (uint32_t)y.GetUInt("gateway.maxFramesPerSec", out.maxFramesPerSec);
 
     out.logLevel = y.GetStr("gateway.logLevel", out.logLevel);
+    out.logDir = y.GetStr("gateway.logDir", out.logDir);
+    out.logName = y.GetStr("gateway.logName", out.logName);
     out.metricsPath = y.GetStr("gateway.metricsPath", out.metricsPath);
 
     // 键名检查放在读取之后：到这里"代码认识的键"都已消费完，剩下的都是没人读的

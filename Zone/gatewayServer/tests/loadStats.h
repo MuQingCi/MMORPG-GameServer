@@ -2,13 +2,21 @@
 #define CLEARMOON_GATEWAY_TESTS_LOAD_STATS_H
 
 #include <cstdint>
+#include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 struct LoadStatsSnapshot
 {
     uint64_t attempted = 0;
+    uint64_t loadAttempted = 0;
     uint64_t completed = 0;
+    uint64_t inFlight = 0;
+    uint64_t drainUnfinished = 0;
+    uint64_t cutoffUnfinished = 0;
+    uint64_t unresolved = 0;
+    uint64_t drainFinalUnfinished = 0;
     uint64_t errors = 0;
     uint64_t timeouts = 0;
     uint64_t businessSucceeded = 0;
@@ -24,6 +32,7 @@ struct LoadStatsSnapshot
     uint64_t p99Us = 0;
     uint64_t minUs = 0;
     uint64_t maxUs = 0;
+    std::map<std::string, uint64_t> businessErrors;
 };
 
 enum class Result
@@ -42,6 +51,12 @@ class LoadStats
 {
 public:
     void recordAttempt(uint64_t bytes);
+    void recordInFlightDelta(int64_t delta);
+    void recordDrainUnfinished(uint64_t count);
+    void recordCutoffUnfinished(uint64_t count);
+    void recordUnresolved(uint64_t count);
+    void recordDrainFinalUnfinished(uint64_t count);
+    void recordBusinessError(const std::string& reason);
     void recordResult(Result res, uint64_t latencyUs = 0, uint64_t bytesReceived = 0);
     void recordSentBytes(uint64_t bytes);
     LoadStatsSnapshot snapshot() const;
@@ -49,7 +64,14 @@ public:
 private:
     mutable std::mutex mutex_;
     uint64_t attempted_ = 0;
+    uint64_t loadAttempted_ = 0;
     uint64_t completed_ = 0;
+    uint64_t inFlight_ = 0;
+    uint64_t drainUnfinished_ = 0;
+    uint64_t cutoffUnfinished_ = 0;
+    uint64_t unresolved_ = 0;
+    uint64_t drainFinalUnfinished_ = 0;
+    std::map<std::string, uint64_t> businessErrors_;
     uint64_t errors_ = 0;
 
     uint64_t businessSucceeded_ = 0;

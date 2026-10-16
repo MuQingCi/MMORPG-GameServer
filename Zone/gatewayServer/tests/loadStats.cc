@@ -7,8 +7,49 @@ void LoadStats::recordAttempt(uint64_t bytes)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     ++attempted_;
+    ++loadAttempted_;
     bytesSent_ += bytes;
 }
+
+void LoadStats::recordInFlightDelta(int64_t delta)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (delta >= 0)
+        inFlight_ += static_cast<uint64_t>(delta);
+    else
+        inFlight_ -= std::min(inFlight_, static_cast<uint64_t>(-delta));
+}
+
+void LoadStats::recordDrainUnfinished(uint64_t count)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    drainUnfinished_ += count;
+}
+
+void LoadStats::recordCutoffUnfinished(uint64_t count)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    cutoffUnfinished_ += count;
+}
+
+void LoadStats::recordUnresolved(uint64_t count)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    unresolved_ += count;
+}
+
+void LoadStats::recordDrainFinalUnfinished(uint64_t count)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    drainFinalUnfinished_ += count;
+}
+
+void LoadStats::recordBusinessError(const std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++businessErrors_[reason];
+}
+
 
 void LoadStats::recordResult(Result res, uint64_t latencyUs, uint64_t bytesReceived)
 {
@@ -29,26 +70,32 @@ void LoadStats::recordResult(Result res, uint64_t latencyUs, uint64_t bytesRecei
         case Result::BusinessError:
             ++businessFailed_;
             ++errors_;
+            ++completed_;
             break;
         case Result::DecodeError:
             ++decodeErrors_;
             ++errors_;
+            ++completed_;
             break;
         case Result::GatewayReject:
             ++gatewayRejected_;
             ++errors_;
+            ++completed_;
             break;
         case Result::TransportError:
             ++transportFailed_;
             ++errors_;
+            ++completed_;
             break;
         case Result::Timeout:
             ++timeouts_;
             ++errors_;
+            ++completed_;
             break;
         case Result::UnknownResponse:
             ++unknownResponses_;
             ++errors_;
+            ++completed_;
             break;
     }
 }
@@ -64,7 +111,14 @@ LoadStatsSnapshot LoadStats::snapshot() const
     std::lock_guard<std::mutex> lock(mutex_);
     LoadStatsSnapshot out;
     out.attempted = attempted_;
+    out.loadAttempted = loadAttempted_;
     out.completed = completed_;
+    out.inFlight = inFlight_;
+    out.drainUnfinished = drainUnfinished_;
+    out.cutoffUnfinished = cutoffUnfinished_;
+    out.unresolved = unresolved_;
+    out.drainFinalUnfinished = drainFinalUnfinished_;
+    out.businessErrors = businessErrors_;
     out.errors = errors_;
     out.timeouts = timeouts_;
     out.businessSucceeded = businessSucceeded_;

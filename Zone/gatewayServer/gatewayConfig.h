@@ -56,6 +56,8 @@ public:
     //   与 zoneConfig 的 log.level 统一是阶段 4 的收尾项）
     std::string logLevel = "info";
     std::string metricsPath;                    // 空 = 不导出运行指标
+    std::string logDir = "./logs";
+    std::string logName = "gateway";
 
     // 加载：失败返回 false 并填充 err（文件不存在 / 语法错误 / 未知键 / 缺白名单 / 字段非法）
     static bool Load(const std::string& path, GatewayConfig& out, std::string& err);

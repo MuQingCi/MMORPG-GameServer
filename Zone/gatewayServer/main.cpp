@@ -40,8 +40,6 @@ namespace
 {
 // 日志滚动阈值与目录：阶段 4 引入区服共享配置后，这里改为从 zoneConfig 读取
 constexpr uint64_t kLogRollSize = 64 * 1024 * 1024;
-constexpr const char* kLogDir = "./logs";
-constexpr const char* kLogName = "gateway";   // 与场景服的 "scene" 区分，避免写同一文件
 
 void EnsureDir(const std::string& dir)
 {
@@ -89,8 +87,8 @@ int main(int argc, char** argv)
     }
 
     // ---------------- 2. 日志 ----------------
-    EnsureDir(kLogDir);
-    AsyncLogger asyncLogger(kLogName, kLogRollSize, kLogDir);
+    EnsureDir(cfg.logDir);
+    AsyncLogger asyncLogger(cfg.logName, kLogRollSize, cfg.logDir);
     asyncLogger.start();
     Logger::set_AsyncLogger(&asyncLogger);
 

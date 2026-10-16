@@ -12,6 +12,7 @@ add_executable(gateway_tests
     test_gatewayConfig.cc
     test_gatewayRouting.cc
     test_loadStats.cc
+    test_loadClientProtocol.cc
     test_metricsReader.cc
     test_buffer.cc
     test_eventLoop.cc
@@ -28,7 +29,7 @@ target_compile_definitions(gateway_tests PRIVATE
     GATEWAY_SOURCE_DIR="${CMAKE_SOURCE_DIR}/gatewayServer"
 )
 
-target_link_libraries(gateway_tests PRIVATE gateway_core)
+target_link_libraries(gateway_tests PRIVATE gateway_core gs_proto)
 
 target_sources(gateway_tests PRIVATE loadStats.cc)
 target_sources(gateway_tests PRIVATE metricsReader.cc)
@@ -43,7 +44,7 @@ add_executable(gateway_load_client
 set_property(TARGET gateway_load_client APPEND PROPERTY LINK_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/run_scene_load.sh)
 target_include_directories(gateway_load_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(gateway_load_client PRIVATE gateway_core)
+target_link_libraries(gateway_load_client PRIVATE gateway_core gs_proto)
 set_target_properties(gateway_load_client PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
@@ -102,6 +103,15 @@ if(PYTHON3_EXECUTABLE AND TARGET sceneServer)
     set_tests_properties(gateway_real_scene PROPERTIES TIMEOUT 120)
 else()
     message(STATUS "gateway: python3/sceneServer 不可用，跳过 gateway_real_scene 用例")
+endif()
+
+if(PYTHON3_EXECUTABLE)
+    add_test(NAME gateway_load_client_behavior
+        COMMAND ${PYTHON3_EXECUTABLE} -B
+                ${CMAKE_CURRENT_SOURCE_DIR}/test_load_client_behavior.py)
+    set_tests_properties(gateway_load_client_behavior PROPERTIES
+        ENVIRONMENT "GATEWAY_LOAD_CLIENT=$<TARGET_FILE:gateway_load_client>")
+    set_tests_properties(gateway_load_client_behavior PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE)
 endif()
 
 if(PYTHON3_EXECUTABLE AND TARGET chatServer AND TARGET globalServer)
