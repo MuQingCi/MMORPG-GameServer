@@ -17,6 +17,7 @@ add_executable(scene_tests
     test_redisKey.cc
     test_lua_redis.cc
     test_logicThread.cc
+    test_sceneMetrics.cc
     test_gatewayBinding.cc
     test_aoiRouting.cc
     test_aoiService.cc
@@ -55,3 +56,4 @@ add_test(NAME scene_smoke_invalid_route
             ${CMAKE_CURRENT_BINARY_DIR}
             ${CMAKE_SOURCE_DIR}/sceneServer
 )
+set_tests_properties(scene_smoke_invalid_route PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)

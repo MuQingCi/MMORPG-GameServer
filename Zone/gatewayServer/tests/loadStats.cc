@@ -3,6 +3,14 @@
 #include <algorithm>
 #include <cmath>
 
+void LoadStats::recordSend(uint64_t delay)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++sent_;
+    scheduleDelayUs_ += delay;
+    maxScheduleDelayUs_ = std::max(maxScheduleDelayUs_, delay);
+}
+
 void LoadStats::recordAttempt(uint64_t bytes)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -106,10 +114,20 @@ void LoadStats::recordSentBytes(uint64_t bytes)
     bytesSent_ += bytes;
 }
 
+void LoadStats::recordLogout(bool success)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (success) ++logoutSucceeded_;
+    else ++logoutFailed_;
+}
+
 LoadStatsSnapshot LoadStats::snapshot() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     LoadStatsSnapshot out;
+    out.sent = sent_;
+    out.scheduleDelayUs = scheduleDelayUs_;
+    out.maxScheduleDelayUs = maxScheduleDelayUs_;
     out.attempted = attempted_;
     out.loadAttempted = loadAttempted_;
     out.completed = completed_;
@@ -123,6 +141,8 @@ LoadStatsSnapshot LoadStats::snapshot() const
     out.timeouts = timeouts_;
     out.businessSucceeded = businessSucceeded_;
     out.businessFailed = businessFailed_;
+    out.logoutSucceeded = logoutSucceeded_;
+    out.logoutFailed = logoutFailed_;
     out.gatewayRejected = gatewayRejected_;
     out.transportFailed = transportFailed_;
     out.unknownResponses = unknownResponses_;

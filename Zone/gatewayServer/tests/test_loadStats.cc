@@ -89,6 +89,16 @@ TEST(LoadStatsTracksUnresolvedAttemptsSeparately)
     CHECK_EQ(snapshot.unresolved, (uint64_t)1);
 }
 
+TEST(LoadStatsTracksLogoutLifecycleSeparately)
+{
+    LoadStats stats;
+    stats.recordLogout(true);
+    stats.recordLogout(false);
+    const auto result = stats.snapshot();
+    CHECK_EQ(result.logoutSucceeded, 1u);
+    CHECK_EQ(result.logoutFailed, 1u);
+}
+
 TEST(LoadStatsGroupsBusinessErrorReasons)
 {
     LoadStats stats;
@@ -98,4 +108,15 @@ TEST(LoadStatsGroupsBusinessErrorReasons)
     const auto errors = stats.snapshot().businessErrors;
     CHECK_EQ(errors.at("1002:position mismatch"), (uint64_t)2);
     CHECK_EQ(errors.at("1002:too far"), (uint64_t)1);
+}
+
+TEST(LoadStatsTracksActualSendsAndSchedulingDelay)
+{
+    LoadStats stats;
+    stats.recordSend(100);
+    stats.recordSend(300);
+    const auto result = stats.snapshot();
+    CHECK_EQ(result.sent, 2u);
+    CHECK_EQ(result.scheduleDelayUs, 400u);
+    CHECK_EQ(result.maxScheduleDelayUs, 300u);
 }

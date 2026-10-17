@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Real-process 2 gateway x 2 scene acceptance and sustained load.
+# Refuse the obsolete exploratory preflight/restart sequence: only the guarded
+# READY-barrier flow below may start clients, once the documented online-actor
+# preparation protocol is implemented.
 set -Eeuo pipefail
 GW_BIN="$(realpath "${1:?gatewayServer}")"
 SCENE_BIN="$(realpath "${2:?sceneServer}")"
@@ -20,7 +23,23 @@ mkdir -p "$WORK"; WORK="$(realpath "$WORK")"
 if [[ "${LOAD_PRESERVE_WORK:-0}" != 1 ]]; then rm -rf "$WORK"/*; fi
 PIDS=()
 L1=""; L2=""; MONITOR=""
-cleanup() { for pid in "${PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done; for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done; }
+cleanup() {
+    for pid in "${PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done
+    local deadline=$((SECONDS+20))
+    while (( SECONDS < deadline )); do
+        local alive=0
+        for pid in "${PIDS[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+        (( alive == 0 )) && break
+        sleep .1
+    done
+    for pid in "${PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "FORCED_SERVICE_KILL pid=$pid reason=cleanup_timeout" >> "$WORK/forced-service-kill.log"
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+        wait "$pid" 2>/dev/null || true
+    done
+}
 stop_load_clients() {
     for pid in "$L1" "$L2"; do [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true; done
     local deadline=$((SECONDS+${LOAD_STOP_GRACE_SEC:-10}))
@@ -87,7 +106,29 @@ text=text.replace('    backendChannels: 1',f'    backendChannels: {channels}')
 pathlib.Path(out).write_text(text)
 PY
 # Disable external persistence and isolate logs for this run.
-sed -i -e 's/enable: true/enable: false/' -e "s#^        dir: .*#        dir: $WORK/logs#" "$WORK/zone.yaml"
+if [[ -n "${LOAD_PERSISTENCE_ZONE_CONFIG:-}" ]]; then
+    [[ -n "${LOAD_PERSISTENCE_CONTEXT:-}" && -f "$LOAD_PERSISTENCE_CONTEXT" ]] || { echo "FAIL: missing isolated persistence context"; exit 1; }
+    cp "$LOAD_PERSISTENCE_ZONE_CONFIG" "$WORK/zone.yaml"
+    chmod 600 "$WORK/zone.yaml"
+    python3 - "$WORK/zone.yaml" "$PRIV1" "$PRIV2" "$CHANNELS" <<'PY'
+import pathlib,re,sys
+path,p1,p2,channels=sys.argv[1:]
+text=pathlib.Path(path).read_text()
+text=re.sub(r'(?m)^        - \d+=127\.0\.0\.1:\d+$',f'        - 1=127.0.0.1:{p1}\n        - 2=127.0.0.1:{p2}',text)
+text=re.sub(r'(?m)^    backendChannels:.*$',f'    backendChannels: {channels}',text)
+assert 'enable: true' in text
+pathlib.Path(path).write_text(text)
+PY
+    sed -i 's/flushIntervalMs: 30000/flushIntervalMs: 1000/' "$WORK/scene10.yaml" "$WORK/scene20.yaml"
+else
+    sed -i 's/enable: true/enable: false/' "$WORK/zone.yaml"
+fi
+sed -i "s#^        dir: .*#        dir: $WORK/logs#" "$WORK/zone.yaml"
+if [[ -n "${LOAD_PERSISTENCE_ZONE_CONFIG:-}" || "${LOAD_EXPLICIT_SCENE:-0}" == 1 ]]; then
+    # Explicit placement also supports matched no-DB staircase controls.
+    sed -i 's/defaultSceneId: 0/defaultSceneId: 10/' "$WORK/gw1.yaml"
+    sed -i 's/defaultSceneId: 0/defaultSceneId: 20/' "$WORK/gw2.yaml"
+fi
 
 for n in 1 2; do (cd "$WORK" && "$GW_BIN" "$WORK/gw$n.yaml") > "$WORK/gw$n.stdout.log" 2>&1 & PIDS+=("$!"); done
 wait_files() {
@@ -175,162 +216,73 @@ for gateway_id in 1 2; do
     done
 done
 
-# A real scene business request per player ensures scene login produced a usable pinned actor.
-for g in 1 2; do
-    pub="$PUB1"; [[ $g == 2 ]] && pub="$PUB2"
-    for i in $(seq 1 20); do
-        python3 - "$pub" "$((500000+g*100000+i))" "$TOKEN" <<'PY' > "$WORK/client-$g-$i.out" 2>&1 || { cat "$WORK/client-$g-$i.out"; echo "FAIL: gateway $g real client $i"; exit 1; }
-import socket,struct,sys
-port,pid,ticket=map(int,sys.argv[1:]); s=socket.create_connection(('127.0.0.1',port),timeout=5); s.settimeout(5)
-def frame(kind,module,method,rid,body=b''):
- return struct.pack('>HBBHHQI',0xC1EB,2,kind,module,method,rid,32+len(body))+bytes(12)+body
-def read():
- h=b''
- while len(h)<32: h+=s.recv(32-len(h))
- magic,ver,kind,module,method,rid,total=struct.unpack('>HBBHHQI',h[:20]); body=b''
- while len(body)<total-32: body+=s.recv(total-32-len(body))
- return kind,module,method,rid,body
-def response(rid,module,method):
- while True:
-  f=read()
-  if f[0]==3:
-   continue
-  assert f[0] in (2,4) and f[1:4]==(module,method,rid),f
-  return f
-s.sendall(frame(5,1,1,1,struct.pack('<QQ',pid,ticket))); auth=read(); assert auth[0]==5 and auth[2]==2,auth
-s.sendall(frame(1,3,4,2)); enter=response(2,3,4); assert enter[0]==2 and enter[4][:1]!=b'\x08',enter
-s.sendall(frame(1,3,2,3,bytes([8,0,16,0,24,10,32,20]))); move=response(3,3,2); assert move[0]==2 and move[4][:1]!=b'\x08',move
-print('auth/enter/move OK')
-PY
-    done
-done
-sleep 1
-# Restart one scene instance under the same sceneId, wait for all its gateway channels to re-register,
-# then prove fresh sessions still route successfully through both gateways.
-SCENE1_PID="${PIDS[2]}"
-kill -TERM "$SCENE1_PID" 2>/dev/null || true
-wait "$SCENE1_PID" 2>/dev/null || true
-PIDS[2]=""
-for _ in $(seq 1 50); do
-    grep -q 'scene server stopped' "$WORK/scene10.stdout.log" 2>/dev/null && break
+
+# One load client per Gateway; all connections pause until global READY.
+mkdir -p "$WORK/start-barrier"
+rm -f "$WORK/start-barrier/START" "$WORK/start-barrier/ABORT" "$WORK/start-barrier"/*.ready
+"$LOAD_BIN" --host 127.0.0.1 --port "$PUB1" --connections "$CONNECTIONS_PER_GATEWAY" --rps "$RPS" --duration "$DURATION" --drain "$DRAIN" --scene --player-base 1100000 --ticket "$TOKEN" --barrier-dir "$WORK/start-barrier" --gateway-metrics "$WORK/gw1.metrics.json" --scene-metrics "$WORK/scene10.metrics.json" --scene-metrics-extra "$WORK/scene20.metrics.json" --metrics-output "$WORK/metrics-gw1.jsonl" --output "$WORK/load-gw1.json" > "$WORK/load-gw1.out" 2>&1 & L1=$!
+"$LOAD_BIN" --host 127.0.0.1 --port "$PUB2" --connections "$CONNECTIONS_PER_GATEWAY" --rps "$RPS" --duration "$DURATION" --drain "$DRAIN" --scene --player-base 2100000 --ticket "$TOKEN" --barrier-dir "$WORK/start-barrier" --gateway-metrics "$WORK/gw2.metrics.json" --scene-metrics "$WORK/scene10.metrics.json" --scene-metrics-extra "$WORK/scene20.metrics.json" --metrics-output "$WORK/metrics-gw2.jsonl" --output "$WORK/load-gw2.json" > "$WORK/load-gw2.out" 2>&1 & L2=$!
+expected_ready=$((2*CONNECTIONS_PER_GATEWAY))
+deadline=$((SECONDS+40))
+while (( SECONDS < deadline )); do
+    ready_count=$(find "$WORK/start-barrier" -maxdepth 1 -name 'load-gw*.json.*.ready' | wc -l)
+    if (( ready_count == expected_ready )); then break; fi
+    if ! kill -0 "$L1" 2>/dev/null || ! kill -0 "$L2" 2>/dev/null; then
+        touch "$WORK/start-barrier/ABORT"
+        echo "FAIL: load client exited before global READY barrier"
+        exit 1
+    fi
     sleep .1
 done
-(cd "$WORK" && "$SCENE_BIN" "$WORK/zone.yaml" "$WORK/scene10.yaml") > "$WORK/scene10-restart.stdout.log" 2>&1 & PIDS+=("$!")
-deadline=$((SECONDS+45))
-while (( SECONDS < deadline )); do
-    count=$(grep -c 'backend registered: SCENE_1.*scene=10' "$LOG" || true)
-    (( count >= 4*CHANNELS )) && break
-    sleep .25
-done
-(( count >= 2*CHANNELS )) || { echo "FAIL: scene 10 did not re-register on both gateways after restart"; exit 1; }
-for gateway in 1 2; do
-    pub="$PUB1"; [[ $gateway == 2 ]] && pub="$PUB2"
-    python3 - "$pub" "$((990000+gateway))" "$TOKEN" <<'PY'
-import socket,struct,sys
-port,pid,ticket=map(int,sys.argv[1:]); s=socket.create_connection(('127.0.0.1',port),timeout=5); s.settimeout(5)
-def send(k,m,a,r,b=b''): s.sendall(struct.pack('>HBBHHQI',0xC1EB,2,k,m,a,r,32+len(b))+bytes(12)+b)
-def recv():
- h=b''
- while len(h)<32: h+=s.recv(32-len(h))
- _,_,k,m,a,r,n=struct.unpack('>HBBHHQI',h[:20]); b=b''
- while len(b)<n-32: b+=s.recv(n-32-len(b))
- return k,m,a,r,b
-def response(rid,module,method):
- while True:
-  f=recv()
-  if f[0]==3: continue
-  assert f[0] in (2,4) and f[1:4]==(module,method,rid),f
-  return f
-send(5,1,1,1,struct.pack('<QQ',pid,ticket)); assert recv()[2]==2
-send(1,3,4,2); f=response(2,3,4); assert f[0]==2 and f[4][:1]!=b'\x08',f
-send(1,3,2,3,bytes([8,0,16,0,24,10,32,20])); f=response(3,3,2); assert f[0]==2 and f[4][:1]!=b'\x08',f
+(( ready_count == expected_ready )) || { touch "$WORK/start-barrier/ABORT"; echo "FAIL: global READY barrier timeout ($ready_count/$expected_ready)"; exit 1; }
+python3 - "$WORK/start-barrier/START" <<'PY'
+import pathlib,sys,time
+target=time.clock_gettime_ns(time.CLOCK_MONOTONIC)//1_000_000+100
+pathlib.Path(sys.argv[1]).write_text(f"{target}\n")
 PY
-done
-echo "PASS: scene 10 restarted; new clients completed enter/move through both gateways."
-
-# Concurrent sustained load against both public listeners.
-"$LOAD_BIN" --host 127.0.0.1 --port "$PUB1" --connections "$CONNECTIONS_PER_GATEWAY" --rps "$RPS" --duration "$DURATION" --drain "$DRAIN" --scene --player-base 1100000 --ticket "$TOKEN" --gateway-metrics "$WORK/gw1.metrics.json" --scene-metrics "$WORK/scene10.metrics.json" --scene-metrics-extra "$WORK/scene20.metrics.json" --metrics-output "$WORK/metrics-gw1.jsonl" --output "$WORK/load-gw1.json" > "$WORK/load-gw1.out" 2>&1 & L1=$!
-"$LOAD_BIN" --host 127.0.0.1 --port "$PUB2" --connections "$CONNECTIONS_PER_GATEWAY" --rps "$RPS" --duration "$DURATION" --drain "$DRAIN" --scene --player-base 2100000 --ticket "$TOKEN" --gateway-metrics "$WORK/gw2.metrics.json" --scene-metrics "$WORK/scene10.metrics.json" --scene-metrics-extra "$WORK/scene20.metrics.json" --metrics-output "$WORK/metrics-gw2.jsonl" --output "$WORK/load-gw2.json" > "$WORK/load-gw2.out" 2>&1 & L2=$!
-
-if [[ "$MAX_QUEUE_SECONDS" -gt 0 ]]; then
-    python3 - "$WORK" "$DURATION" "$MAX_QUEUE_SECONDS" <<'PY' &
-import json,pathlib,sys,time
-p=pathlib.Path(sys.argv[1]); duration=int(sys.argv[2]); limit=int(sys.argv[3])
-stop_file=p/'EARLY_STOP'; drained_file=p/'QUEUE_DRAINED_DURING_LOAD.txt'; stale=p/'STALE_METRICS'
-stop_file.unlink(missing_ok=True); drained_file.unlink(missing_ok=True)
-stale.unlink(missing_ok=True)
-last_elapsed=-1; streak=0; had_growth=False; started=False; end=time.monotonic()+duration+2
-while time.monotonic()<end:
- rows=[]
- for g in (1,2):
-  f=p/f'metrics-gw{g}.jsonl'
-  try: rows.append([json.loads(x) for x in f.read_text().splitlines() if x.strip()])
-  except (OSError,json.JSONDecodeError): rows=[]; break
- if len(rows)==2 and rows[0] and rows[1]:
-  elapsed=min(rows[0][-1]['elapsedMs'],rows[1][-1]['elapsedMs'])
-  if elapsed>last_elapsed:
-   last_elapsed=elapsed
-   started=started or elapsed>=1000
-   latest=rows[0][-1]
-   queues=max(max(sum(r[-1].get(f'scene{s}_worker{w}_queue',0) for w in range(4)) for s in (0,1)) for r in rows)
-   ready=min(r[-1].get('gateway_backendReady',0) for r in rows)
-   streak=streak+1 if queues>0 else 0
-   pending=max(r[-1].get('gateway_pendingRoutes',0) for r in rows)
-   invalid = any(r[-1].get('metricsValid') is not True for r in rows)
-   stale_sample = any(not (p/f'gw{g}.metrics.json').exists() or (time.time()-(p/f'gw{g}.metrics.json').stat().st_mtime)>3 for g in (1,2))
-   if started and (ready<4 or streak>=limit or stale_sample or invalid):
-    stop_file.write_text(f'elapsedMs={elapsed} backendReady={ready} sceneWorkerQueueSum={queues} pendingRoutes={pending} consecutiveQueueSamples={streak}\n')
-    if stale_sample or invalid: stale.write_text(f'elapsedMs={elapsed} staleOrInvalidMetrics=1\n')
-    print('EARLY_STOP:',stop_file.read_text().strip(),flush=True)
-    sys.exit(10)
-   had_growth = had_growth or queues>0 or pending>0
-   if elapsed >= duration*1000 and had_growth and queues==0 and pending==0:
-    drained_file.write_text(f'elapsedMs={elapsed} queue=0 pendingRoutes=0; no early stop needed\n')
-    sys.exit(0)
- time.sleep(.1)
-sys.exit(0)
-PY
-    MONITOR=$!
-    for _ in $(seq 1 $((DURATION*10+30))); do
-        if ! kill -0 "$L1" 2>/dev/null || ! kill -0 "$L2" 2>/dev/null; then break; fi
-        if [[ -f "$WORK/EARLY_STOP" || -f "$WORK/QUEUE_DRAINED_DURING_LOAD.txt" ]]; then break; fi
-        sleep .1
+# Execution boundaries only: queue depth, stale metrics, latency and errors are data.
+# Keep the deprecated queue-seconds variable inert for old callers.
+RECOVERY="${LOAD_RECOVERY:-0}"
+load_deadline=$((SECONDS+DURATION+DRAIN+20))
+while kill -0 "$L1" 2>/dev/null || kill -0 "$L2" 2>/dev/null; do
+    for pid in "${PIDS[@]}"; do
+        kill -0 "$pid" 2>/dev/null || { echo "FAIL: service crashed pid=$pid"; exit 1; }
     done
-    if [[ -f "$WORK/EARLY_STOP" && ! -f "$WORK/QUEUE_DRAINED_DURING_LOAD.txt" ]]; then
-        stop_load_clients
-        wait "$MONITOR" 2>/dev/null || true
-        wait "$L1" 2>/dev/null || true
-        wait "$L2" 2>/dev/null || true
-        echo "FAIL: load stopped by guard; clients were asked to stop and drain within their configured deadline."
-        exit 1
+    if (( SECONDS > load_deadline )); then
+        echo "FAIL: load execution deadline exceeded"; exit 1
     fi
-    wait "$MONITOR" || { echo "FAIL: load health monitor failed"; exit 1; }
-    MONITOR=""
-    if [[ -f "$WORK/EARLY_STOP" && ! -f "$WORK/QUEUE_DRAINED_DURING_LOAD.txt" ]]; then
-        stop_load_clients
-        wait "$L1" 2>/dev/null || true
-        wait "$L2" 2>/dev/null || true
-        echo "FAIL: load stopped by guard; clients were asked to stop and drain within their configured deadline."
-        exit 1
-    fi
-fi
-
-if ! wait "$L1"; then cat "$WORK/load-gw1.out"; exit 1; fi
-if ! wait "$L2"; then cat "$WORK/load-gw2.out"; exit 1; fi
-python3 - "$WORK" <<'PY'
+    sleep .2
+done
+client_status=0
+wait "$L1" || client_status=1
+wait "$L2" || client_status=1
+# Observe recovery before any acceptance assertion or service shutdown.
+python3 - "$WORK" "$RECOVERY" <<'PY'
+import json,pathlib,sys,time
+p=pathlib.Path(sys.argv[1]); duration=int(sys.argv[2]); start=time.monotonic()
+with (p/'recovery.jsonl').open('w') as out:
+ for i in range(duration+1):
+  row=dict(elapsedMs=int((time.monotonic()-start)*1000),snapshots={})
+  for name in ('gw1','gw2','scene10','scene20'):
+   try: row['snapshots'][name]=json.loads((p/f'{name}.metrics.json').read_text())
+   except (OSError,ValueError) as error: row['snapshots'][name]=dict(error=str(error))
+  out.write(json.dumps(row)+'\n');out.flush()
+  if i<duration: time.sleep(1)
+PY
+acceptance_status=0
+python3 - "$WORK" <<'PY' || acceptance_status=1
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1])
 for g in (1,2):
  d=json.loads((p/f'load-gw{g}.json').read_text())
  assert d['load_attempted']>0 and d['load_attempted']==d['completed']+d['unresolved'],(g,d)
- if d['drain_sec']>0:
-  assert d['drain_final_unfinished'] <= d['cutoff_unfinished'],(g,d)
-  if not (p/'EARLY_STOP').exists():
-   assert d['errors']==0 and d['business_failed']==0 and d['timeouts']==0,(g,d)
+ assert d['errors']==0 and d['business_failed']==0 and d['timeouts']==0,(g,d)
+ assert d['drain_final_unfinished']==0 and d['unresolved']==0,(g,d)
+ assert d['logout_succeeded']==d['connections'] and d['logout_failed']==0,(g,d)
  print(f"gateway{g}: attempted={d['attempted']} completed={d['completed']} errors={d['errors']} p95_us={d['p95_us']} p99_us={d['p99_us']}")
 PY
 
-python3 - "$WORK" "$DURATION" <<'PY'
+python3 - "$WORK" "$DURATION" <<'PY' || acceptance_status=1
 import json,os,pathlib,sys
 p=pathlib.Path(sys.argv[1]); duration=int(sys.argv[2])
 for gateway in (1,2):
@@ -343,5 +295,42 @@ for gateway in (1,2):
  assert all(any(k.startswith(prefix) for k in rows[0]) for prefix in ('scene0_playerCount','scene1_playerCount'))
  print(f'gateway{gateway} metrics: {len(rows)} valid samples through {rows[-1]["elapsedMs"]}ms, final sample present')
 PY
-echo "PASS: 2 gateways x 2 scene instances x $CHANNELS channels; concurrent client load passed."
+if (( client_status == 0 && acceptance_status == 0 )); then
+    echo "PASS: 2 gateways x 2 scene instances x $CHANNELS channels; concurrent client load passed."
+else
+    echo "FAIL: client/metrics acceptance; evidence retained and persistence checks still attempted."
+fi
+if [[ -n "${LOAD_PERSISTENCE_CONTEXT:-}" ]]; then
+    python3 -B "$ROOT/sceneServer/tests/persistence_load_e2e.py" --verify "$LOAD_PERSISTENCE_CONTEXT" "$WORK" || acceptance_status=1
+    expected_failure=0
+    [[ -f "$WORK/EXPECT_DRAIN_FAILURE" ]] && expected_failure=1
+    scene_index=0
+    for scene_pid in "${PIDS[@]:2}"; do kill -TERM "$scene_pid"; done
+    for scene_pid in "${PIDS[@]:2}"; do
+        # Bounded graceful shutdown; cleanup trap remains responsible on failure.
+        for _ in $(seq 1 200); do kill -0 "$scene_pid" 2>/dev/null || break; sleep .1; done
+        if kill -0 "$scene_pid" 2>/dev/null; then kill -KILL "$scene_pid"; echo "FAIL: scene shutdown timeout"; exit 1; fi
+        shutdown_status=0
+        wait "$scene_pid" || shutdown_status=$?
+        if (( expected_failure && scene_index == 0 )); then
+            (( shutdown_status == 1 )) || { echo "FAIL: save denial must report unsuccessful drain, status=$shutdown_status"; exit 1; }
+        else
+            (( shutdown_status == 0 )) || { echo "FAIL: scene shutdown failed"; exit 1; }
+        fi
+        scene_index=$((scene_index+1))
+    done
+    PIDS=("${PIDS[@]:0:2}")
+    if (( expected_failure )); then
+        grep -R -q 'shutdown persistence drain incomplete' "$WORK/logs" || { echo "FAIL: missing failed-drain evidence"; exit 1; }
+        echo "PASS: save denied; bounded shutdown reports undrained state without false success"
+    else
+        if grep -R -E 'shutdown persistence drain incomplete|shutdown not durably drained' "$WORK/logs"; then exit 1; fi
+        if (( acceptance_status == 0 )); then
+            echo "PASS: isolated persistence verified and scenes durably drained"
+        else
+            echo "FAIL: persistence verification incomplete; scenes exited cleanly"
+        fi
+    fi
+fi
 echo "NOTE: established-client disconnect/reconnect identity is not covered; bound-session disconnection is intentionally fail-closed, not migrated."
+(( client_status == 0 && acceptance_status == 0 ))

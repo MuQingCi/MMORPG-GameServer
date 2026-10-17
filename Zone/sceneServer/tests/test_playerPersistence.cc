@@ -20,6 +20,7 @@ TEST(PersistenceConfirmsOnlyCapturedRevisionAndSerializes)
     auto submit=[&](Msg m) { sent.push_back(std::move(m)); return true; };
     CHECK(store.request(p,false,submit));
     CHECK(p.dirty()); CHECK_EQ(sent.size(),1u);
+    CHECK(sent[0].diagnosticSaveTask);
     p.setPos(11,20,0);
     CHECK(store.request(p,false,submit));
     CHECK_EQ(sent.size(),1u);

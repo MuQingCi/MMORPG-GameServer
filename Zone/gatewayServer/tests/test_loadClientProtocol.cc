@@ -3,6 +3,28 @@
 
 #include "gameProto.pb.h"
 
+TEST(LoadClientProtocolSkipsCoordinateValuesWhenReadingFieldTags)
+{
+    ClientHeader header;
+    header.kind = ClientKind::kResponse;
+    header.module = 3;
+    header.method = 2;
+    for (int32_t coordinate : {18, 26, 146, 0, -1})
+    {
+        gs::WalkAck ack;
+        ack.set_x(coordinate);
+        ack.set_y(20);
+        CHECK(!HasProtobufField(ack.SerializeAsString(), 2, 2));
+        CHECK_EQ(ClassifyLoadResponse(header, ack.SerializeAsString(), 3, 2),
+                 LoadResponseKind::Success);
+    }
+    gs::RetTip tip;
+    tip.set_code(1002);
+    tip.set_text("position mismatch");
+    CHECK(IsRetTipBody(tip.SerializeAsString()));
+    CHECK(!HasProtobufField(tip.SerializeAsString(), 2, 0));
+}
+
 TEST(LoadClientProtocolRejectsBusinessCodeError)
 {
     ClientHeader header;
@@ -27,6 +49,22 @@ TEST(LoadClientProtocolRejectsRetTipErrorResponse)
     gs::RetTip tip;
     tip.set_code(1002);
     tip.set_text("position mismatch");
+    CHECK_EQ(ClassifyLoadResponse(header, tip.SerializeAsString(), 3, 2),
+             LoadResponseKind::BusinessError);
+}
+
+TEST(LoadClientProtocolDoesNotClassifyControlRetTipAsBusinessResponse)
+{
+    ClientHeader header;
+    header.kind = ClientKind::kControl;
+    header.module = 3;
+    header.method = 2;
+    gs::RetTip tip;
+    tip.set_code(1002);
+    tip.set_text("position mismatch");
+    CHECK_EQ(ClassifyLoadResponse(header, tip.SerializeAsString(), 3, 2),
+             LoadResponseKind::Mismatch);
+    header.kind = ClientKind::kResponse;
     CHECK_EQ(ClassifyLoadResponse(header, tip.SerializeAsString(), 3, 2),
              LoadResponseKind::BusinessError);
 }
@@ -126,4 +164,44 @@ TEST(LoadClientProtocolUsesEnterScenePositionAsMovementOrigin)
     CHECK(AdvanceEnterScenePosition(ack.SerializeAsString(), x, y));
     CHECK_EQ(x, 10);
     CHECK_EQ(y, 20);
+}
+
+TEST(LoadClientProtocolRequiresMatchingSuccessfulLogoutAck)
+{
+    ClientHeader header;
+    header.kind = ClientKind::kResponse;
+    header.module = 3;
+    header.method = 5;
+    header.requestId = 91;
+    gs::LogoutAck ack;
+    CHECK(IsSuccessfulLogoutResponse(header, 91, ack.SerializeAsString()));
+    CHECK(!IsSuccessfulLogoutResponse(header, 92, ack.SerializeAsString()));
+    header.kind = ClientKind::kPush;
+    CHECK(!IsSuccessfulLogoutResponse(header, 91, ack.SerializeAsString()));
+    header.kind = ClientKind::kResponse;
+    ack.set_code(1008);
+    CHECK(!IsSuccessfulLogoutResponse(header, 91, ack.SerializeAsString()));
+}
+TEST(LoadWalkBouncesForLongRunsWithoutLeavingStrip)
+{
+    int32_t x = 517;
+    int direction = 1;
+    for (int i = 0; i < 10000; ++i)
+    {
+        const int32_t next = NextLoadWalkX(x, 517, direction);
+        CHECK(next >= 517 && next <= 549);
+        CHECK(next == x + 1 || next == x - 1);
+        x = next;
+    }
+}
+
+TEST(LoadWalkDoesNotReturnToAmbiguousZeroOrigin)
+{
+    int32_t x = 0;
+    int direction = 1;
+    for (int i = 0; i < 10000; ++i)
+    {
+        x = NextLoadWalkX(x, 0, direction);
+        CHECK(x >= 1 && x <= 32);
+    }
 }

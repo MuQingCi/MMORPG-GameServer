@@ -128,6 +128,69 @@ TEST(ZoneConfigLoadFromRealFile)
     CHECK_EQ(port, z.db.redis.port);
 }
 
+TEST(ZoneConfigGatewayIdsAndPoolSize)
+{
+    const std::string text =
+        "ZoneServer:\n"
+        "    zoneId: 1\n"
+        "    db:\n"
+        "        enable: false\n"
+        "    gateways:\n"
+        "        - 1=127.0.0.1:13145\n"
+        "        - 2=127.0.0.1:13146\n"
+        "    backendChannels: 2\n"
+        "    log:\n"
+        "        name: scene\n";
+    CHECK(WriteFile(kTmpPath, text));
+    ZoneConfig z;
+    std::string err;
+    CHECK(ZoneConfig::Load(kTmpPath, z, err));
+    CHECK_EQ(z.gateways.size(), (size_t)2);
+    if (z.gateways.size() == 2) {
+        CHECK_EQ(z.gateways[0].gatewayId, (uint32_t)1);
+        CHECK_EQ(z.gateways[1].gatewayId, (uint32_t)2);
+    }
+    CHECK_EQ(z.backendChannels, (uint32_t)2);
+    std::remove(kTmpPath);
+}
+
+TEST(ZoneConfigRejectsNonIPv4GatewayAddress)
+{
+    const std::string text =
+        "ZoneServer:\n"
+        "    zoneId: 1\n"
+        "    db:\n"
+        "        enable: false\n"
+        "    gateways:\n"
+        "        - 1=not-an-ip:13145\n"
+        "    log:\n"
+        "        name: scene\n";
+    CHECK(WriteFile(kTmpPath, text));
+    ZoneConfig z;
+    std::string err;
+    CHECK(!ZoneConfig::Load(kTmpPath, z, err));
+    CHECK(err.find("address") != std::string::npos);
+    std::remove(kTmpPath);
+}
+
+TEST(ZoneConfigRejectsDuplicateGatewayIdentityAndInvalidPoolSize)
+{
+    const std::string prefix =
+        "ZoneServer:\n    zoneId: 1\n    db:\n        enable: false\n    gateways:\n";
+    const std::string suffix = "    log:\n        name: scene\n";
+    ZoneConfig z;
+    std::string err;
+    CHECK(WriteFile(kTmpPath, prefix + "        - 1=127.0.0.1:13145\n        - 1=127.0.0.1:13146\n" + suffix));
+    CHECK(!ZoneConfig::Load(kTmpPath, z, err));
+    CHECK(err.find("gateway") != std::string::npos);
+    CHECK(WriteFile(kTmpPath, prefix + "        - 1=127.0.0.1:13145\n" +
+                    "    backendChannels: 65\n" + suffix));
+    err.clear();
+    CHECK(!ZoneConfig::Load(kTmpPath, z, err));
+    CHECK(err.find("backendChannels") != std::string::npos);
+    std::remove(kTmpPath);
+}
+
 // 缺 dbName 时必须拒绝（否则会静默连空库 —— 评审 A3 的同类问题）
 TEST(ZoneConfigRejectsEmptyDbName)
 {
@@ -275,6 +338,8 @@ TEST(SceneConfigLoadAndAttachZone)
         std::fprintf(stderr, "attach err: %s\n", err.c_str());
 
     CHECK_EQ(cfg.zone.gateways.size(), (size_t)1);   // 已并入区服配置
+    CHECK_EQ(cfg.net.backendChannels, zone.backendChannels);
+    CHECK(cfg.net.sceneIncarnation != 0);
 
     // 派生字段：一次配置、多处一致
     CHECK_EQ(cfg.net.zoneId, zone.zoneId);
@@ -291,13 +356,29 @@ TEST(SceneConfigLoadAndAttachZone)
     CHECK(ns.PlayerKey(1001, "bag") == "zone:1:player:1001:bag");
 }
 
+TEST(ZoneConfigRejectsMalformedGatewayEndpoint)
+{
+    const std::string prefix =
+        "ZoneServer:\n    zoneId: 1\n    db:\n        enable: false\n    gateways:\n";
+    const std::string suffix = "    log:\n        name: scene\n";
+    for (const std::string bad : {"127.0.0.1:13145", "0=127.0.0.1:13145",
+                                  "1=127.0.0.1:0", "1=not-an-ip:13145"})
+    {
+        CHECK(WriteFile(kTmpPath, prefix + "        - " + bad + "\n" + suffix));
+        ZoneConfig z;
+        std::string err;
+        CHECK(!ZoneConfig::Load(kTmpPath, z, err));
+    }
+    std::remove(kTmpPath);
+}
+
 // 已迁移到 zoneConfig 的键必须被明确拒绝 —— 防止"同一项写两处"
 TEST(SceneConfigRejectsMigratedKeys)
 {
     const char* kMigrated[] = {
         "SceneServer:\n    sceneId: 1\n    zoneId: 2\n",
         "SceneServer:\n    sceneId: 1\n    db:\n        enable: true\n",
-        "SceneServer:\n    sceneId: 1\n    gateways:\n        - 127.0.0.1:10000\n",
+        "SceneServer:\n    sceneId: 1\n    gateways:\n        - 1=127.0.0.1:10000\n",
         "SceneServer:\n    sceneId: 1\n    log:\n        dir: ./logs\n",
     };
 

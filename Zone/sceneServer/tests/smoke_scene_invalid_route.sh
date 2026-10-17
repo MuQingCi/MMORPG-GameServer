@@ -94,36 +94,63 @@ echo "OK: 端口 ${PORT} 已监听"
 #   1) 连接在取 stats 期间一直是打开的（关掉会触发 CONN_CLOSE 把 Actor 回收，掩盖缺陷）；
 #   2) fd 与 stderr 的重定向都局限在子 shell 内，不污染主脚本。
 HOLD_SECONDS=0.8
+HANDSHAKE_MARKER="$WORK/handshake.ready"
+HANDSHAKE_ACCEPTED="$WORK/handshake.accepted"
+LOG_FILE="$WORK/logs/$(date +%F)/scene_smoke.log"
+rm -f "$HANDSHAKE_MARKER" "$HANDSHAKE_ACCEPTED"
 (
-    exec 4<>"/dev/tcp/127.0.0.1/${PORT}" 2>/dev/null || exit 1
-    # 工具以内部网关身份握手，发送缺少 ONLINE 的玩家请求。
+    # 工具以公共协议规定的 Gateway 身份握手，发送缺少 ONLINE 的玩家请求。
     # 网络绑定校验不得让非法请求隐式创建 Actor。
-    python3 - "$PORT" "$HOLD_SECONDS" <<'PY'
-import socket, struct, sys, time
-s=socket.create_connection(('127.0.0.1',int(sys.argv[1])))
+    python3 - "$PORT" "$HOLD_SECONDS" "$HANDSHAKE_MARKER" "$HANDSHAKE_ACCEPTED" <<'PY'
+import os, socket, struct, sys, time
+s=socket.create_connection(('127.0.0.1',int(sys.argv[1])), timeout=3)
+s.settimeout(3)
 def frame(module,method,seq,pid,body):
     return struct.pack('>HHBBHHQQIBB',0xc1ea,1,1,0,module,method,seq,pid,32+len(body),1,8)+body
-s.sendall(frame(1,1,0,0,struct.pack('<BII',1,1,1)))
-body=struct.pack('<HHQQIII',0x4750,1,4242,1,1,1,1)
+s.sendall(frame(1,1,0,0,struct.pack('<HBIIQII',1,1,1,0,0,7,0)))
+with open(sys.argv[3], 'w', encoding='utf-8') as marker:
+    marker.write('handshake-sent\n')
+deadline=time.monotonic()+8
+while not os.path.exists(sys.argv[4]) and time.monotonic()<deadline:
+    time.sleep(0.02)
+if not os.path.exists(sys.argv[4]): raise RuntimeError('server did not confirm handshake')
+# 带非零玩家 ID 但缺少合法绑定信封，必须在网络入口拒绝且不能创建 Actor。
+body=b'invalid-binding-envelope'
 s.sendall(frame(9999,9999,1,4242,body))
 time.sleep(float(sys.argv[2]))
 s.close()
 PY
-    sleep "$HOLD_SECONDS"
 ) &
 FRAME_SENDER=$!
 
 # ---- 触发 stats（SIGUSR1 → 主线程打印 stats: ... players=N）----
+for _ in $(seq 1 80); do
+    [[ -e "$HANDSHAKE_MARKER" ]] && break
+    kill -0 "$FRAME_SENDER" 2>/dev/null || { echo "FAIL: test client failed before handshake"; wait "$FRAME_SENDER"; exit 1; }
+    sleep 0.1
+done
+[[ -e "$HANDSHAKE_MARKER" ]] || { echo "FAIL: handshake confirmation timeout"; exit 1; }
+for _ in $(seq 1 80); do
+    grep -q 'handshake session=.*peer=GATEWAY.*zone=1.*scene=0' "$LOG_FILE" 2>/dev/null && break
+    sleep 0.1
+done
+grep -q 'handshake session=.*peer=GATEWAY.*zone=1.*scene=0' "$LOG_FILE" \
+    || { echo "FAIL: server did not accept Gateway handshake"; tail -20 "$LOG_FILE"; exit 1; }
+touch "$HANDSHAKE_ACCEPTED"
+for _ in $(seq 1 80); do
+    grep -q 'reject invalid gateway player envelope' "$LOG_FILE" 2>/dev/null && break
+    sleep 0.1
+done
+grep -q 'reject invalid gateway player envelope' "$LOG_FILE" \
+    || { echo "FAIL: invalid player envelope was not observed"; tail -20 "$LOG_FILE"; exit 1; }
 kill -USR1 "$PID"
-sleep 0.9
-
 wait "$FRAME_SENDER"
 echo "OK: 已发送无效路由帧（持有 ${HOLD_SECONDS}s 后断开）"
 
-LOG="$(find logs -name 'scene_smoke.log' -exec cat {} \; 2>/dev/null || true)"
+LOG="$(cat "$LOG_FILE" 2>/dev/null || true)"
 
-echo "$LOG" | grep -q "handshake session=" \
-    || { echo "FAIL: 内部工具未完成握手"; echo "$LOG" | tail -5; exit 1; }
+echo "$LOG" | grep -q 'stats:' \
+    || { echo "FAIL: stats snapshot was not emitted"; echo "$LOG" | tail -10; exit 1; }
 
 PLAYERS="$(echo "$LOG" | grep -o 'players=[0-9]*' | sort -u | tr '\n' ' ')"
 echo "stats 中出现的 players 取值: ${PLAYERS}"

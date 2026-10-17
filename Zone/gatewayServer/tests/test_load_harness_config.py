@@ -59,8 +59,13 @@ class LoadHarnessConfigTests(unittest.TestCase):
     def test_multi_runner_passes_bounded_drain_to_both_clients(self):
         runner = MULTI_RUNNER.read_text()
         self.assertIn('DRAIN="${LOAD_DRAIN:-0}"', runner)
-        self.assertEqual(runner.count('--drain "$DRAIN"'), 2)
+        self.assertEqual(len(re.findall(r'^"\$LOAD_BIN" .* --drain "\$DRAIN" .*& L[12]=\$!', runner, re.M)), 2)
         self.assertIn("LOAD_DRAIN", runner)
+
+    def test_multi_runner_starts_exactly_two_load_client_processes(self):
+        runner = MULTI_RUNNER.read_text()
+        launches = re.findall(r'^"\$LOAD_BIN" .*& L[12]=\$!', runner, re.M)
+        self.assertEqual(len(launches), 2, "one load client process per Gateway")
 
     def test_multi_runner_accepts_explicit_temporary_frame_limit(self):
         runner = MULTI_RUNNER.read_text()
@@ -72,6 +77,24 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertIn("elapsedMs", source)
         self.assertIn("sampleIndex <= options.durationSec", source)
         self.assertIn("finalSample", source)
+        self.assertIn("if (sampleIndex >= options.durationSec + options.drainSec) break;", source)
+        self.assertIn("!options.metricsOutput.empty())", source)
+
+    def test_load_client_waits_for_start_before_beginning_metrics_clock(self):
+        source = LOAD_CLIENT.read_text()
+        self.assertIn("g_startEpochMs", source)
+        self.assertIn("const auto loadStart = Clock::time_point", source)
+        runner = MULTI_RUNNER.read_text()
+        self.assertNotIn('then touch "$WORK/start-barrier/START"', runner)
+
+    def test_load_client_joins_workers_and_sampler_exactly_once(self):
+        source = LOAD_CLIENT.read_text()
+        self.assertEqual(source.count("worker.join();"), 1)
+        self.assertEqual(source.count("metricsThread = std::thread(SampleMetrics"), 1)
+        self.assertEqual(source.count("metricsThread.join();"), 1)
+        self.assertIn("while (g_startEpochMs.load() <= 0 && !g_stopRequested)", source)
+        self.assertIn("while (Clock::now() < nextSample && !g_stopRequested)", source)
+        self.assertIn("!options.additionalSceneMetrics.empty() || !options.metricsOutput.empty())", source)
 
     def test_load_client_supports_bounded_drain_and_pending_metrics(self):
         source = LOAD_CLIENT.read_text()
@@ -84,15 +107,18 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertIn("SIGTERM", source)
         self.assertIn("business_errors", source)
         self.assertTrue((ROOT / "gatewayServer/tests/test_load_client_behavior.py").exists())
-        self.assertIn("LOAD_MAX_QUEUE_SECONDS", MULTI_RUNNER.read_text())
-        self.assertIn("EARLY_STOP", MULTI_RUNNER.read_text())
-        self.assertIn("forced-client-kill.log", MULTI_RUNNER.read_text())
-        self.assertIn("STALE_METRICS", MULTI_RUNNER.read_text())
-        self.assertIn("QUEUE_DRAINED_DURING_LOAD", MULTI_RUNNER.read_text())
+        self.assertNotIn("streak>=limit", MULTI_RUNNER.read_text())
+        self.assertNotIn("EARLY_STOP", MULTI_RUNNER.read_text())
+        self.assertIn("LOAD_RECOVERY", MULTI_RUNNER.read_text())
         self.assertIn("while (true)", source)
         self.assertIn("drainDeadline", source)
         self.assertIn("g_stopRequested", source)
         self.assertIn('\\"phase\\"', source)
+
+    def test_runner_does_not_print_unconditional_acceptance_success(self):
+        runner = MULTI_RUNNER.read_text()
+        self.assertNotIn('\necho "PASS: 2 gateways', runner)
+        self.assertIn('if (( client_status == 0 && acceptance_status == 0 )); then', runner)
 
 
 if __name__ == "__main__":

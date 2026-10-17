@@ -1,6 +1,7 @@
 #include "common/msg.h"
 #include "common/msgBus.h"
 #include "logic/logicThread.h"
+#include "metrics/sceneMetrics.h"
 #include "test_util.h"
 #include "gameProto.pb.h"
 
@@ -78,10 +79,13 @@ TEST(LogicThreadLoadsPlayerBeforeEnterAndDrainsSaveAck)
 {
     MsgBus bus(1); auto map=TestMap(); AoiConfig aoi;
     auto cfg=TestCfg(); cfg.persistenceEnabled=true; cfg.shutdownDrainMs=1000;
-    LogicThread lt(0,bus,cfg,aoi,map); CHECK(lt.start());
+    SceneMetrics metrics(1);
+    LogicThread lt(0,bus,cfg,aoi,map,metrics.worker(0)); CHECK(lt.start());
+    CHECK(WaitUntil([&] { return metrics.worker(0).readRaw().lifecycle == WorkerLifecycle::Running; }));
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(42,GatewayPlayer::kOnline))));
     Msg request;
     CHECK(WaitUntil([&] { return bus.tryPopDbMySql(request); }));
+    CHECK(metrics.worker(0).readRaw().handled >= 1);
     dbv::DbTask load; CHECK(dbv::DbTask::Decode(request.body,load));
     CHECK_EQ(load.kind,4);
     auto enter=MakeConnData(Module::PLAYER,Method::PLAYER_ENTER_SCENE,42);
@@ -114,7 +118,8 @@ TEST(LogicThreadPeriodicSaveRunsUnderContinuousMessageLoad)
     cfg.flushIntervalMs=20;
     cfg.shutdownDrainMs=500;
     cfg.luaDir=std::string(SCENE_SOURCE_DIR)+"/lua_script";
-    LogicThread lt(0,bus,cfg,aoi,map); CHECK(lt.start());
+    SceneMetrics metrics(1);
+    LogicThread lt(0,bus,cfg,aoi,map,metrics.worker(0)); CHECK(lt.start());
 
     const auto binding=BindingMsg(42,GatewayPlayer::kOnline);
     CHECK(IsAccepted(bus.sendToWorker(0,binding)));
@@ -185,7 +190,8 @@ TEST(LogicThreadDrainReportsUnresolvedLoadTimeout)
 {
     MsgBus bus(1); auto map=TestMap(); AoiConfig aoi;
     auto cfg=TestCfg(); cfg.persistenceEnabled=true; cfg.shutdownDrainMs=30;
-    LogicThread lt(0,bus,cfg,aoi,map); CHECK(lt.start());
+    SceneMetrics metrics(1);
+    LogicThread lt(0,bus,cfg,aoi,map,metrics.worker(0)); CHECK(lt.start());
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(42,GatewayPlayer::kOnline))));
     Msg request; CHECK(WaitUntil([&] { return bus.tryPopDbMySql(request); }));
     lt.stop(); CHECK(lt.drainFinished()); CHECK(!lt.drainSucceeded());
@@ -197,7 +203,8 @@ TEST(LogicThreadFinalSaveBarrierResumesDeferredLogin)
     MsgBus bus(1); auto map=TestMap(); AoiConfig aoi;
     auto cfg=TestCfg(); cfg.persistenceEnabled=true; cfg.shutdownDrainMs=500;
     cfg.luaDir=std::string(SCENE_SOURCE_DIR)+"/lua_script";
-    LogicThread lt(0,bus,cfg,aoi,map); CHECK(lt.start());
+    SceneMetrics metrics(1);
+    LogicThread lt(0,bus,cfg,aoi,map,metrics.worker(0)); CHECK(lt.start());
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(42,GatewayPlayer::kOnline))));
     Msg load; CHECK(WaitUntil([&] { return bus.tryPopDbMySql(load); }));
     dbv::DbResult loaded; loaded.playerId=42;
@@ -248,7 +255,8 @@ TEST(LogicThreadReloadRejectsOldResultsAndOfflineCancelsLoad)
 {
     MsgBus bus(1); auto map=TestMap(); AoiConfig aoi;
     auto cfg=TestCfg(); cfg.persistenceEnabled=true; cfg.shutdownDrainMs=500;
-    LogicThread lt(0,bus,cfg,aoi,map); CHECK(lt.start());
+    SceneMetrics metrics(1);
+    LogicThread lt(0,bus,cfg,aoi,map,metrics.worker(0)); CHECK(lt.start());
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(42,GatewayPlayer::kOnline))));
     Msg load; CHECK(WaitUntil([&] { return bus.tryPopDbMySql(load); }));
     auto loadedResult=[] {
@@ -293,7 +301,8 @@ TEST(LogicThreadInvalidRouteDoesNotCreateActor)
 {
     MsgBus bus(1);
     auto map=TestMap(); AoiConfig aoi;
-    LogicThread lt(0, bus, TestCfg(),aoi,map);
+    SceneMetrics metrics(1);
+    LogicThread lt(0, bus, TestCfg(),aoi,map,metrics.worker(0));
     CHECK(lt.start());
 
     CHECK(IsAccepted(bus.sendToWorker(0, MakeConnData(9999, 9999, 4242))));
@@ -313,7 +322,8 @@ TEST(LogicThreadErrorResponseKeepsRequestContext)
 {
     MsgBus bus(1);
     auto map=TestMap(); AoiConfig aoi;
-    LogicThread lt(0, bus, TestCfg(),aoi,map);
+    SceneMetrics metrics(1);
+    LogicThread lt(0, bus, TestCfg(),aoi,map,metrics.worker(0));
     CHECK(lt.start());
 
     for (const auto& request : {MakeConnData(9999, 9999, 4242),
@@ -342,11 +352,12 @@ TEST(LogicThreadValidRouteRequiresOnlineBinding)
 {
     MsgBus bus(1);
     auto map=TestMap(); AoiConfig aoi;
-    LogicThread lt(0, bus, TestCfg(),aoi,map);
+    SceneMetrics metrics(1);
+    LogicThread lt(0, bus, TestCfg(),aoi,map,metrics.worker(0));
     CHECK(lt.start());
 
     CHECK(IsAccepted(bus.sendToWorker(0, MakeConnData(Module::PLAYER, Method::PLAYER_MOVE, 4242))));
-    CHECK(WaitUntil([&] { return lt.handledMessages() >= 1; }));
+    CHECK(WaitUntil([&] { return metrics.worker(0).readRaw().handled >= 1; }));
     CHECK_EQ(lt.playerCount(),0u);
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(4242,GatewayPlayer::kOnline))));
     CHECK(WaitUntil([&] { return lt.playerCount() == 1; }));
@@ -359,7 +370,8 @@ TEST(LogicThreadClientOfflineIsBindingScoped)
 {
     MsgBus bus(1);
     auto map=TestMap(); AoiConfig aoi;
-    LogicThread lt(0, bus, TestCfg(),aoi,map);
+    SceneMetrics metrics(1);
+    LogicThread lt(0, bus, TestCfg(),aoi,map,metrics.worker(0));
     CHECK(lt.start());
 
     CHECK(IsAccepted(bus.sendToWorker(0, BindingMsg(4242,GatewayPlayer::kOnline))));
@@ -372,12 +384,12 @@ TEST(LogicThreadClientOfflineIsBindingScoped)
     CHECK(IsAccepted(bus.sendToWorker(0, std::move(closeMsg))));
     CHECK(IsAccepted(bus.sendToWorker(0, BindingMsg(4242,GatewayPlayer::kOnline,2))));
     CHECK(IsAccepted(bus.sendToWorker(0, BindingMsg(4242,GatewayPlayer::kOffline,1))));
-    CHECK(WaitUntil([&] { return lt.handledMessages() >= 4; }));
+    CHECK(WaitUntil([&] { return metrics.worker(0).readRaw().handled >= 4; }));
     CHECK_EQ(lt.playerCount(),1u);
     CHECK(IsAccepted(bus.sendToWorker(0, BindingMsg(4242,GatewayPlayer::kOffline,2))));
     CHECK(WaitUntil([&] { return lt.playerCount() == 0; }));
     CHECK(IsAccepted(bus.sendToWorker(0, BindingMsg(4242,GatewayPlayer::kOnline,2))));
-    CHECK(WaitUntil([&] { return lt.handledMessages() >= 6; }));
+    CHECK(WaitUntil([&] { return metrics.worker(0).readRaw().handled >= 6; }));
     CHECK_EQ(lt.playerCount(),0u);
 
     lt.stop();
@@ -389,7 +401,8 @@ TEST(LogicThreadInvalidRouteKeepsNoState)
 {
     MsgBus bus(1);
     auto map=TestMap(); AoiConfig aoi;
-    LogicThread lt(0, bus, TestCfg(),aoi,map);
+    SceneMetrics metrics(1);
+    LogicThread lt(0, bus, TestCfg(),aoi,map,metrics.worker(0));
     CHECK(lt.start());
 
     for (uint64_t pid = 10000; pid < 10005; ++pid)

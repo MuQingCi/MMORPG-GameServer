@@ -8,6 +8,73 @@
 #include <vector>
 
 // 归属必须是**纯函数且稳定**：同一 playerId 在任何时候都落到同一线程
+TEST(QueueDiagnosticsBoundariesAndRequeue)
+{
+    CHECK_EQ(QueueDiagnostics::bucket(100),0u);
+    CHECK_EQ(QueueDiagnostics::bucket(101),1u);
+    CHECK_EQ(QueueDiagnostics::bucket(100001),9u);
+    QueueDiagnostics d(1);
+    d.dequeued(0,0,100,200); d.dequeued(0,0,0,200); d.dequeued(0,0,300,200);
+    CHECK_EQ(d.wait(0,0).count,1u); CHECK_EQ(d.wait(0,0).missing,2u);
+    MsgBus bus(2); bus.enableDiagnostics();
+    Msg m; m.head.msgType=MSGTYPE_CONN_DATA; m.head.hasClientBinding=true;
+    CHECK(IsAccepted(bus.sendToWorker(0,m)));
+    Msg out; CHECK(bus.tryPopWorker(0,out));
+    CHECK(out.diagnosticEnqueuedUs>0);
+    const auto previous=out.diagnosticEnqueuedUs;
+    out.diagnosticEnqueuedUs=1;
+    CHECK(IsAccepted(bus.sendToWorker(0,out))); CHECK(bus.tryPopWorker(0,out));
+    CHECK(out.diagnosticEnqueuedUs>=previous);
+    CHECK_EQ(bus.enqueuedBusinessCount(0),2u);
+    CHECK_EQ(bus.diagnostics()->wait(0,0).count,2u);
+    CHECK_EQ(bus.broadcastToLogic(m).size(),2u);
+    CHECK(bus.tryPopWorker(0,out)); CHECK(bus.tryPopWorker(1,out));
+    CHECK_EQ(bus.diagnostics()->wait(1,0).count,1u);
+    CHECK(!IsAccepted(bus.sendToWorker(99,m)));
+    MsgBus disabled(1); CHECK(IsAccepted(disabled.sendToWorker(0,out)));
+    CHECK(disabled.tryPopWorker(0,out)); CHECK_EQ(out.diagnosticEnqueuedUs,0u);
+}
+
+TEST(QueueDiagnosticsChannelAccounting)
+{
+    MsgBus bus(2); bus.enableDiagnostics();
+    Msg m; m.head.msgType=MSGTYPE_DB_TASK_MYSQL;
+    CHECK(IsAccepted(bus.sendToDb(m)));
+    Msg out; CHECK(bus.tryPopDbMySql(out));
+    CHECK_EQ(bus.diagnostics()->wait(3,0).count,1u); // workers, net, mysql
+    CHECK(IsAccepted(bus.sendToNet(m))); CHECK(bus.tryPopNet(out));
+    CHECK_EQ(bus.diagnostics()->wait(2,0).count,1u);
+    CHECK_EQ(bus.diagnostics()->admissions(3)[0],1u);
+    CHECK_EQ(bus.diagnostics()->admissions(3)[1],1u);
+    m.head.msgType=MSGTYPE_DB_TASK_REDIS; m.head.dbShard=99;
+    CHECK(!IsAccepted(bus.sendToDb(m)));
+    CHECK_EQ(bus.diagnostics()->admissions(5)[3],1u); // invalid-target channel
+    Msg load;
+    load.head.msgType=MSGTYPE_DB_TASK_MYSQL;
+    load.head.Method=Method::SYS_FLUSH;
+    load.head.taskId=123;
+    CHECK(IsAccepted(bus.sendToDb(load))); CHECK(bus.tryPopDbMySql(out));
+    CHECK(bus.diagnostics()->json(1,{0,0},0).find("save_db_accepted")==std::string::npos);
+    load.diagnosticSaveTask=true;
+    CHECK(IsAccepted(bus.sendToDb(load))); CHECK(bus.tryPopDbMySql(out));
+    CHECK(bus.diagnostics()->json(2,{0,0},0).find("save_db_accepted")!=std::string::npos);
+}
+
+TEST(QueueDiagnosticsConcurrentSnapshotAndBoundedEvents)
+{
+    QueueDiagnostics d(2);
+    std::thread first([&] { for(int i=0;i<2000;++i) { d.dequeued(0,0,10,20); d.admission(0,0); } });
+    std::thread second([&] { for(int i=0;i<2000;++i) d.dequeued(1,1,10,30); });
+    for(int i=0;i<20;++i) CHECK(!d.json(100,{0,0},0).empty());
+    first.join(); second.join();
+    CHECK_EQ(d.wait(0,0).count,2000u); CHECK_EQ(d.wait(1,1).sumUs,40000u);
+    CHECK_EQ(d.admissions(0)[0],2000u);
+    for(int i=0;i<4100;++i) d.event(0,"test",1,2,i);
+    const auto full=d.json(100,{0,0},0);
+    CHECK(full.find("\"droppedEvents\":4")!=std::string::npos);
+    CHECK(d.json(101,{0,0},0,false).find("\"waits\":[]")!=std::string::npos);
+}
+
 TEST(HashStableForSameActor)
 {
     const size_t n = 8;

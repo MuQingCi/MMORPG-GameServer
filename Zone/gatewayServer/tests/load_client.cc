@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,7 @@
 #include <iostream>
 #include <map>
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <sstream>
 #include <mutex>
@@ -61,7 +63,10 @@ struct Options
     std::vector<std::string> additionalSceneMetrics;
     std::string metricsOutput;
     uint32_t metricsIntervalSec = 1;
+    std::string barrierDir;
 };
+
+std::atomic<int64_t> g_startEpochMs{0};
 
 void Usage(const char* program)
 {
@@ -81,6 +86,7 @@ void Usage(const char* program)
               << "  --scene-metrics-extra FILE  additional scene snapshot (repeatable)\n"
               << "  --metrics-output FILE       JSONL metrics samples\n"
               << "  --metrics-interval SEC      metrics sample interval, default 1\n"
+              << "  --barrier-dir DIR           wait for START after writing READY\n"
               << "  --output FILE               JSON summary, default load-summary.json\n";
 }
 
@@ -116,6 +122,7 @@ bool ParseArgs(int argc, char** argv, Options& options)
         if (arg == "--scene-metrics") { const char* v = next("--scene-metrics"); if (!v) return false; options.sceneMetrics = v; continue; }
         if (arg == "--scene-metrics-extra") { const char* v = next("--scene-metrics-extra"); if (!v) return false; options.additionalSceneMetrics.emplace_back(v); continue; }
         if (arg == "--metrics-output") { const char* v = next("--metrics-output"); if (!v) return false; options.metricsOutput = v; continue; }
+        if (arg == "--barrier-dir") { const char* v = next("--barrier-dir"); if (!v) return false; options.barrierDir = v; continue; }
         if (arg == "--scene") { options.scene = true; options.ping = false; continue; }
         if (arg == "--metrics-interval") { const char* v = next("--metrics-interval"); if (!v || !ParseUInt(v, value) || value == 0) return false; options.metricsIntervalSec = static_cast<uint32_t>(value); continue; }
         if (arg == "--port") { const char* v = next("--port"); if (!v || !ParseUInt(v, value) || value > 65535) return false; options.port = static_cast<uint16_t>(value); continue; }
@@ -165,11 +172,22 @@ int Connect(const Options& options)
 bool SendAll(int fd, const std::string& bytes)
 {
     size_t offset = 0;
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
     while (offset < bytes.size())
     {
         const ssize_t n = ::send(fd, bytes.data() + offset, bytes.size() - offset, MSG_NOSIGNAL);
         if (n > 0) { offset += static_cast<size_t>(n); continue; }
-        if (n < 0 && (errno == EINTR)) continue;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
+            if (remaining <= std::chrono::milliseconds::zero()) return false;
+            pollfd descriptor{fd, POLLOUT, 0};
+            const int ready = ::poll(&descriptor, 1, static_cast<int>(remaining.count()));
+            if (ready > 0 && (descriptor.revents & POLLOUT)) continue;
+            if (ready < 0 && errno == EINTR) continue;
+            return false;
+        }
         return false;
     }
     return true;
@@ -242,7 +260,9 @@ bool ReadFrame(int fd, Buffer& input, ClientHeader& header, std::string& body, i
         if (DecodeClientFrame(input, header, body) == DecodeStatus::kOk)
             return true;
         pollfd p{fd, POLLIN, 0};
-        if (::poll(&p, 1, timeoutMs) <= 0)
+        const int ready = ::poll(&p, 1, timeoutMs);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0)
             return false;
         char bytes[8192];
         const ssize_t n = ::recv(fd, bytes, sizeof(bytes), 0);
@@ -264,53 +284,139 @@ bool Authenticate(int fd, const Options& options, uint64_t playerId, Buffer& inp
     uint64_t acknowledgedPlayer = 0, sessionId = 0;
     uint32_t epoch = 0, zone = 0;
     uint8_t service = 0;
-    return ParseAuthAckBody(body, acknowledgedPlayer, sessionId, epoch, zone, service) &&
+    return header.requestId == 1 && header.module == kClientSysModule &&
+           ParseAuthAckBody(body, acknowledgedPlayer, sessionId, epoch, zone, service) &&
            acknowledgedPlayer == playerId;
+}
+
+bool SendLogoutAndWait(int fd, Buffer& input, uint64_t requestId)
+{
+    if (!SendAll(fd, Encode(ClientKind::kRequest, 3, 5, requestId, gs::LogoutReq{}.SerializeAsString())))
+        return false;
+    const auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (Clock::now() < deadline)
+    {
+        ClientHeader header;
+        std::string body;
+        if (!ReadFrame(fd, input, header, body, 250)) continue;
+        if (header.kind == ClientKind::kPush) continue;
+        return IsSuccessfulLogoutResponse(header, requestId, body);
+    }
+    return false;
+}
+
+struct PreparationBarrier
+{
+    explicit PreparationBarrier(uint32_t count) : expected(count) {}
+    std::mutex mutex;
+    std::condition_variable changed;
+    uint32_t expected;
+    uint32_t ready = 0;
+    bool failed = false;
+};
+
+bool WaitForStart(const Options& options, PreparationBarrier& barrier, uint32_t index,
+                  const Clock::time_point durationDeadline)
+{
+    {
+        std::unique_lock<std::mutex> lock(barrier.mutex);
+        ++barrier.ready;
+        barrier.changed.notify_all();
+        if (!barrier.changed.wait_for(lock, std::chrono::seconds(30), [&] {
+                return barrier.failed || barrier.ready == barrier.expected;
+            }) || barrier.failed)
+            return false;
+    }
+    if (options.barrierDir.empty())
+    {
+        g_startEpochMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now().time_since_epoch()).count());
+        return true;
+    }
+    const std::string readyPath = options.barrierDir + "/" + options.output.substr(options.output.find_last_of('/') == std::string::npos
+        ? 0 : options.output.find_last_of('/') + 1) + "." + std::to_string(index) + ".ready";
+    { std::ofstream ready(readyPath); ready << "ready\\n"; }
+    while (!g_stopRequested && Clock::now() < durationDeadline)
+    {
+        std::ifstream startFile(options.barrierDir + "/START");
+        if (startFile.good())
+        {
+            int64_t epochMs = 0;
+            startFile >> epochMs;
+            if (epochMs < 0) return false;
+            if (epochMs == 0)
+                epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+            g_startEpochMs.store(epochMs);
+            const auto target = Clock::time_point(std::chrono::milliseconds(epochMs));
+            if (Clock::now() > target + std::chrono::seconds(60)) return false;
+            std::this_thread::sleep_until(target);
+            return !g_stopRequested;
+        }
+        std::ifstream abortFile(options.barrierDir + "/ABORT");
+        if (abortFile.good()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
 }
 
 bool EnterScene(int fd, Buffer& input, int32_t& x, int32_t& y)
 {
-    if (!SendAll(fd, Encode(ClientKind::kRequest, 3, 4, 2, {})))
+    constexpr uint64_t requestId = 2;
+    if (!SendAll(fd, Encode(ClientKind::kRequest, 3, 4, requestId, gs::EnterSceneReq{}.SerializeAsString())))
         return false;
-    for (;;)
+    const auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (Clock::now() < deadline)
     {
         ClientHeader header;
         std::string body;
-        if (!ReadFrame(fd, input, header, body, 3000)) return false;
+        if (!ReadFrame(fd, input, header, body, 250)) continue;
         if (header.kind == ClientKind::kPush) { ApplySceneStatePush(header, body, x, y); continue; }
-        if (!MatchesLoadRequestResponse(header, 2, 3, 4)) return false;
-        if (ClassifyLoadResponse(header, body, 3, 4) != LoadResponseKind::Success) return false;
-        return AdvanceEnterScenePosition(body, x, y);
+        if (!MatchesLoadRequestResponse(header, requestId, 3, 4)) return false;
+        return ClassifyLoadResponse(header, body, 3, 4) == LoadResponseKind::Success &&
+               AdvanceEnterScenePosition(body, x, y);
     }
+    return false;
 }
 
-void SampleMetrics(const Options& options, LoadStats& stats, const Clock::time_point start)
+
+void SampleMetrics(const Options& options, LoadStats& stats)
 {
-    if (options.gatewayMetrics.empty() && options.sceneMetrics.empty() &&
-        options.additionalSceneMetrics.empty())
-        return;
+    const bool collectMetrics = !options.gatewayMetrics.empty() || !options.sceneMetrics.empty() ||
+        !options.additionalSceneMetrics.empty();
+    if (!collectMetrics && options.metricsOutput.empty()) return;
     std::ofstream output;
     if (!options.metricsOutput.empty())
         output.open(options.metricsOutput, std::ios::trunc);
-    uint32_t sampleIndex = 0;
-    for (;; ++sampleIndex)
+    if (!options.metricsOutput.empty() && !output)
     {
-        const auto nextSample = start + std::chrono::seconds(sampleIndex);
+        g_stopRequested = 1;
+        return;
+    }
+    while (g_startEpochMs.load() <= 0 && !g_stopRequested)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (g_stopRequested) return;
+
+    const auto sampleStart = Clock::time_point(std::chrono::milliseconds(g_startEpochMs.load()));
+    for (uint32_t sampleIndex = 0;; ++sampleIndex)
+    {
+        const auto nextSample = sampleStart + std::chrono::seconds(sampleIndex);
         while (Clock::now() < nextSample && !g_stopRequested)
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        if (g_stopRequested) break;
-        if (sampleIndex > options.durationSec + options.drainSec &&
-            stats.snapshot().inFlight == 0 && !g_stopRequested)
-            break;
+        if (g_stopRequested && Clock::now() < nextSample) break;
         std::ostringstream line;
         bool metricsValid = true;
         const bool finalSample = sampleIndex >= options.durationSec + options.drainSec;
         line << "{\"elapsedMs\":" << sampleIndex * 1000
+             << ",\"readMonotonicUs\":" << std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count()
              << ",\"finalSample\":" << (finalSample ? "true" : "false")
              << ",\"phase\":\"" << (sampleIndex <= options.durationSec ? "load" : "drain") << "\"";
         const LoadStatsSnapshot client = stats.snapshot();
         line << ",\"client_attempted\":" << client.attempted
              << ",\"client_load_attempted\":" << client.loadAttempted
+             << ",\"client_sent\":" << client.sent
+             << ",\"client_business_succeeded\":" << client.businessSucceeded
+             << ",\"client_schedule_delay_us\":" << client.scheduleDelayUs
+             << ",\"client_schedule_delay_max_us\":" << client.maxScheduleDelayUs
              << ",\"client_completed\":" << client.completed
              << ",\"client_in_flight\":" << client.inFlight
              << ",\"client_cutoff_unfinished\":" << client.cutoffUnfinished
@@ -334,18 +440,23 @@ void SampleMetrics(const Options& options, LoadStats& stats, const Clock::time_p
         line << "}\n";
         if (output) output << line.str() << std::flush;
         std::cout << "metrics " << line.str();
-        if (stats.snapshot().inFlight == 0 && sampleIndex >= options.durationSec + options.drainSec) break;
+        if (sampleIndex >= options.durationSec + options.drainSec) break;
     }
 }
 
 void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
-                   const Clock::time_point start)
+                   const Clock::time_point start, PreparationBarrier& barrier)
 {
     const int fd = Connect(options);
-    if (fd < 0) { stats.recordResult(Result::TransportError); stats.recordUnresolved(1); return; }
+    if (fd < 0)
+    {
+        { std::lock_guard<std::mutex> lock(barrier.mutex); barrier.failed = true; barrier.changed.notify_all(); }
+        stats.recordResult(Result::TransportError); stats.recordUnresolved(1); return;
+    }
     Buffer input;
     if (!Authenticate(fd, options, options.playerBase + index, input))
     {
+        { std::lock_guard<std::mutex> lock(barrier.mutex); barrier.failed = true; barrier.changed.notify_all(); }
         stats.recordUnresolved(1);
         stats.recordResult(Result::TransportError);
         ::close(fd);
@@ -353,23 +464,42 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
     }
 
     int32_t x = 0, y = 0;
+    uint64_t successfulMoves = 0;
     if (options.scene && !EnterScene(fd, input, x, y))
     {
+        { std::lock_guard<std::mutex> lock(barrier.mutex); barrier.failed = true; barrier.changed.notify_all(); }
         stats.recordUnresolved(1);
         stats.recordResult(Result::TransportError);
         ::close(fd);
         return;
     }
 
+    if (!WaitForStart(options, barrier, index, start + std::chrono::seconds(30) +
+                      std::chrono::seconds(options.durationSec)))
+    {
+        stats.recordResult(Result::TransportError);
+        ::close(fd);
+        return;
+    }
+    const int64_t epochMs = g_startEpochMs.load();
+    if (epochMs <= 0)
+    {
+        stats.recordResult(Result::TransportError);
+        ::close(fd);
+        return;
+    }
+    const int32_t walkOrigin = x;
+    int walkDirection = 1;
+    const auto loadStart = Clock::time_point(std::chrono::milliseconds(epochMs));
     const auto interval = std::chrono::microseconds(1000000ull / options.rpsPerConnection);
-    auto nextSend = Clock::now();
-    // requestId=1 用于 Auth，requestId=2 用于 EnterScene；业务请求从 3 开始，
-    // 避免同一会话内回程路由覆盖。
+    auto nextSend = loadStart + std::chrono::milliseconds(250);
+    // requestId=1 用于 Auth，EnterScene 在发压前完成；业务请求从 3 开始。
     uint64_t requestId = options.scene ? 3 : 2;
     std::map<uint64_t, Clock::time_point> pending;
     std::map<uint64_t, std::string> pendingBodies;
+    std::map<uint64_t, uint16_t> pendingMethods;
     bool stopSending = false;
-    auto deadline = start + std::chrono::seconds(options.durationSec);
+    auto deadline = loadStart + std::chrono::seconds(options.durationSec);
     auto drainDeadline = deadline + std::chrono::seconds(options.drainSec);
     uint64_t drainPeak = 0;
     bool cutoffRecorded = false;
@@ -406,8 +536,9 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
             const uint16_t module = options.ping ? kClientSysModule : (options.scene ? 3 : options.module);
             const uint16_t method = options.ping ? ClientSysMethod::kPing : (options.scene ? 2 : options.method);
             const std::string body = options.ping ? std::string() :
-                (options.scene ? WalkReq(x, y, x + 1, y) : options.body);
+                (options.scene ? WalkReq(x, y, NextLoadWalkX(x, walkOrigin, walkDirection), y) : options.body);
             if (options.scene && !options.ping) pendingBodies[id] = body;
+            pendingMethods[id] = method;
             const std::string frame = Encode(options.ping ? ClientKind::kControl : ClientKind::kRequest,
                                              module, method, id, body);
             stats.recordAttempt(frame.size());
@@ -423,6 +554,8 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                 ::close(fd);
                 return;
             }
+            stats.recordSend(static_cast<uint64_t>(std::max<int64_t>(0,
+                std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - nextSend).count())));
             nextSend += interval;
             if (nextSend > now + std::chrono::seconds(1)) break;
         }
@@ -482,15 +615,38 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                 if (options.scene) ApplySceneStatePush(header, body, x, y);
                 continue;
             }
+            if (options.scene && header.kind == ClientKind::kControl &&
+                header.module == 3 && header.method == 2)
+            {
+                gs::WalkAck ack;
+                if (!ack.ParseFromString(body) || ack.code() != 0)
+                {
+                    gs::RetTip tip;
+                    stats.recordBusinessError(IsRetTipBody(body) && tip.ParseFromString(body)
+                        ? std::to_string(tip.code()) + ":" + tip.text() : "asynchronous WalkAck error");
+                    stats.recordResult(Result::BusinessError);
+                }
+                else
+                {
+                    stats.recordBusinessError("asynchronous WalkAck without request identity");
+                    stats.recordResult(Result::UnknownResponse);
+                }
+                stopSending = true;
+                deadline = Clock::now();
+                continue;
+            }
             const auto sent = pending.find(header.requestId);
             if (sent == pending.end()) { stats.recordResult(Result::UnknownResponse); continue; }
             const uint16_t expectedModule = options.ping ? kClientSysModule : (options.scene ? 3 : options.module);
-            const uint16_t expectedMethod = options.ping ? ClientSysMethod::kPong : (options.scene ? 2 : options.method);
+            const auto methodIt = pendingMethods.find(header.requestId);
+            const uint16_t expectedMethod = options.ping ? ClientSysMethod::kPong :
+                (options.scene ? (methodIt == pendingMethods.end() ? 2 : methodIt->second) : options.method);
             if (!MatchesLoadRequestResponse(header, sent->first, expectedModule, expectedMethod))
             {
                 stats.recordResult(Result::UnknownResponse);
                 pending.erase(sent);
                 pendingBodies.erase(header.requestId);
+                pendingMethods.erase(header.requestId);
                 stats.recordInFlightDelta(-1);
                 continue;
             }
@@ -520,6 +676,7 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                 stats.recordResult(Result::DecodeError);
                 pending.erase(sent);
                 pendingBodies.erase(header.requestId);
+                pendingMethods.erase(header.requestId);
                 stats.recordInFlightDelta(-1);
                 continue;
             }
@@ -531,9 +688,11 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                 if (request != pendingBodies.end() && walk.ParseFromString(request->second) &&
                     walk.sx() == x && walk.sy() == y)
                     AdvanceWalkPosition(body, x, y);
+                ++successfulMoves;
             }
             pending.erase(sent);
             pendingBodies.erase(header.requestId);
+            pendingMethods.erase(header.requestId);
             stats.recordInFlightDelta(-1);
         }
     }
@@ -553,6 +712,23 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
     if (drainFinished) stats.recordDrainFinalUnfinished(0);
     for (size_t i = 0; i < pending.size(); ++i)
         stats.recordInFlightDelta(-1);
+    const bool connectionClean = pending.empty() &&
+        (drainFinished || (!stopSending && Clock::now() >= deadline));
+    if (options.scene && connectionClean && !g_stopRequested)
+    {
+        const bool logoutOk = SendLogoutAndWait(fd, input, requestId++);
+        stats.recordLogout(logoutOk);
+        if (!logoutOk) stats.recordResult(Result::BusinessError);
+        if (logoutOk)
+        {
+            std::lock_guard<std::mutex> lock(barrier.mutex);
+            std::ofstream positions(options.output + ".players.jsonl", std::ios::app);
+            if (!(positions << "{\"playerId\":" << options.playerBase + index
+                            << ",\"x\":" << x << ",\"y\":" << y
+                            << ",\"successfulMoves\":" << successfulMoves << "}\n" << std::flush))
+                stats.recordResult(Result::TransportError);
+        }
+    }
     ::close(fd);
 }
 }
@@ -588,18 +764,35 @@ int main(int argc, char** argv)
             { std::cerr << "cannot create summary output directory\n"; return 1; }
         }
     }
-
     LoadStats stats;
+    if (options.scene)
+    {
+        std::ofstream positions(options.output + ".players.jsonl", std::ios::trunc);
+        if (!positions) { std::cerr << "cannot create player positions output\n"; return 1; }
+    }
     const auto start = Clock::now();
+    if (!options.barrierDir.empty())
+    {
+        struct stat barrierStat{};
+        if (::stat(options.barrierDir.c_str(), &barrierStat) != 0 || !S_ISDIR(barrierStat.st_mode))
+        { std::cerr << "barrier directory must exist\n"; return 2; }
+        for (uint32_t i = 0; i < options.connections; ++i)
+            std::remove((options.barrierDir + "/" + options.output.substr(options.output.find_last_of('/') == std::string::npos
+                ? 0 : options.output.find_last_of('/') + 1) + "." + std::to_string(i) + ".ready").c_str());
+    }
+    PreparationBarrier barrier(options.connections);
     std::vector<std::thread> workers;
     workers.reserve(options.connections);
     for (uint32_t i = 0; i < options.connections; ++i)
-        workers.emplace_back(RunConnection, std::cref(options), i, std::ref(stats), start);
+        workers.emplace_back(RunConnection, std::cref(options), i, std::ref(stats), start, std::ref(barrier));
     std::thread metricsThread;
     if (!options.gatewayMetrics.empty() || !options.sceneMetrics.empty() ||
-        !options.additionalSceneMetrics.empty())
-        metricsThread = std::thread(SampleMetrics, std::cref(options), std::ref(stats), start);
+        !options.additionalSceneMetrics.empty() || !options.metricsOutput.empty())
+        metricsThread = std::thread(SampleMetrics, std::cref(options), std::ref(stats));
     for (auto& worker : workers) worker.join();
+    // No START means preparation failed; otherwise let the sampler write the
+    // duration+drain boundary even when workers have already drained early.
+    if (g_startEpochMs.load() <= 0) g_stopRequested = 1;
     if (metricsThread.joinable()) metricsThread.join();
 
     const auto result = stats.snapshot();
@@ -613,6 +806,8 @@ int main(int argc, char** argv)
               << " timeouts=" << result.timeouts
               << " business_succeeded=" << result.businessSucceeded
               << " business_failed=" << result.businessFailed
+              << " logout_succeeded=" << result.logoutSucceeded
+              << " logout_failed=" << result.logoutFailed
               << " gateway_rejected=" << result.gatewayRejected
               << " transport_failed=" << result.transportFailed
               << " unknown_responses=" << result.unknownResponses
@@ -622,7 +817,7 @@ int main(int argc, char** argv)
               << " p99_us=" << result.p99Us << '\n';
     std::FILE* file = std::fopen(options.output.c_str(), "w");
     if (file == nullptr) return 1;
-    std::fprintf(file, "{\"connections\":%u,\"rps_per_connection\":%u,\"duration_sec\":%u,\"drain_sec\":%u,\"attempted\":%llu,\"load_attempted\":%llu,\"completed\":%llu,\"in_flight\":%llu,\"drain_unfinished\":%llu,\"drain_final_unfinished\":%llu,\"cutoff_unfinished\":%llu,\"unresolved\":%llu,\"errors\":%llu,\"timeouts\":%llu,\"business_succeeded\":%llu,\"business_failed\":%llu,\"gateway_rejected\":%llu,\"transport_failed\":%llu,\"unknown_responses\":%llu,\"decode_errors\":%llu,\"bytes_sent\":%llu,\"bytes_received\":%llu,\"business_errors\":%s,",
+    std::fprintf(file, "{\"connections\":%u,\"rps_per_connection\":%u,\"duration_sec\":%u,\"drain_sec\":%u,\"attempted\":%llu,\"load_attempted\":%llu,\"completed\":%llu,\"in_flight\":%llu,\"drain_unfinished\":%llu,\"drain_final_unfinished\":%llu,\"cutoff_unfinished\":%llu,\"unresolved\":%llu,\"errors\":%llu,\"timeouts\":%llu,\"business_succeeded\":%llu,\"business_failed\":%llu,\"logout_succeeded\":%llu,\"logout_failed\":%llu,\"gateway_rejected\":%llu,\"transport_failed\":%llu,\"unknown_responses\":%llu,\"decode_errors\":%llu,\"bytes_sent\":%llu,\"bytes_received\":%llu,\"business_errors\":%s,",
                  options.connections, options.rpsPerConnection, options.durationSec, options.drainSec,
                  (unsigned long long)result.attempted, (unsigned long long)result.loadAttempted,
                  (unsigned long long)result.completed,
@@ -632,14 +827,19 @@ int main(int argc, char** argv)
                  (unsigned long long)result.unresolved,
                  (unsigned long long)result.errors, (unsigned long long)result.timeouts,
                  (unsigned long long)result.businessSucceeded, (unsigned long long)result.businessFailed,
+                 (unsigned long long)result.logoutSucceeded, (unsigned long long)result.logoutFailed,
                  (unsigned long long)result.gatewayRejected, (unsigned long long)result.transportFailed,
                  (unsigned long long)result.unknownResponses, (unsigned long long)result.decodeErrors,
                  (unsigned long long)result.bytesSent, (unsigned long long)result.bytesReceived,
                  FormatBusinessErrors(result.businessErrors).c_str());
+    std::fprintf(file, "\"sent\":%llu,\"schedule_delay_us\":%llu,\"schedule_delay_max_us\":%llu,",
+                 (unsigned long long)result.sent, (unsigned long long)result.scheduleDelayUs,
+                 (unsigned long long)result.maxScheduleDelayUs);
     std::fprintf(file, "\"min_us\":%llu,\"p50_us\":%llu,\"p95_us\":%llu,\"p99_us\":%llu,\"max_us\":%llu}\n",
                  (unsigned long long)result.minUs, (unsigned long long)result.p50Us,
                  (unsigned long long)result.p95Us, (unsigned long long)result.p99Us,
                  (unsigned long long)result.maxUs);
     std::fclose(file);
-    return result.errors == 0 ? 0 : 1;
+    return result.errors == 0 && (!options.scene ||
+        (result.logoutSucceeded == options.connections && result.logoutFailed == 0)) ? 0 : 1;
 }

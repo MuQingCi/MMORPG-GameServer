@@ -9,6 +9,9 @@
 
 struct LoadStatsSnapshot
 {
+    uint64_t sent = 0;
+    uint64_t scheduleDelayUs = 0;
+    uint64_t maxScheduleDelayUs = 0;
     uint64_t attempted = 0;
     uint64_t loadAttempted = 0;
     uint64_t completed = 0;
@@ -21,6 +24,8 @@ struct LoadStatsSnapshot
     uint64_t timeouts = 0;
     uint64_t businessSucceeded = 0;
     uint64_t businessFailed = 0;
+    uint64_t logoutSucceeded = 0;
+    uint64_t logoutFailed = 0;
     uint64_t gatewayRejected = 0;
     uint64_t transportFailed = 0;
     uint64_t unknownResponses = 0;
@@ -50,6 +55,7 @@ enum class Result
 class LoadStats
 {
 public:
+    void recordSend(uint64_t scheduleDelayUs);
     void recordAttempt(uint64_t bytes);
     void recordInFlightDelta(int64_t delta);
     void recordDrainUnfinished(uint64_t count);
@@ -59,10 +65,14 @@ public:
     void recordBusinessError(const std::string& reason);
     void recordResult(Result res, uint64_t latencyUs = 0, uint64_t bytesReceived = 0);
     void recordSentBytes(uint64_t bytes);
+    void recordLogout(bool success);
     LoadStatsSnapshot snapshot() const;
 
 private:
     mutable std::mutex mutex_;
+    uint64_t sent_ = 0;
+    uint64_t scheduleDelayUs_ = 0;
+    uint64_t maxScheduleDelayUs_ = 0;
     uint64_t attempted_ = 0;
     uint64_t loadAttempted_ = 0;
     uint64_t completed_ = 0;
@@ -76,6 +86,8 @@ private:
 
     uint64_t businessSucceeded_ = 0;
     uint64_t businessFailed_    = 0;
+    uint64_t logoutSucceeded_ = 0;
+    uint64_t logoutFailed_ = 0;
     uint64_t gatewayRejected_   = 0;
     uint64_t transportFailed_   = 0;
     uint64_t timeouts_          = 0;

@@ -31,6 +31,16 @@ def port():
         return sock.getsockname()[1]
 
 
+def make_zone_config(template, mysql_port, redis_port, private_port,
+                     password, database, gateway_id):
+    text = template.replace("port: 3306", f"port: {mysql_port}")
+    text = text.replace("port: 6379", f"port: {redis_port}")
+    text = text.replace("user: root", "user: persistence_test")
+    text = text.replace('password: ""', f'password: "{password}"', 1)
+    text = text.replace("dbName: game", "dbName: " + database)
+    return text.replace("1=127.0.0.1:13145", f"{gateway_id}=127.0.0.1:{private_port}")
+
+
 def until(fn, timeout=15):
     deadline = time.monotonic() + timeout
     while True:
@@ -204,12 +214,8 @@ def main():
     logLevel: info
 """)
         zone_config = (ZONE / "config/zoneConfig.yaml").read_text()
-        zone_config = zone_config.replace("port: 3306", f"port: {mysql_port}")
-        zone_config = zone_config.replace("port: 6379", f"port: {redis_port}")
-        zone_config = zone_config.replace("user: root", "user: persistence_test")
-        zone_config = zone_config.replace('password: ""', f'password: "{password}"', 1)
-        zone_config = zone_config.replace("dbName: game", "dbName: " + database)
-        zone_config = zone_config.replace("127.0.0.1:13145", f"127.0.0.1:{private_port}")
+        zone_config = make_zone_config(zone_config, mysql_port, redis_port,
+                                       private_port, password, database, 3)
         (work / "zone.yaml").write_text(zone_config)
         os.chmod(work / "zone.yaml", 0o600)
         scene_config = (ZONE / "sceneServer/config/sceneConfig.yaml").read_text()
