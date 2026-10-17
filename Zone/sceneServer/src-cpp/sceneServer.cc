@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <utility>
+#include <cstdlib>
 
 SceneServer::SceneServer(const SceneConfig& cfg)
     : cfg_(cfg), metrics_(cfg.logicThreadNum), luaDir_(cfg.luaDir)
@@ -26,6 +27,8 @@ SceneServer::SceneServer(const SceneConfig& cfg)
     // Redis 分片数必须在这里定下来：MsgBus 的 Redis 队列数 = 分片数，
     // 而 db.redis 绑定层算出的分片索引会直接用作队列下标（不一致会越界/错投）。
     bus_ = std::make_unique<MsgBus>(cfg_.logicThreadNum, cfg_.zone.db.redis.ShardCount());
+    const char* diagnostics = std::getenv("SCENE_QUEUE_DIAGNOSTICS");
+    if(diagnostics && std::string(diagnostics)=="1") bus_->enableDiagnostics();
 }
 
 SceneServer::~SceneServer()
@@ -137,6 +140,35 @@ bool SceneServer::start()
         });
     }
 
+    if(bus_->diagnostics()) {
+        if(cfg_.metricsPath.empty()) { stop(); return false; }
+        std::ofstream check(cfg_.metricsPath+".queues.jsonl");
+        if(!check) { stop(); return false; }
+        check.close();
+        diagnosticThread_=std::thread([this] {
+          try {
+            std::ofstream out(cfg_.metricsPath+".queues.jsonl",std::ios::app);
+            uint64_t nextFull=0;
+            while(started_.load(std::memory_order_acquire)) {
+                const auto now=QueueDiagnostics::nowUs();
+                const bool full=now>=nextFull;
+                out<<bus_->diagnostics()->json(now,bus_->workerDepths(),bus_->netDepth(),full);
+                if(full) { nextFull=now+1000000; out.flush(); }
+                if(!out) {
+                    bus_->diagnostics()->writeFailed.store(true);
+                    LOG_ERROR << "queue diagnostics write failed";
+                    break;
+                }
+                std::unique_lock<std::mutex> lock(metricsWaitMutex_);
+                metricsWaitCv_.wait_for(lock,std::chrono::milliseconds(10),[this] { return !started_.load(); });
+            }
+          } catch(const std::exception& error) {
+            bus_->diagnostics()->writeFailed.store(true);
+            LOG_ERROR << "queue diagnostics failed: " << error.what();
+          }
+        });
+    }
+
     LOG_INFO << "scene server started, zoneId=" << cfg_.zone.zoneId << " sceneId=" << cfg_.sceneId
              << " logicThreads=" << cfg_.logicThreadNum << " luaDir=" << luaDir_
              << " dbEnable=" << (cfg_.zone.dbEnable ? 1 : 0)
@@ -155,6 +187,7 @@ void SceneServer::stop()
     metricsWaitCv_.notify_all();
     if (metricsThread_.joinable())
         metricsThread_.join();
+    if (diagnosticThread_.joinable()) diagnosticThread_.join();
 
     // 逆序停止：先切断输入（网络），再停消费者（逻辑），最后停辅助线程
     if (netServer_)
@@ -163,12 +196,16 @@ void SceneServer::stop()
     for (auto& lt : logicThreads_)
         if(lt) lt->requestDrain();
 
+    bool drained = true;
     for (auto& lt : logicThreads_)
     {
         if (lt) {
             lt->stop();
             if (!lt->drainFinished()) metrics_.worker(lt->threadId()).setLifecycle(WorkerLifecycle::Failed);
-            if(!lt->drainSucceeded()) LOG_ERROR << "worker shutdown not durably drained, worker=" << lt->threadId();
+            if(!lt->drainSucceeded()) {
+                drained = false;
+                LOG_ERROR << "worker shutdown not durably drained, worker=" << lt->threadId();
+            }
         }
     }
 
@@ -188,6 +225,14 @@ void SceneServer::stop()
     }
 
     // logic/timer/db 都停了才会走到这里，此时 bus 上不会再有生产者
+    if(bus_->diagnostics() && !cfg_.metricsPath.empty()) {
+        std::ofstream out(cfg_.metricsPath+".queues.jsonl",std::ios::app);
+        out<<bus_->diagnostics()->json(QueueDiagnostics::nowUs(),bus_->workerDepths(),bus_->netDepth());
+        out.flush();
+        if(!out) bus_->diagnostics()->writeFailed.store(true);
+        if(bus_->diagnostics()->writeFailed.load()) drained=false;
+    }
+    shutdownSucceeded_.store(drained, std::memory_order_release);
     LOG_INFO << "scene server stopped";
 }
 

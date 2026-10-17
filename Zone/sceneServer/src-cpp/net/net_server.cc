@@ -590,8 +590,10 @@ void NetServer::handleHandshake(Conn& conn, const std::string& body)
         return;
     }
 
-    if (conn.outbound || hs.serviceId != conn.peerServiceID ||
-        hs.zoneId != cfg_.zoneId || hs.sceneId != cfg_.sceneId)
+    // 入站连接是网关到场景服的控制链路。Gateway 的握手 sceneId 按公共
+    // BackendHandshake 约定必须为 0；场景身份由本服配置及后续玩家信封约束。
+    if (conn.outbound || hs.serviceId != ServerID::kGateway ||
+        hs.serviceId != conn.peerServiceID || hs.zoneId != cfg_.zoneId || hs.sceneId != 0)
     {
         LOG_WARNING << "invalid peer handshake identity, session=" << conn.session;
         handleClose(conn);

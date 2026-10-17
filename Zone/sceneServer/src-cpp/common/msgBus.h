@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <vector>
+#include "metrics/queueDiagnostics.h"
 
 struct Msg;
 
@@ -58,6 +59,9 @@ public:
 
     explicit MsgBus(size_t numWorkers, size_t redisShards = 1);
     ~MsgBus();
+    // Configure before starting producers/consumers only.
+    void enableDiagnostics() { diagnostics_ = std::make_unique<QueueDiagnostics>(numWorker()+3+redisShardCount()); }
+    QueueDiagnostics* diagnostics() const { return diagnostics_.get(); }
 
     MsgBus(const MsgBus&) = delete;
     MsgBus& operator=(const MsgBus&) = delete;
@@ -118,6 +122,10 @@ public:
     WorkerId leastLoadedWorker(uint64_t tieBreak) const;
 
 private:
+    void recordDiagnosticPop(WorkerId wid, const Msg& out);
+    DispatchResult diagnosticAdmission(size_t channel, DispatchResult result);
+    bool diagnosticPop(size_t channel, Msg& out, bool popped);
+    std::unique_ptr<QueueDiagnostics> diagnostics_;
     std::vector<std::unique_ptr<MsgQueue<Msg>>> worker_queues_;
 
     std::vector<std::unique_ptr<std::array<std::atomic<uint64_t>, 2>>> workerEnqueuedClassCounts_;

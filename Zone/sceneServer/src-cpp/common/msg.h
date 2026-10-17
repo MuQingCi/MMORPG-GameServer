@@ -206,6 +206,8 @@ struct MsgHead
 
 struct Msg
 {
+    uint64_t diagnosticEnqueuedUs = 0; // Process-local; refreshed on every worker admission.
+    bool diagnosticSaveTask = false; // Save identity, not SYS_FLUSH (also used by loads).
     MsgHead head;
     std::string body;
 };

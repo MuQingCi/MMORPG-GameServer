@@ -260,7 +260,10 @@ void DBThread::mysqlLoop()
 
         //执行 SQL 或事务
         dbv::DbResult res;
+        const auto executionBegin=m_bus_->diagnostics() ? QueueDiagnostics::nowUs() : 0;
         mysql_.Execute(dbTask, res);
+        if(m_bus_->diagnostics() && task.diagnosticSaveTask)
+            m_bus_->diagnostics()->event(task.head.srcWorkerId,"save_db_execute",executionBegin,QueueDiagnostics::nowUs(),task.head.taskId);
         if (res.errcode != 0)
         {
             errors_.fetch_add(1, std::memory_order_relaxed);

@@ -77,6 +77,7 @@ public:
     
     bool ViewOf(EntityId observer, std::vector<AoiEntity>& out) const;
     AoiServiceStats Stats() const;
+    uint64_t tickCount() const { return tickCount_; }
 
     std::optional<EntityId> EntityOf(uint64_t playerId) const;
     std::optional<uint64_t> BusinessIdOf(EntityId id) const;

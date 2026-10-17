@@ -51,6 +51,7 @@ private:
             r.taskId = PendingDbTasks::newTaskId();
 
         Msg message;
+        message.diagnosticSaveTask = true;
         message.head.msgType = MSGTYPE_DB_TASK_MYSQL;
         message.head.Module = Module::SYS;
         message.head.Method = Method::SYS_FLUSH;

@@ -199,7 +199,13 @@ void LogicThread::run()
         }
 
         // AOI 周期更新
-        aoiService_.OnTick(nowMs);
+        if(auto* diagnostic=m_bus_->diagnostics()) {
+            const auto tick=aoiService_.tickCount();
+            const auto begin=QueueDiagnostics::nowUs();
+            aoiService_.OnTick(nowMs);
+            if(aoiService_.tickCount()!=tick)
+                diagnostic->event(threadId_,"aoi_tick",begin,QueueDiagnostics::nowUs(),aoiService_.tickCount());
+        } else aoiService_.OnTick(nowMs);
         advanceAoiRecovery(nowMs);
 
         persistence_.tick([this](Msg task) { return submitDbTask(std::move(task)); });
@@ -805,7 +811,14 @@ void LogicThread::onDbResult(Msg& m)
 
     if (persistence_.owns(m.head.taskId)) 
     {
-        if (!persistence_.complete(m.head.taskId,res,players_.get(m.head.playerId)))
+        const bool applied=persistence_.complete(m.head.taskId,res,players_.get(m.head.playerId));
+        if(auto* diagnostic=m_bus_->diagnostics()) {
+            const auto now=QueueDiagnostics::nowUs();
+            diagnostic->event(threadId_,!applied ? "save_apply_rejected" :
+                res.errcode || res.classification!=dbv::ResultClass::kSuccess ?
+                "save_failed" : "save_completed",now,now,m.head.taskId);
+        }
+        if (!applied)
             LOG_ERROR << "persistence result identity mismatch, taskId=" << m.head.taskId;
         else if (res.errcode || res.classification != dbv::ResultClass::kSuccess)
             LOG_ERROR << "save blocked pending recovery, pid=" << m.head.playerId << " err=" << res.errmsg;
@@ -1015,12 +1028,16 @@ void LogicThread::flushDirtyPlayers()
 {
     if (!cfg_.persistenceEnabled) 
         return;
+    const auto begin=m_bus_->diagnostics() ? QueueDiagnostics::nowUs() : 0;
+    uint64_t dirtyCount=0, scannedCount=0;
     players_.forEach([&](Player& p) 
     {
+        ++scannedCount;
         //若正在加载或正处于线程结束的排空状态则返回
         if(playerLoads_.contains(p.id()) || draining_) 
             return true;
 
+        if(p.dirty()) ++dirtyCount;
         if (p.dirty() && !persistence_.request(p,false,
                 [this](Msg task) { 
                     return submitDbTask(std::move(task)); 
@@ -1028,11 +1045,22 @@ void LogicThread::flushDirtyPlayers()
             LOG_ERROR << "cannot retain player snapshot, pid=" << p.id();
         return true;
     });
+    if(auto* diagnostic=m_bus_->diagnostics()) {
+        diagnostic->event(threadId_,"flush_submit",begin,QueueDiagnostics::nowUs(),dirtyCount);
+        diagnostic->event(threadId_,"flush_scan",begin,QueueDiagnostics::nowUs(),scannedCount);
+    }
 }
 
 bool LogicThread::submitDbTask(Msg task)
 {
     task.head.srcWorkerId = threadId_;
-    return pendingTasks_.submit(std::move(task), NowMs(),
+    const auto id=task.head.taskId;
+    const bool save=task.diagnosticSaveTask;
+    const bool existing=id && pendingTasks_.find(id);
+    const auto begin=m_bus_->diagnostics() ? QueueDiagnostics::nowUs() : 0;
+    const bool registered=pendingTasks_.submit(std::move(task), NowMs(),
         [this](const Msg& request) { return m_bus_->sendToDb(request); });
+    if(registered && save && !existing && m_bus_->diagnostics())
+        m_bus_->diagnostics()->event(threadId_,"save_registered",begin,QueueDiagnostics::nowUs(),id);
+    return registered;
 }

@@ -190,5 +190,5 @@ int main(int argc, char** argv)
     // 停日志前先摘掉后端，避免后端线程已退出却仍被写入
     Logger::set_AsyncLogger(nullptr);
     asyncLogger.stop();
-    return 0;
+    return server.shutdownSucceeded() ? 0 : 1;
 }

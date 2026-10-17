@@ -7,6 +7,9 @@ set(SCENE_CORE_SOURCES
     src-cpp/routeTable.cc
 
     src-cpp/common/msgBus.cc
+    src-cpp/metrics/sceneMetrics.cc
+    src-cpp/metrics/metricsSampler.cc
+    src-cpp/metrics/metricsJson.cc
 
     # ---------------------------------------------------------------------
     # 公共实现（zone_common）：Buffer/序列化/配置解析/日志

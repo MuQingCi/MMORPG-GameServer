@@ -45,9 +45,6 @@ SceneMetricsSnapshot MetricsSampler::sample(SceneMetrics& metrics, uint64_t now,
         item.idleWaitUs = raw.idleWaitUs;
         item.enqueuedBusiness = raw.enqueuedBusiness;
         item.enqueuedInternal = raw.enqueuedInternal;
-        item.dequeuedBusiness = raw.messageTypeCounts[MSGTYPE_CONN_DATA];
-        for (uint32_t type = 1; type <= 100; ++type)
-            if (type != MSGTYPE_CONN_DATA) item.dequeuedInternal += raw.messageTypeCounts[type];
         item.messageTypeCounts = raw.messageTypeCounts;
         item.dequeuedMessageTypeCounts = raw.messageTypeCounts;
         item.dequeuedBusiness = raw.messageTypeCounts[MSGTYPE_CONN_DATA];

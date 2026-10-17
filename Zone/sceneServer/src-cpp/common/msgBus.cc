@@ -67,11 +67,12 @@ DispatchResult MsgBus::sendToWorker(WorkerId wid, Msg m)
     if (wid >= worker_queues_.size())
     {
         LOG_ERROR << "sendToWorker: wid=" << wid << " out of range, numWorker=" << worker_queues_.size();
-        return DispatchResult::kInvalidTarget;
+        return diagnosticAdmission(numWorker()+2+redisShardCount(), DispatchResult::kInvalidTarget);
     }
 
     const uint16_t messageType = m.head.msgType;
-    const bool business = messageType == MSGTYPE_CONN_DATA && !m.head.hasClientBinding;
+    const bool business = messageType == MSGTYPE_CONN_DATA;
+    m.diagnosticEnqueuedUs = diagnostics_ ? QueueDiagnostics::nowUs() : 0;
     const bool ok = worker_queues_[wid]->try_push(std::move(m));
     if (ok)
     {
@@ -80,7 +81,7 @@ DispatchResult MsgBus::sendToWorker(WorkerId wid, Msg m)
     if (!ok)
         LOG_WARNING << "sendToWorker: queue full, wid=" << wid;
 
-    return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+    return diagnosticAdmission(wid, ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure);
 }
 
 uint64_t MsgBus::enqueuedBusinessCount(WorkerId wid) const
@@ -119,18 +120,19 @@ DispatchResult MsgBus::broadcastToLogicExcept(WorkerId except, const Msg& m,
 
 DispatchResult MsgBus::sendToNet(Msg m)
 {
+    m.diagnosticEnqueuedUs = diagnostics_ ? QueueDiagnostics::nowUs() : 0;
     const bool ok = net_queue_->try_push(std::move(m));
     if (!ok)
     {
         LOG_WARNING << "sendToNet: queue full";
-        return DispatchResult::kBackpressure;
+        return diagnosticAdmission(numWorker(),DispatchResult::kBackpressure);
     }
 
     // 入队成功才唤醒：空队列时的唤醒是纯浪费
     if (net_wakeup_)
         net_wakeup_();
 
-    return DispatchResult::kAccepted;
+    return diagnosticAdmission(numWorker(),DispatchResult::kAccepted);
 }
 
 void MsgBus::setNetWakeup(Wakeup cb)
@@ -140,20 +142,27 @@ void MsgBus::setNetWakeup(Wakeup cb)
 
 DispatchResult MsgBus::sendToDb(Msg m)
 {
+    m.diagnosticEnqueuedUs = diagnostics_ ? QueueDiagnostics::nowUs() : 0;
     const bool redis = (m.head.msgType == MsgType::MSGTYPE_DB_TASK_REDIS);
     const bool mysql = (m.head.msgType == MsgType::MSGTYPE_DB_TASK_MYSQL);
     if (!redis && !mysql)
     {
         LOG_ERROR << "sendToDb: illegal msgType=" << MsgTypeName(m.head.msgType);
-        return DispatchResult::kInvalidMessage;
+        return diagnosticAdmission(numWorker()+2+redisShardCount(),DispatchResult::kInvalidMessage);
     }
 
     if (!redis)
     {
+        const bool save=m.diagnosticSaveTask;
+        const auto worker=m.head.srcWorkerId;
+        const auto begin=m.diagnosticEnqueuedUs;
+        const auto id=m.head.taskId;
         const bool ok = mysql_queue_->try_push(std::move(m));
         if (!ok)
             LOG_WARNING << "sendToDb: mysql queue full";
-        return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+        if(ok && diagnostics_ && save)
+            diagnostics_->event(worker,"save_db_accepted",begin,QueueDiagnostics::nowUs(),id);
+        return diagnosticAdmission(numWorker()+1,ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure);
     }
 
     // Redis：按分片索引选队列。索引越界说明调用方算错了分片数
@@ -163,13 +172,13 @@ DispatchResult MsgBus::sendToDb(Msg m)
     {
         LOG_ERROR << "sendToDb: redis shard " << shard << " out of range, shardCount="
                   << redis_queues_.size();
-        return DispatchResult::kInvalidTarget;
+        return diagnosticAdmission(numWorker()+2+redisShardCount(),DispatchResult::kInvalidTarget);
     }
 
     const bool ok = redis_queues_[shard]->try_push(std::move(m));
     if (!ok)
         LOG_WARNING << "sendToDb: redis queue full, shard=" << shard;
-    return ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure;
+    return diagnosticAdmission(numWorker()+2+shard,ok ? DispatchResult::kAccepted : DispatchResult::kBackpressure);
 }
 
 DispatchResult MsgBus::sendToDbControl(Msg m)
@@ -197,7 +206,9 @@ bool MsgBus::tryPopWorker(WorkerId wid, Msg& out)
         LOG_ERROR << "tryPopWorker: wid=" << wid << " out of range";
         return false;
     }
-    return worker_queues_[wid]->try_pop(out);
+    if (!worker_queues_[wid]->try_pop(out)) return false;
+    recordDiagnosticPop(wid, out);
+    return true;
 }
 
 bool MsgBus::waitPopWorker(WorkerId wid, Msg& out, std::chrono::milliseconds timeoutMs)
@@ -207,41 +218,68 @@ bool MsgBus::waitPopWorker(WorkerId wid, Msg& out, std::chrono::milliseconds tim
         LOG_ERROR << "waitPopWorker: wid=" << wid << " out of range";
         return false;
     }
-    return worker_queues_[wid]->wait_pop_for(out, timeoutMs);
+    if (!worker_queues_[wid]->wait_pop_for(out, timeoutMs)) return false;
+    recordDiagnosticPop(wid, out);
+    return true;
+}
+
+void MsgBus::recordDiagnosticPop(WorkerId wid, const Msg& out)
+{
+    if (!diagnostics_) return;
+    const auto type=out.head.msgType;
+    const size_t category=type==MSGTYPE_CONN_DATA ? 0 :
+        (type==MSGTYPE_DB_RESULT_MYSQL || type==MSGTYPE_DB_RESULT_REDIS) ? 1 : type==MSGTYPE_SERVICE ? 2 : 3;
+    diagnostics_->dequeued(wid,category,out.diagnosticEnqueuedUs,QueueDiagnostics::nowUs());
 }
 
 bool MsgBus::tryPopNet(Msg& out)
 {
-    return net_queue_->try_pop(out);
+    return diagnosticPop(numWorker(),out,net_queue_->try_pop(out));
 }
 
 bool MsgBus::waitPopNet(Msg& out, std::chrono::milliseconds timeoutMs)
 {
-    return net_queue_->wait_pop_for(out, timeoutMs);
+    return diagnosticPop(numWorker(),out,net_queue_->wait_pop_for(out, timeoutMs));
 }
 
 bool MsgBus::tryPopDbMySql(Msg& out)
 {
-    return mysql_queue_->try_pop(out);
+    return diagnosticPop(numWorker()+1,out,mysql_queue_->try_pop(out));
 }
 
 bool MsgBus::waitPopDbMySql(Msg& out, std::chrono::milliseconds timeoutMs)
 {
-    return mysql_queue_->wait_pop_for(out, timeoutMs);
+    return diagnosticPop(numWorker()+1,out,mysql_queue_->wait_pop_for(out, timeoutMs));
 }
 
 bool MsgBus::tryPopDbRedis(uint16_t shard, Msg& out)
 {
     if (shard >= redis_queues_.size())
         return false;
-    return redis_queues_[shard]->try_pop(out);
+    return diagnosticPop(numWorker()+2+shard,out,redis_queues_[shard]->try_pop(out));
 }
 
 bool MsgBus::waitPopDbRedis(uint16_t shard, Msg& out, std::chrono::milliseconds timeoutMs)
 {
     if (shard >= redis_queues_.size())
         return false;
-    return redis_queues_[shard]->wait_pop_for(out, timeoutMs);
+    return diagnosticPop(numWorker()+2+shard,out,redis_queues_[shard]->wait_pop_for(out, timeoutMs));
+}
+
+DispatchResult MsgBus::diagnosticAdmission(size_t channel, DispatchResult result)
+{
+    if(diagnostics_) {
+        const size_t kind=result==DispatchResult::kAccepted ? 0 : result==DispatchResult::kBackpressure ? 1 :
+            result==DispatchResult::kInvalidTarget ? 2 : 3;
+        diagnostics_->admission(channel,kind);
+    }
+    return result;
+}
+
+bool MsgBus::diagnosticPop(size_t channel, Msg& out, bool popped)
+{
+    if(popped && diagnostics_) diagnostics_->dequeued(channel,0,out.diagnosticEnqueuedUs,QueueDiagnostics::nowUs());
+    return popped;
 }
 
 size_t MsgBus::depth(WorkerId wid) const
