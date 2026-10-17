@@ -149,6 +149,10 @@ int main(int argc, char** argv)
     if (!server.start())
     {
         LOG_ERROR << "scene server start failed";
+        // Partial startup must stop producers before detaching/joining the logger.
+        server.stop();
+        Logger::set_AsyncLogger(nullptr);
+        asyncLogger.stop();
         return 1;
     }
 

@@ -7,16 +7,9 @@
 #include "net/net_server.h"
 #include "player/playerManager.h"
 #include "timer/TimerThread.h"
-#include "metrics/metricsJson.h"
+#include "metrics/sceneMonitoringService.h"
 
 #include <sstream>
-#include <fstream>
-#include <cstdio>
-#include <unistd.h>
-#include <chrono>
-#include <thread>
-#include <condition_variable>
-#include <mutex>
 #include <utility>
 #include <cstdlib>
 
@@ -29,6 +22,7 @@ SceneServer::SceneServer(const SceneConfig& cfg)
     bus_ = std::make_unique<MsgBus>(cfg_.logicThreadNum, cfg_.zone.db.redis.ShardCount());
     const char* diagnostics = std::getenv("SCENE_QUEUE_DIAGNOSTICS");
     if(diagnostics && std::string(diagnostics)=="1") bus_->enableDiagnostics();
+    monitoring_ = std::make_unique<SceneMonitoringService>(metrics_, *bus_, cfg_.metricsPath);
 }
 
 SceneServer::~SceneServer()
@@ -49,6 +43,8 @@ bool SceneServer::start()
 
     // 从这里开始就算"已启动"：任何中途失败都保证析构/stop() 能把已创建的部分停干净
     started_.store(true, std::memory_order_release);
+
+    if (!monitoring_->prepare()) { stop(); return false; }
 
     // ---------------- 1. 网络线程 ----------------
     netServer_ = std::make_unique<NetServer>(cfg_.net, *bus_);
@@ -117,57 +113,7 @@ bool SceneServer::start()
         }
     }
 
-    {
-        metricsStart_ = std::chrono::steady_clock::now();
-        sampleMetrics();
-        writeMetrics(); // metricsPath 为空时仅维护内存快照，不写文件。
-        metricsThread_ = std::thread([this] {
-            while (started_.load(std::memory_order_acquire))
-            {
-                std::unique_lock<std::mutex> waitLock(metricsWaitMutex_);
-                metricsWaitCv_.wait_for(waitLock, std::chrono::seconds(1), [this] {
-                    return !started_.load(std::memory_order_acquire);
-                });
-                waitLock.unlock();
-                if (started_.load(std::memory_order_acquire))
-                {
-                    sampleMetrics();
-                    writeMetrics();
-                }
-            }
-            sampleMetrics();
-            writeMetrics();
-        });
-    }
-
-    if(bus_->diagnostics()) {
-        if(cfg_.metricsPath.empty()) { stop(); return false; }
-        std::ofstream check(cfg_.metricsPath+".queues.jsonl");
-        if(!check) { stop(); return false; }
-        check.close();
-        diagnosticThread_=std::thread([this] {
-          try {
-            std::ofstream out(cfg_.metricsPath+".queues.jsonl",std::ios::app);
-            uint64_t nextFull=0;
-            while(started_.load(std::memory_order_acquire)) {
-                const auto now=QueueDiagnostics::nowUs();
-                const bool full=now>=nextFull;
-                out<<bus_->diagnostics()->json(now,bus_->workerDepths(),bus_->netDepth(),full);
-                if(full) { nextFull=now+1000000; out.flush(); }
-                if(!out) {
-                    bus_->diagnostics()->writeFailed.store(true);
-                    LOG_ERROR << "queue diagnostics write failed";
-                    break;
-                }
-                std::unique_lock<std::mutex> lock(metricsWaitMutex_);
-                metricsWaitCv_.wait_for(lock,std::chrono::milliseconds(10),[this] { return !started_.load(); });
-            }
-          } catch(const std::exception& error) {
-            bus_->diagnostics()->writeFailed.store(true);
-            LOG_ERROR << "queue diagnostics failed: " << error.what();
-          }
-        });
-    }
+    if (!monitoring_->start()) { stop(); return false; }
 
     LOG_INFO << "scene server started, zoneId=" << cfg_.zone.zoneId << " sceneId=" << cfg_.sceneId
              << " logicThreads=" << cfg_.logicThreadNum << " luaDir=" << luaDir_
@@ -184,10 +130,7 @@ void SceneServer::stop()
         return;
 
     started_.store(false, std::memory_order_release);
-    metricsWaitCv_.notify_all();
-    if (metricsThread_.joinable())
-        metricsThread_.join();
-    if (diagnosticThread_.joinable()) diagnosticThread_.join();
+    monitoring_->stopPeriodic();
 
     // 逆序停止：先切断输入（网络），再停消费者（逻辑），最后停辅助线程
     if (netServer_)
@@ -218,60 +161,10 @@ void SceneServer::stop()
     if (dbThread_)
         dbThread_->stop();
 
-    if (!logicThreads_.empty())
-    {
-        sampleMetrics();
-        writeMetrics(); // 最终采样总是执行；文件导出仍由 metricsPath 控制。
-    }
-
-    // logic/timer/db 都停了才会走到这里，此时 bus 上不会再有生产者
-    if(bus_->diagnostics() && !cfg_.metricsPath.empty()) {
-        std::ofstream out(cfg_.metricsPath+".queues.jsonl",std::ios::app);
-        out<<bus_->diagnostics()->json(QueueDiagnostics::nowUs(),bus_->workerDepths(),bus_->netDepth());
-        out.flush();
-        if(!out) bus_->diagnostics()->writeFailed.store(true);
-        if(bus_->diagnostics()->writeFailed.load()) drained=false;
-    }
+    // Final snapshot is taken only after business producers and consumers stop.
+    if (!monitoring_->finish()) drained = false;
     shutdownSucceeded_.store(drained, std::memory_order_release);
     LOG_INFO << "scene server stopped";
-}
-
-void SceneServer::writeMetrics() const
-{
-    if (cfg_.metricsPath.empty())
-        return;
-    const std::string tmp = cfg_.metricsPath + ".tmp." + std::to_string(static_cast<long long>(::getpid()));
-    std::ofstream out(tmp, std::ios::trunc);
-    if (!out) return;
-    const SceneMetricsSnapshot snapshot = metricsSnapshot();
-    out << serializeSceneMetrics(snapshot);
-    out.close();
-    ::rename(tmp.c_str(), cfg_.metricsPath.c_str());
-}
-
-void SceneServer::sampleMetrics()
-{
-    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-    std::vector<uint64_t> depths;
-    uint64_t netDepth = 0;
-    if (bus_)
-    {
-        const auto busDepths = bus_->workerDepths();
-        depths.assign(busDepths.begin(), busDepths.end());
-        netDepth = bus_->netDepth();
-        for (const auto& thread : logicThreads_)
-        {
-            if (!thread) continue;
-            const auto id = thread->threadId();
-            metrics_.worker(id).setEnqueued(bus_->enqueuedBusinessCount(id), bus_->enqueuedInternalCount(id));
-        }
-    }
-    std::lock_guard lock(metricsSnapshotMutex_);
-    metricsSnapshot_ = metricsSampler_.sample(metrics_, now, depths, netDepth);
-    const auto startMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        metricsStart_.time_since_epoch()).count());
-    metricsSnapshot_.uptimeMs = now >= startMs ? now - startMs : 0;
 }
 
 void SceneServer::reloadLua(const std::string& newDir)
@@ -325,6 +218,5 @@ std::string SceneServer::stats() const
 
 SceneMetricsSnapshot SceneServer::metricsSnapshot() const
 {
-    std::lock_guard lock(metricsSnapshotMutex_);
-    return metricsSnapshot_;
+    return monitoring_->snapshot();
 }

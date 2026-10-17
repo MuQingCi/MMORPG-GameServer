@@ -7,21 +7,17 @@
 #include "metrics/sceneMetrics.h"
 #include "metrics/metricsSampler.h"
 
-#include <mutex>
-
 #include <atomic>
-#include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
-#include <thread>
 
 class NetServer;
 class TimerThread;
 class DBThread;
 class LogicThread;
+class SceneMonitoringService;
 
 /**
  * @brief 场景服进程的组装者与生命周期管理者
@@ -66,7 +62,6 @@ public:
 private:
     SceneConfig cfg_;
     SceneMetrics metrics_;
-    MetricsSampler metricsSampler_;
     Map map_; // 声明在 workers 前，销毁时比所有 worker 更晚。
 
     std::unique_ptr<MsgBus> bus_;
@@ -82,16 +77,8 @@ private:
     std::atomic<bool> shutdownSucceeded_{false};
     std::string luaDir_;   // 当前生效的脚本目录（热更会替换）
     
-    std::thread metricsThread_;
-    std::thread diagnosticThread_;
-    std::chrono::steady_clock::time_point metricsStart_{};
-    SceneMetricsSnapshot metricsSnapshot_;
-    mutable std::mutex metricsSnapshotMutex_;
-    std::mutex metricsWaitMutex_;
-    std::condition_variable metricsWaitCv_;
+    std::unique_ptr<SceneMonitoringService> monitoring_;
     SceneMetricsSnapshot metricsSnapshot() const;
-    void sampleMetrics();
-    void writeMetrics() const;
 };
 
 #endif

@@ -10,6 +10,8 @@ set(SCENE_CORE_SOURCES
     src-cpp/metrics/sceneMetrics.cc
     src-cpp/metrics/metricsSampler.cc
     src-cpp/metrics/metricsJson.cc
+    src-cpp/metrics/queueDiagnosticsJson.cc
+    src-cpp/metrics/sceneMonitoringService.cc
 
     # ---------------------------------------------------------------------
     # 公共实现（zone_common）：Buffer/序列化/配置解析/日志

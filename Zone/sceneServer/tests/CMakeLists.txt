@@ -18,6 +18,7 @@ add_executable(scene_tests
     test_lua_redis.cc
     test_logicThread.cc
     test_sceneMetrics.cc
+    test_sceneMonitoring.cc
     test_gatewayBinding.cc
     test_aoiRouting.cc
     test_aoiService.cc

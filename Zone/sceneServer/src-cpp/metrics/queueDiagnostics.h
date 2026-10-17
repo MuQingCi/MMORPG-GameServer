@@ -5,7 +5,7 @@
 #include <mutex>
 #include <memory>
 #include <atomic>
-#include <sstream>
+#include <string>
 #include <vector>
 
 // Test-only diagnostics. No network/persistence representation.
@@ -54,51 +54,45 @@ public:
         auto& c=*channels_.at(worker);
         std::lock_guard<std::mutex> lock(c.mutex); return c.waits.at(category);
     }
-    // Cumulative histograms; interval distributions are computed by subtraction.
-    std::string json(uint64_t now,const std::vector<size_t>& depths,size_t net, bool full=true) {
-        std::vector<std::array<Wait,4>> waits_;
-        std::vector<std::array<uint64_t,5>> admissions;
-        std::vector<Event> events_;
-        uint64_t droppedEvents_=0;
-        if(full) for(auto& ptr:channels_) {
-            auto& c=*ptr;
-            std::array<Wait,4> waits;
-            std::array<uint64_t,5> counts;
+    struct Snapshot {
+        uint64_t monotonicUs = 0;
+        std::vector<size_t> depths;
+        size_t netQueue = 0;
+        bool fullSnapshot = true, writeFailed = false;
+        std::vector<std::array<Wait, 4>> waits;
+        std::vector<std::array<uint64_t, 5>> admissions;
+        std::vector<Event> events;
+        uint64_t droppedEvents = 0;
+    };
+    // Cumulative counters; only a full collection drains the bounded event buffers.
+    Snapshot collect(uint64_t now, const std::vector<size_t>& depths, size_t net, bool full = true) {
+        Snapshot snapshot;
+        snapshot.monotonicUs = now;
+        snapshot.depths = depths;
+        snapshot.netQueue = net;
+        snapshot.fullSnapshot = full;
+        snapshot.writeFailed = writeFailed.load();
+        if (full) {
+            snapshot.waits.reserve(channels_.size());
+            snapshot.admissions.reserve(channels_.size());
+        }
+        if (full) for (auto& ptr : channels_) {
+            auto& c = *ptr;
             std::vector<Event> events;
-            uint64_t dropped;
             {
                 std::lock_guard<std::mutex> lock(c.mutex);
-                waits=c.waits; counts=c.admissions; events.swap(c.events); dropped=c.dropped;
+                snapshot.waits.push_back(c.waits);
+                snapshot.admissions.push_back(c.admissions);
+                events.swap(c.events);
+                snapshot.droppedEvents += c.dropped;
             }
-            waits_.push_back(waits); admissions.push_back(counts);
-            events_.insert(events_.end(),events.begin(),events.end());
-            droppedEvents_+=dropped;
+            snapshot.events.insert(snapshot.events.end(), events.begin(), events.end());
         }
-        std::ostringstream out; out<<"{\"monotonicUs\":"<<now<<",\"netQueue\":"<<net<<",\"depths\":[";
-        for(size_t i=0;i<depths.size();++i) { if(i) out<<','; out<<depths[i]; }
-        out<<"],\"fullSnapshot\":"<<(full?"true":"false")<<",\"writeFailed\":"<<(writeFailed.load()?"true":"false")<<",\"admissions\":[";
-        for(size_t i=0;i<admissions.size();++i) {
-            if(i) out<<',';
-            out<<'[';
-            for(size_t j=0;j<5;++j) { if(j) out<<','; out<<admissions[i][j]; } out<<']';
-        }
-        out<<"],\"waits\":[";
-        for(size_t i=0;i<waits_.size();++i) for(size_t c=0;c<4;++c) {
-            if(i||c) out<<',';
-            const auto& w=waits_[i][c];
-            out<<"{\"worker\":"<<i<<",\"category\":"<<c<<",\"count\":"<<w.count
-               <<",\"sumUs\":"<<w.sumUs<<",\"maxUs\":"<<w.maxUs<<",\"missing\":"<<w.missing<<",\"bins\":[";
-            for(size_t b=0;b<10;++b) { if(b) out<<','; out<<w.bins[b]; } out<<"]}";
-        }
-        out<<"],\"droppedEvents\":"<<droppedEvents_<<",\"events\":[";
-        for(size_t i=0;i<events_.size();++i) {
-            if(i) out<<',';
-            const auto& e=events_[i];
-            out<<"{\"worker\":"<<e.worker<<",\"kind\":\""<<e.kind<<"\",\"beginUs\":"<<e.begin
-               <<",\"endUs\":"<<e.end<<",\"count\":"<<e.count<<'}';
-        }
-        events_.clear(); out<<"]}\n"; return out.str();
+        return snapshot;
     }
+    // Compatibility wrapper; serialization happens after all channel locks are released.
+    std::string json(uint64_t now, const std::vector<size_t>& depths, size_t net, bool full = true);
+
 private:
     struct Channel {
         std::mutex mutex;

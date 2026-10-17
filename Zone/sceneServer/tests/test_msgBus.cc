@@ -1,11 +1,34 @@
 #include "common/hash.h"
 #include "common/msg.h"
 #include "common/msgBus.h"
+#include "metrics/queueDiagnosticsJson.h"
 #include "test_util.h"
 
 #include <set>
 #include <thread>
 #include <vector>
+
+TEST(QueueDiagnosticsSnapshotSeparatesCollectionAndSerialization)
+{
+    QueueDiagnostics diagnostic(1);
+    diagnostic.admission(0, 0);
+    diagnostic.dequeued(0, 0, 10, 30);
+    diagnostic.event(0, "test", 10, 30, 7);
+    const auto light = diagnostic.collect(100, {2}, 3, false);
+    CHECK(light.events.empty());
+    CHECK(light.waits.empty());
+    const auto full = diagnostic.collect(110, {1}, 0);
+    CHECK_EQ(full.events.size(), 1u);
+    CHECK_EQ(full.waits[0][0].sumUs, 20u);
+    CHECK_EQ(full.admissions[0][1], 1u);
+    const auto json = serializeQueueDiagnostics(full);
+    CHECK_EQ(json, serializeQueueDiagnostics(full));
+    CHECK(json.find("\"monotonicUs\":110") != std::string::npos);
+    const auto next = diagnostic.collect(120, {0}, 0);
+    CHECK(next.events.empty());
+    CHECK_EQ(next.waits[0][0].count, 1u);
+    CHECK_EQ(next.admissions[0][0], 1u);
+}
 
 // 归属必须是**纯函数且稳定**：同一 playerId 在任何时候都落到同一线程
 TEST(QueueDiagnosticsBoundariesAndRequeue)
