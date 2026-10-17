@@ -2,6 +2,8 @@
 #include "inetAddress.h"
 #include "socket.h"
 #include "tcpConnection.h"
+#include "gatewayDispatcher.h"
+#include "base/gatewayPlayer.h"
 #include "test_util.h"
 
 #include <arpa/inet.h>
@@ -91,6 +93,74 @@ struct TcpPair
     }
 };
 }  // namespace
+
+TEST(GatewayDispatcherSceneSubmissionCountsAndCancelsStaleQueue)
+{
+    EventLoop loop;
+    TcpPair backendPair;
+    TcpPair clientPair;
+    CHECK(backendPair.serverFd >= 0 && clientPair.serverFd >= 0);
+    InetAddress local;
+    InetAddress peer;
+    auto backend = std::make_shared<TcpConnection>(&loop, "backend-unique",
+        Socket::fromFd(backendPair.serverFd), local, peer);
+    auto client = std::make_shared<TcpConnection>(&loop, "client-unique",
+        Socket::fromFd(clientPair.serverFd), local, peer);
+    backendPair.serverFd = clientPair.serverFd = -1;
+    backend->connectEstablelished();
+    client->connectEstablelished();
+    DispatcherConfig cfg;
+    cfg.allowedServices = {ServerID::kScene};
+    GatewayDispatcher dispatcher(cfg);
+    dispatcher.OnBackendConnected(backend);
+    BackendHandshake hs;
+    hs.serviceId = ServerID::kScene;
+    hs.zoneId = 1;
+    hs.sceneId = 1;
+    hs.sceneIncarnation = 1;
+    hs.targetGatewayId = 1;
+    Buffer handshake;
+    EncodeFrame(handshake, MakeHeader(NetMessageType::kSceneMsg, SysModule::kSYS,
+        SysMethod::kHandshake, 0, 0, ServerID::kScene, ServerID::kGateway), PackBackendHandshake(hs));
+    dispatcher.OnBackendMessage(backend, &handshake);
+    const auto sid = dispatcher.OnClientConnected(client, 1);
+    const auto feed = [&](ClientKind kind, uint16_t module, uint16_t method,
+                          uint64_t request, const std::string& body) {
+        Buffer frame;
+        ClientHeader header;
+        header.kind = kind;
+        header.module = module;
+        header.method = method;
+        header.requestId = request;
+        EncodeClientFrame(frame, header, body);
+        dispatcher.OnClientMessage(client, &frame, sid);
+    };
+    feed(ClientKind::kControl, kClientSysModule, ClientSysMethod::kAuth, 1, MakeAuthBody(678, 0));
+    for (uint64_t request = 2; request < 5; ++request)
+        feed(ClientKind::kRequest, 3, 2, request, "business");
+    // 提交必须排队，不能在同线程立即 send 越过其它线程任务。
+    CHECK_EQ(dispatcher.Snapshot().sceneOnlineFramesSent, (uint64_t)0);
+    loop.queueInLoop([&] {
+        const auto stats = dispatcher.Snapshot();
+        CHECK_EQ(stats.sceneOnlineFramesSent, (uint64_t)1);
+        CHECK_EQ(stats.sceneBusinessFramesSent, (uint64_t)3);
+        CHECK_EQ(stats.sceneBindingDeclareSkipped, (uint64_t)2);
+        CHECK_EQ(stats.backendFramesSent, (uint64_t)4);
+        // 此请求尚未提交就关闭会话，不得发送或复活已声明状态。
+        feed(ClientKind::kRequest, 3, 2, 5, "must-not-send");
+        dispatcher.OnClientClosed(sid);
+    });
+    loop.runAfter(0.02, [&] { loop.quit(); });
+    loop.loop();
+    const auto stats = dispatcher.Snapshot();
+    CHECK_EQ(stats.sceneBusinessFramesSent, (uint64_t)3);
+    CHECK_EQ(stats.sceneOnlineFramesSent, (uint64_t)1);
+    CHECK_EQ(stats.sceneOfflineFramesSent, (uint64_t)1);
+    CHECK_EQ(stats.backendFramesSent, (uint64_t)5);
+    CHECK_EQ(stats.pendingRoutes, (size_t)0);
+    backend->connectDestroyed();
+    client->connectDestroyed();
+}
 
 TEST(TcpConnectionLifecycleNotifiesUpAndDown)
 {

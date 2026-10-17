@@ -241,7 +241,7 @@ TEST(TwoProtocolsDoNotCrossDecode)
     // 2) 服务间帧喂给客户端解码器：同样不能解出 kOk，且脏数据被丢弃
     Buffer gateFrame;
     EncodeFrame(gateFrame,
-                MakeHeader(NetMessageType::kSceneMsg, 3, 2, 1, 1001, ServerID::kScene_1, ServerID::kGateway),
+                MakeHeader(NetMessageType::kSceneMsg, 3, 2, 1, 1001, ServerID::kScene, ServerID::kGateway),
                 "hello");
 
     ClientHeader got;
@@ -301,14 +301,14 @@ TEST(ClientControlBodyBounds)
     CHECK(!ParseAuthBody(MakeAuthBody(1, 2) + "x", pid, ticket));
     CHECK(!ParseAuthAckBody(std::string(24, 'x'), pid, sid, epoch, zone, dst));
 
-    const std::string ack = MakeAuthAckBody(1001, 77, 3, 1, ServerID::kScene_1);
+    const std::string ack = MakeAuthAckBody(1001, 77, 3, 1, ServerID::kScene);
     CHECK_EQ(ack.size(), (size_t)25);
     CHECK(ParseAuthAckBody(ack, pid, sid, epoch, zone, dst));
     CHECK_EQ(pid, (uint64_t)1001);
     CHECK_EQ(sid, (uint64_t)77);
     CHECK_EQ(epoch, (uint32_t)3);
     CHECK_EQ(zone, (uint32_t)1);
-    CHECK_EQ(dst, (uint8_t)ServerID::kScene_1);
+    CHECK_EQ(dst, (uint8_t)ServerID::kScene);
     CHECK(!ParseAuthAckBody(ack + "x", pid, sid, epoch, zone, dst));
 
     uint8_t svc = 0;
@@ -323,7 +323,7 @@ TEST(BackendHandshakeCodec)
 {
     BackendHandshake hs;
     hs.protocolVersion = BackendHandshake::kProtocolVersion;
-    hs.serviceId = ServerID::kScene_1;
+    hs.serviceId = ServerID::kScene;
     hs.zoneId = 0x01020304;
     hs.sceneId = 0x11223344;
     hs.sceneIncarnation = 0x0102030405060708ULL;
@@ -343,7 +343,7 @@ TEST(BackendHandshakeCodec)
 
     BackendHandshake out;
     CHECK(UnpackBackendHandshake(body, out));
-    CHECK_EQ(out.serviceId, (uint8_t)ServerID::kScene_1);
+    CHECK_EQ(out.serviceId, (uint8_t)ServerID::kScene);
     CHECK_EQ(out.zoneId, (uint32_t)0x01020304);
     CHECK_EQ(out.sceneId, (uint32_t)0x11223344);
     CHECK_EQ(out.sceneIncarnation, (uint64_t)0x0102030405060708ULL);
@@ -361,7 +361,7 @@ TEST(BackendHandshakeCodec)
 TEST(BackendHandshakeSemanticValidation)
 {
     BackendHandshake hs;
-    hs.serviceId = ServerID::kScene_1;
+    hs.serviceId = ServerID::kScene;
     hs.zoneId = 1;
     hs.sceneId = 1;
     hs.sceneIncarnation = 1;

@@ -102,7 +102,7 @@ TEST(E2eBackendHandshakeRejectsWrongGatewayAndChannel)
     {
         e2e::Conn backend;
         CHECK(backend.open(PrivatePort()));
-        CHECK(SendBackendHandshake(backend, ServerID::kScene_1, 1, 1,
+        CHECK(SendBackendHandshake(backend, ServerID::kScene, 1, 1,
                                    identity.first, identity.second));
         CHECK(backend.expectClosedByPeer(1000));
     }
@@ -113,7 +113,7 @@ bool IsSceneOnlineBinding(const Header& h, const std::string& body)
     if (h.msgType != static_cast<uint8_t>(NetMessageType::kSceneMsg) ||
         h.module != GatewayPlayer::kModule || h.method != GatewayPlayer::kOnline ||
         h.seq != 0 || h.srcServiceID != ServerID::kGateway ||
-        h.dstServiceID != ServerID::kScene_1)
+        h.dstServiceID != ServerID::kScene)
         return false;
     ClientData binding;
     std::string payload;
@@ -204,7 +204,7 @@ TEST(E2eClientGuardsAndControlChannel)
         CHECK(AuthClient(c, 1001, kClientToken, epoch, dst, sid));
         CHECK(sid != 0);
         CHECK_EQ(epoch, (uint32_t)1);
-        CHECK_EQ(dst, (uint8_t)ServerID::kScene_1);
+        CHECK_EQ(dst, (uint8_t)ServerID::kScene);
 
         CHECK(c.sendClientFrame(ClientKind::kResponse, kModPlayer, kMethodMove, 14, "fake"));
         ClientHeader h;
@@ -239,7 +239,7 @@ TEST(E2eClientGuardsAndControlChannel)
         e2e::Conn c;
         CHECK(c.open(PublicPort()));
         CHECK(c.sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove, 1, 1001,
-                              ServerID::kScene_1, ServerID::kGateway, "wrong-proto"));
+                              ServerID::kScene, ServerID::kGateway, "wrong-proto"));
         CHECK(c.expectClosedByPeer(1000));
     }
 
@@ -268,7 +268,7 @@ TEST(E2eBackendMustRegisterBeforeBusiness)
         e2e::Conn b;
         CHECK(b.open(PrivatePort()));
         CHECK(b.sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove, 1, 1001,
-                              ServerID::kScene_1, ServerID::kGateway, "unregistered"));
+                              ServerID::kScene, ServerID::kGateway, "unregistered"));
         CHECK(b.expectClosedByPeer(1000));
     }
 
@@ -306,7 +306,7 @@ TEST(E2eFullPathAndNoCrossTalk)
     // ---- 3.1 场景服上线：连内网端口 + 握手（不发握手 ack，注册成功由后续转发证明）----
     auto backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1, GatewayId()));
+    CHECK(SendBackendHandshake(*backend, ServerID::kScene, 1, 1, GatewayId()));
 
     // ---- 3.2 两个客户端鉴权：**playerId 由网关绑定** ----
     e2e::Conn ca;
@@ -325,7 +325,7 @@ TEST(E2eFullPathAndNoCrossTalk)
     CHECK(ca.sendClientFrame(ClientKind::kRequest, kModPlayer, kMethodMove, 77, "move:1001"));
     CHECK(cb.sendClientFrame(ClientKind::kRequest, kModPlayer, kMethodMove, 77, "move:1002"));
 
-    // ---- 3.4 场景服侧应收到两条转发帧：dst=SCENE_1、src=GATEWAY、playerId=绑定值、seq 唯一 ----
+    // ---- 3.4 场景服侧应收到两条转发帧：dst=SCENE、src=GATEWAY、playerId=绑定值、seq 唯一 ----
     uint64_t seqFor[2] = {0, 0};
     uint64_t pidFor[2] = {0, 0};
     std::string bodyFor[2];
@@ -335,7 +335,7 @@ TEST(E2eFullPathAndNoCrossTalk)
         Header h;
         std::string body;
         CHECK(ReadNextSceneMove(*backend, h, body, onlineBindingsSeen));
-        CHECK_EQ(h.dstServiceID, (uint8_t)ServerID::kScene_1);
+        CHECK_EQ(h.dstServiceID, (uint8_t)ServerID::kScene);
         CHECK_EQ(h.srcServiceID, (uint8_t)ServerID::kGateway);
         CHECK_EQ(h.msgType, (uint8_t)NetMessageType::kSceneMsg);
         CHECK_EQ(h.module, (uint16_t)kModPlayer);
@@ -345,10 +345,7 @@ TEST(E2eFullPathAndNoCrossTalk)
         pidFor[i] = h.playerId;
         bodyFor[i] = body;
     }
-    // 上线通知是鉴权/后端注册之间的异步通知：若后端尚未完成注册，
-    // 网关会跳过该次通知；业务请求仍会在同一条后端连接上完成绑定校验。
-    // 收到通知时由 ReadNextSceneMove 校验其完整协议，不把通知出现次数
-    // 作为业务转发成功的必要条件。
+    CHECK_EQ(onlineBindingsSeen, 2); // 每个玩家首次业务前必须声明。
     CHECK(seqFor[0] != seqFor[1]);                 // 网关内部号唯一 = 不串包的前提
     CHECK(pidFor[0] != pidFor[1]);                 // 两个客户端身份不同
     CHECK(pidFor[0] == 1001 || pidFor[0] == 1002);
@@ -360,7 +357,7 @@ TEST(E2eFullPathAndNoCrossTalk)
     {
         const std::string ack = "ack:" + std::to_string(pidFor[i]);
         CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove, seqFor[i],
-                                     pidFor[i], ServerID::kScene_1, ServerID::kGateway, ack));
+                                     pidFor[i], ServerID::kScene, ServerID::kGateway, ack));
     }
 
     for (int i = 0; i < 2; ++i)
@@ -376,9 +373,70 @@ TEST(E2eFullPathAndNoCrossTalk)
         CHECK(body == "ack:" + std::to_string(pidFor[i]));
     }
 
+    // 稳定绑定连续请求：不能再带 Online，业务信封仍保留。
+    for (uint64_t request = 80; request < 84; ++request)
+    {
+        CHECK(ca.sendClientFrame(ClientKind::kRequest, kModPlayer, kMethodMove, request, "stable"));
+        Header h;
+        std::string body;
+        CHECK(ReadNextSceneMove(*backend, h, body, onlineBindingsSeen));
+        CHECK_EQ(onlineBindingsSeen, 2);
+        CHECK_EQ(h.playerId, (uint64_t)1001);
+        ClientData binding;
+        std::string payload;
+        CHECK(GatewayPlayer::Unpack(body, binding, payload));
+        CHECK_EQ(binding.clientEpoch, epochA);
+        CHECK(payload == "stable");
+        CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
+                                     h.seq, h.playerId, ServerID::kScene, ServerID::kGateway, "ok"));
+        ClientHeader ack;
+        CHECK(ca.readClientFrame(ack, body, 2000));
+        CHECK_EQ(ack.requestId, request);
+    }
+    CHECK(ca.sendClientFrame(ClientKind::kControl, kClientSysModule,
+                             ClientSysMethod::kBindService, 90, MakeServiceBody(ServerID::kScene)));
+    ClientHeader bindAck;
+    std::string bindBody;
+    CHECK(ca.readClientFrame(bindAck, bindBody, 2000));
+    CHECK_EQ(bindAck.method, ClientSysMethod::kBindServiceAck);
+    Header extra;
+    CHECK(!backend->readGateFrame(extra, bindBody, 200));
+
+    // 同一 TCP 会话重新鉴权产生新 epoch：控制路径只声明一次，业务不能重复声明。
+    const auto oldEpoch = epochA;
+    CHECK(AuthClient(ca, 1001, kClientToken, epochA, dstA, sidA));
+    CHECK(epochA > oldEpoch);
+    CHECK(backend->readGateFrame(extra, bindBody, 2000));
+    CHECK(IsSceneOnlineBinding(extra, bindBody));
+    ClientData renewed;
+    std::string renewedPayload;
+    CHECK(GatewayPlayer::Unpack(bindBody, renewed, renewedPayload));
+    CHECK_EQ(renewed.clientEpoch, epochA);
+    ++onlineBindingsSeen;
+    // 多条请求一次突发，验证已排队声明不会被后续业务越过。
+    for (uint64_t request = 91; request < 95; ++request)
+        CHECK(ca.sendClientFrame(ClientKind::kRequest, kModPlayer, kMethodMove, request, "burst"));
+    for (uint64_t request = 91; request < 95; ++request)
+    {
+        Header h;
+        std::string body;
+        CHECK(ReadNextSceneMove(*backend, h, body, onlineBindingsSeen));
+        CHECK_EQ(onlineBindingsSeen, 3);
+        ClientData binding;
+        std::string payload;
+        CHECK(GatewayPlayer::Unpack(body, binding, payload));
+        CHECK_EQ(binding.clientEpoch, epochA);
+        CHECK(payload == "burst");
+        CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
+                                     h.seq, h.playerId, ServerID::kScene, ServerID::kGateway, "ok"));
+        ClientHeader ack;
+        CHECK(ca.readClientFrame(ack, body, 2000));
+        CHECK_EQ(ack.requestId, request);
+    }
+
     // ---- 3.6 主动推送：无对应请求、只带 playerId -> 送到该玩家**当前**会话 ----
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodPushState, /*seq=*/0,
-                                 1002, ServerID::kScene_1, ServerID::kGateway, "push-for-1002"));
+                                 1002, ServerID::kScene, ServerID::kGateway, "push-for-1002"));
     {
         ClientHeader h;
         std::string body;
@@ -396,7 +454,7 @@ TEST(E2eFullPathAndNoCrossTalk)
 
     // 非零但未知的 seq 是迟到/重复响应，不得降级为 Push 送给当前玩家。
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
-                                 seqFor[0], pidFor[0], ServerID::kScene_1, ServerID::kGateway,
+                                 seqFor[0], pidFor[0], ServerID::kScene, ServerID::kGateway,
                                  "duplicate-response"));
     {
         ClientHeader h;
@@ -447,7 +505,7 @@ TEST(E2eBackendResponseContextGuard)
 
     auto backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1, GatewayId()));
+    CHECK(SendBackendHandshake(*backend, ServerID::kScene, 1, 1, GatewayId()));
     Header req;
     std::string body;
     // 握手没有 ACK；用有界轮询等待注册完成，避免异步事件循环的时间竞态。
@@ -487,16 +545,16 @@ TEST(E2eBackendResponseContextGuard)
 
     // 正确服务号但错误玩家/方法，同样不能抢占尚未消费的路由。
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
-                                 req.seq, 4002, ServerID::kScene_1, ServerID::kGateway, "wrong-player"));
+                                 req.seq, 4002, ServerID::kScene, ServerID::kGateway, "wrong-player"));
     CHECK(backend->expectClosedByPeer(1000));
     // A malformed response closes the original connection and invalidates its
     // routes. A newly registered connection must not claim that old seq.
     backend.reset();
     backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));
-    CHECK(SendBackendHandshake(*backend, ServerID::kScene_1, 1, 1, GatewayId()));
+    CHECK(SendBackendHandshake(*backend, ServerID::kScene, 1, 1, GatewayId()));
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
-                                 req.seq, req.playerId, ServerID::kScene_1, ServerID::kGateway, "stale"));
+                                 req.seq, req.playerId, ServerID::kScene, ServerID::kGateway, "stale"));
     ClientHeader response;
     CHECK(!client.readClientFrame(response, body, 300));
 }

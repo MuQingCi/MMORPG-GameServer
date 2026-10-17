@@ -195,7 +195,7 @@ wait_backends() {
         local ready=1
         local count10=0 count20=0
         for scene_id in 10 20; do
-    local count; count=$(grep -c "backend registered: SCENE_1.*scene=$scene_id" "$WORK/logs/$(date +%F)/gateway.log" 2>/dev/null || true)
+    local count; count=$(grep -c "backend registered: SCENE.*scene=$scene_id" "$WORK/logs/$(date +%F)/gateway.log" 2>/dev/null || true)
             [[ $scene_id == 10 ]] && count10=$count || count20=$count
             (( count >= 2*CHANNELS )) || ready=0
         done
@@ -211,7 +211,7 @@ wait_backends
 LOG="$WORK/logs/$(date +%F)/gateway.log"
 for gateway_id in 1 2; do
     for scene_id in 10 20; do
-        count=$(grep -c "backend registered: SCENE_1.*scene=$scene_id" "$LOG" || true)
+        count=$(grep -c "backend registered: SCENE.*scene=$scene_id" "$LOG" || true)
         (( count >= 2*CHANNELS )) || { echo "FAIL: scene=$scene_id registered channels=$count expected=$((2*CHANNELS)) across gateways"; exit 1; }
     done
 done

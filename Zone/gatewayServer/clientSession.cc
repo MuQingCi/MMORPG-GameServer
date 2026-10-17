@@ -1,5 +1,6 @@
 #include "clientSession.h"
 #include "base/proto.h"
+#include "base/proto.h"
 #include <limits>
 
 uint64_t ClientSessionTable::Create(const TcpConnectionPtr& conn, uint8_t defaultDstService, int64_t nowMs)
@@ -86,6 +87,7 @@ bool ClientSessionTable::Bind(uint64_t sessionId, uint64_t playerId, uint8_t dst
     }
     it->second.authed = true;
     it->second.epoch = epoch;
+    it->second.sceneOnlineSubmitted = false;
     it->second.authedAtMs = nowMs;
 
     playerIndex_[playerId] = sessionId;
@@ -107,6 +109,7 @@ bool ClientSessionTable::SetDstService(uint64_t sessionId, uint8_t dstService)
     it->second.dstService = dstService;
     if (changed)
     {
+        it->second.sceneOnlineSubmitted = false;
         it->second.sceneId = 0;
         it->second.backendChannelId = 0;
         it->second.sceneIncarnation = 0;
@@ -123,7 +126,7 @@ bool ClientSessionTable::SetSceneBinding(uint64_t sessionId, uint32_t sceneId,
         return false;
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = sessions_.find(sessionId);
-    if (it == sessions_.end() || !it->second.authed || it->second.dstService != ServerID::kScene_1)
+    if (it == sessions_.end() || !it->second.authed || it->second.dstService != ServerID::kScene)
         return false;
     ClientSession& session = it->second;
     if (session.sceneId != 0)
@@ -133,6 +136,25 @@ bool ClientSessionTable::SetSceneBinding(uint64_t sessionId, uint32_t sceneId,
     session.backendChannelId = channelId;
     session.sceneIncarnation = sceneIncarnation;
     session.sceneConnName = connName;
+    return true;
+}
+
+bool ClientSessionTable::SubmitScene(const ClientSession& expected,
+                                    const std::function<bool(bool)>& submit)
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto it = sessions_.find(expected.sessionId);
+    if (it == sessions_.end()) return false;
+    auto& s = it->second;
+    if (!s.authed || s.playerId == 0 || s.dstService != ServerID::kScene ||
+        s.sceneId == 0 ||s.sceneIncarnation == 0 || s.sceneConnName.empty() ||
+        s.playerId != expected.playerId || s.epoch != expected.epoch ||
+        s.dstService != expected.dstService || s.sceneId != expected.sceneId ||
+        s.backendChannelId != expected.backendChannelId ||
+        s.sceneIncarnation != expected.sceneIncarnation || s.sceneConnName != expected.sceneConnName)
+        return false;
+    if (!submit(!s.sceneOnlineSubmitted)) return false;
+    s.sceneOnlineSubmitted = true;
     return true;
 }
 

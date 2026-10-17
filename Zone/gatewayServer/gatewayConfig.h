@@ -38,7 +38,7 @@ public:
     std::string privateListenAddr = "127.0.0.1";
     uint16_t    privateListenPort = 13145;
     bool        reusePort = false;              // 多 gateway 进程共享相同监听地址/端口
-    std::vector<uint8_t> allowedServices{8};    // 允许注册的后端服务号白名单（8 = SCENE_1）
+    std::vector<uint8_t> allowedServices{8};    // 允许注册的后端服务号白名单（8 = SCENE）
 
     uint32_t    eventThreadNum = 4;             // IO 线程数（>=1）
 

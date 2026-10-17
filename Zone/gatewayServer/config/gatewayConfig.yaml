@@ -19,7 +19,7 @@ gateway:
     privateConfig:
         listenAddr: 127.0.0.1
         listenPort: 13145
-        # 允许注册的后端服务号白名单（ServerID：3=CHAT, 4=GLOBAL, 8=SCENE_1）。
+        # 允许注册的后端服务号白名单（ServerID：3=CHAT, 4=GLOBAL, 8=SCENE）。
         # **必须显式配置**：不在白名单里的连接即使握手成功也会被立刻断开。
         # 注意写成分行列表；`[8]` 这种行内写法本解析器不支持（会被当成标量并报错）。
         allowedServices:
@@ -34,8 +34,8 @@ gateway:
     # 客户端最小鉴权票据（开发期预共享密钥）。0 = 关闭校验（**仅联调可用**，启动日志会告警）。
     # 正式方案是登录服签发 token（阶段 5/7），这里先把"未鉴权不得访问业务路由"这条不变量立住。
     clientToken: 998877
-    defaultServiceId: 8     # 客户端未显式绑定后端服务时的默认目标（8=SCENE_1）
-    defaultSceneId: 0       # 0=兼容旧单实例；设置为具体 sceneId 后优先路由该实例
+    defaultServiceId: 8     # 客户端未显式绑定后端服务时的默认目标（8=SCENE）
+    defaultSceneId: 0       # 0=从可用场景实例中选择；非 0=仅路由指定 sceneId
     maxClientSessions: 4096 # 公网连接数上限（超过则拒绝新连接）
     maxPendingRoutes: 10000 # 在途请求上限（有界：满了回错误，不让内存无界增长）
     routeTtlMs: 15000       # 回程路由 TTL(ms)：后端超时不响应时回收记录

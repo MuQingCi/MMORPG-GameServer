@@ -96,7 +96,7 @@ bool ValidBackendHandshake(const BackendHandshake& h)
     if (h.protocolVersion != BackendHandshake::kProtocolVersion || h.serviceId == 0 ||
         h.zoneId == 0 || h.targetGatewayId == 0)
         return false;
-    const bool scene = h.serviceId == ServerID::kScene_1;
+    const bool scene = h.serviceId == ServerID::kScene;
     return scene ? h.sceneId != 0 && h.sceneIncarnation != 0
                  : h.sceneId == 0 && h.sceneIncarnation == 0 && h.channelId == 0;
 }

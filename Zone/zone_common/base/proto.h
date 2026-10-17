@@ -18,7 +18,7 @@ using SessionID = uint64_t;
 using EpochID = uint32_t;
 
 // 不提供旧 proto/proto.h 的 BackendService 和 MessageKind：
-// BackendService::Scene=2 与当前 ServerID::kScene_1=8 冲突；
+// BackendService::Scene=2 与当前 ServerID::kScene=8 冲突；
 // MessageKind 的 Request/Response/Push 是 ClientKind（clientProto.h）语义，
 // 不是 GateFrame::msgType（NetMessageType）。也不提供 VERSION 别名：
 // ClientFrame 版本为 u8，而 GateFrame 版本为 u16。
@@ -56,7 +56,8 @@ enum NetMessageType : uint8_t
     kSceneMsg   = 10,
 };
 
-// 服务 id（srcServiceID / dstServiceID）
+// 服务类型 id（srcServiceID / dstServiceID），不是进程/实例编号。
+// 场景实例由 zoneId + sceneId 区分，同一实例的连接由 channelId 区分。
 enum ServerID : uint8_t
 {
     kServiceAny = 0,   // 仅用于"不过滤"（测试/工具）
@@ -64,7 +65,7 @@ enum ServerID : uint8_t
     kDB         = 2,
     kChat       = 3,
     kGlobal     = 4,
-    kScene_1    = 8,
+    kScene      = 8,
 };
 
 inline const char* ServerIdName(uint8_t id)
@@ -76,7 +77,7 @@ inline const char* ServerIdName(uint8_t id)
         case kDB:         return "DB";
         case kChat:       return "CHAT";
         case kGlobal:     return "GLOBAL";
-        case kScene_1:    return "SCENE_1";
+        case kScene:      return "SCENE";
         default:          return "UNKNOWN";
     }
 }

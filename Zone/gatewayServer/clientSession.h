@@ -4,6 +4,7 @@
 #include "common/callbacks.h"   // TcpConnectionPtr
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -28,6 +29,7 @@ struct ClientSession
     uint64_t sceneIncarnation = 0;
     std::string sceneConnName;
     bool     authed     = false;
+    bool sceneOnlineSubmitted = false; // 本绑定已提交，不代表 Scene 已应用/加载成功。
 
     TcpConnectionPtr conn;
     int64_t  createdAtMs = 0;
@@ -64,6 +66,10 @@ public:
     bool SetDstService(uint64_t sessionId, uint8_t dstService);
     bool SetSceneBinding(uint64_t sessionId, uint32_t sceneId, uint32_t channelId,
                          uint64_t sceneIncarnation, const std::string& connName);
+
+    // 后端 EventLoop 调用；锁内复核完整绑定并有序提交。submit 不得重入本表。
+    // 返回 false 不修改声明状态；online=true 时须将 Online 放在业务之前。
+    bool SubmitScene(const ClientSession& expected, const std::function<bool(bool online)>& submit);
 
     // 连接关闭：移除会话与玩家索引（只允许移除"仍指向该会话"的索引，避免误删新会话）
     bool Erase(uint64_t sessionId);

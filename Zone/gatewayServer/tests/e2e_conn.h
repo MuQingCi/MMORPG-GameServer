@@ -30,8 +30,8 @@ struct Conn
     Buffer in;            // 已读入但尚未组帧的字节
 
     // 本端扮演的**服务号**：服务间解码必须用它做过滤（网关转发来的帧 dst=目标服务号）。
-    // 本工具扮演场景服，因此默认 SCENE_1；如果用来扮演网关/别的服务，改这个字段即可。
-    uint8_t selfServiceId = ServerID::kScene_1;
+    // 本工具扮演场景服，因此默认 SCENE；如果用来扮演网关/别的服务，改这个字段即可。
+    uint8_t selfServiceId = ServerID::kScene;
 
     Conn() = default;
     Conn(const Conn&) = delete;

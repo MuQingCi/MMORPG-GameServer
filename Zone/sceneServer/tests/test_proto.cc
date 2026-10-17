@@ -9,12 +9,23 @@
 
 // 编解码是"人工推导偏移"的典型：一次字段增删就可能错位，
 // 往返测试是唯一能自动发现这类错位的手段。
+TEST(ProtoSceneServiceTypeNameAndWireValue)
+{
+    // 服务类型不包含实例编号；重命名不得改变已部署协议中的服务号。
+    static_assert(ServerID::kScene == 8, "Scene service wire value must remain 8");
+    CHECK_EQ(std::string(ServerIdName(ServerID::kScene)), std::string("SCENE"));
+    Buffer frame;
+    EncodeFrame(frame, MakeHeader(kSceneMsg, 3, 2, 1, 7, 8, kGateway), "");
+    CHECK_EQ(static_cast<uint8_t>(frame.peek()[30]), (uint8_t)8);
+    CHECK_EQ(static_cast<uint8_t>(frame.peek()[31]), (uint8_t)kGateway);
+}
+
 TEST(ProtoRoundTrip)
 {
     const std::string body = "hello-protobuf";
 
     Buffer out;
-    const Header h = MakeHeader(kSceneMsg, 3, 2, 42, 1001, kScene_1, kGateway);
+    const Header h = MakeHeader(kSceneMsg, 3, 2, 42, 1001, kScene, kGateway);
     EncodeFrame(out, h, body);
 
     CHECK_EQ(out.readableBytes(), kHeaderSize + body.size());
@@ -29,7 +40,7 @@ TEST(ProtoRoundTrip)
     CHECK_EQ(head.method, (uint16_t)2);
     CHECK_EQ(head.seq, (uint64_t)42);
     CHECK_EQ(head.playerId, (uint64_t)1001);
-    CHECK_EQ(head.srcServiceID, (uint8_t)kScene_1);
+    CHECK_EQ(head.srcServiceID, (uint8_t)kScene);
     CHECK_EQ(head.dstServiceID, (uint8_t)kGateway);
     CHECK_EQ(head.totalLen, (uint32_t)(kHeaderSize + body.size()));
     CHECK(got == body);
@@ -39,11 +50,11 @@ TEST(ProtoRoundTrip)
 TEST(ProtoEmptyBody)
 {
     Buffer out;
-    EncodeFrame(out, MakeHeader(kGatewayMsg, 1, 1, 0, 0, kGateway, kScene_1), "");
+    EncodeFrame(out, MakeHeader(kGatewayMsg, 1, 1, 0, 0, kGateway, kScene), "");
 
     Header head;
     std::string body;
-    CHECK(DecodeFrame(out, head, kScene_1, body) == DecodeStatus::kOk);
+    CHECK(DecodeFrame(out, head, kScene, body) == DecodeStatus::kOk);
     CHECK_EQ(head.totalLen, (uint32_t)kHeaderSize);
     CHECK(body.empty());
 }
@@ -52,18 +63,18 @@ TEST(ProtoEmptyBody)
 TEST(ProtoStickyPackets)
 {
     Buffer out;
-    EncodeFrame(out, MakeHeader(kGatewayMsg, 3, 2, 1, 7, kGateway, kScene_1), "AAAA");
-    EncodeFrame(out, MakeHeader(kGatewayMsg, 3, 3, 2, 7, kGateway, kScene_1), "BB");
+    EncodeFrame(out, MakeHeader(kGatewayMsg, 3, 2, 1, 7, kGateway, kScene), "AAAA");
+    EncodeFrame(out, MakeHeader(kGatewayMsg, 3, 3, 2, 7, kGateway, kScene), "BB");
 
     Header h1;
     std::string b1;
-    CHECK(DecodeFrame(out, h1, kScene_1, b1) == DecodeStatus::kOk);
+    CHECK(DecodeFrame(out, h1, kScene, b1) == DecodeStatus::kOk);
     CHECK(b1 == "AAAA");
     CHECK_EQ(h1.method, (uint16_t)2);
 
     Header h2;
     std::string b2;
-    CHECK(DecodeFrame(out, h2, kScene_1, b2) == DecodeStatus::kOk);
+    CHECK(DecodeFrame(out, h2, kScene, b2) == DecodeStatus::kOk);
     CHECK(b2 == "BB");
     CHECK_EQ(h2.method, (uint16_t)3);
     CHECK_EQ(h2.seq, (uint64_t)2);
@@ -75,7 +86,7 @@ TEST(ProtoHalfPacket)
     const std::string body = "0123456789";
 
     Buffer full;
-    EncodeFrame(full, MakeHeader(kGatewayMsg, 3, 2, 1, 7, kGateway, kScene_1), body);
+    EncodeFrame(full, MakeHeader(kGatewayMsg, 3, 2, 1, 7, kGateway, kScene), body);
 
     // 只喂一半
     const size_t half = full.readableBytes() / 2;
@@ -84,12 +95,12 @@ TEST(ProtoHalfPacket)
 
     Header head;
     std::string got;
-    CHECK(DecodeFrame(partial, head, kScene_1, got) == DecodeStatus::kNeedMore);
+    CHECK(DecodeFrame(partial, head, kScene, got) == DecodeStatus::kNeedMore);
     CHECK_EQ(partial.readableBytes(), half);   // 一个字节都不能吞
 
     // 补齐后必须能解出来
     partial.append(full.peek() + half, full.readableBytes() - half);
-    CHECK(DecodeFrame(partial, head, kScene_1, got) == DecodeStatus::kOk);
+    CHECK(DecodeFrame(partial, head, kScene, got) == DecodeStatus::kOk);
     CHECK(got == body);
 }
 
@@ -100,13 +111,13 @@ TEST(ProtoResyncGarbageAndWrongDst)
     out.append("\x01\x02\x03\x04\x05", 5);   // 无魔数垃圾
 
     // 一条"发往别的服务"的帧：必须被跳过，不能当成自己的消息处理
-    EncodeFrame(out, MakeHeader(kGatewayMsg, 9, 9, 0, 0, kScene_1, kDB), "OTHER");
+    EncodeFrame(out, MakeHeader(kGatewayMsg, 9, 9, 0, 0, kScene, kDB), "OTHER");
     // 紧跟一条真正发往本服务的帧
-    EncodeFrame(out, MakeHeader(kGatewayMsg, 3, 2, 5, 9, kGateway, kScene_1), "MINE");
+    EncodeFrame(out, MakeHeader(kGatewayMsg, 3, 2, 5, 9, kGateway, kScene), "MINE");
 
     Header head;
     std::string body;
-    CHECK(DecodeFrame(out, head, kScene_1, body) == DecodeStatus::kOk);
+    CHECK(DecodeFrame(out, head, kScene, body) == DecodeStatus::kOk);
     CHECK(body == "MINE");
     CHECK_EQ(head.seq, (uint64_t)5);
 }
@@ -119,7 +130,7 @@ TEST(ProtoIllegalTotalLen)
     // ---- 情况 1：totalLen 小于头长度（旧代码会下溢成约 4GB）----
     {
         Buffer frame;
-        EncodeFrame(frame, MakeHeader(kGatewayMsg, 3, 2, 5, 9, kGateway, kScene_1), body);
+        EncodeFrame(frame, MakeHeader(kGatewayMsg, 3, 2, 5, 9, kGateway, kScene), body);
 
         std::string raw(frame.peek(), frame.readableBytes());
         raw[26] = 0;
@@ -133,7 +144,7 @@ TEST(ProtoIllegalTotalLen)
         Header head;
         std::string got;
         // 伪帧被跳过；剩下的垃圾不足以构成一帧 -> kNeedMore
-        CHECK(DecodeFrame(in, head, kScene_1, got) == DecodeStatus::kNeedMore);
+        CHECK(DecodeFrame(in, head, kScene, got) == DecodeStatus::kNeedMore);
         // 垃圾必须被清掉，不能无界积压
         CHECK(in.readableBytes() <= 1);
     }
@@ -141,7 +152,7 @@ TEST(ProtoIllegalTotalLen)
     // ---- 情况 2：totalLen 超过上限 ----
     {
         Buffer frame;
-        EncodeFrame(frame, MakeHeader(kGatewayMsg, 3, 2, 5, 9, kGateway, kScene_1), body);
+        EncodeFrame(frame, MakeHeader(kGatewayMsg, 3, 2, 5, 9, kGateway, kScene), body);
 
         std::string raw(frame.peek(), frame.readableBytes());
         raw[26] = static_cast<char>(0x01);   // totalLen = 0x01FFFFFF = 33554431 > kMaxMessageSize
@@ -154,7 +165,7 @@ TEST(ProtoIllegalTotalLen)
 
         Header head;
         std::string got;
-        CHECK(DecodeFrame(in, head, kScene_1, got) == DecodeStatus::kNeedMore);
+        CHECK(DecodeFrame(in, head, kScene, got) == DecodeStatus::kNeedMore);
         CHECK(in.readableBytes() <= 1);
     }
 }

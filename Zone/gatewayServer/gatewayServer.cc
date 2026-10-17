@@ -119,7 +119,10 @@ void GatewayServer::LogStats() const
              << " decodeErrors(c/b)=" << st.clientDecodeErrors << "/" << st.backendDecodeErrors
              << " protoMismatch=" << st.protocolMismatch
              << " kicked=" << st.kickedSessions
-             << " timedOutRoutes=" << st.timedOutRoutes;
+             << " timedOutRoutes=" << st.timedOutRoutes
+             << " | sceneFrames(business/online/offline)=" << st.sceneBusinessFramesSent
+             << "/" << st.sceneOnlineFramesSent << "/" << st.sceneOfflineFramesSent
+             << " sceneDeclareSkipped=" << st.sceneBindingDeclareSkipped;
 }
 
 /**

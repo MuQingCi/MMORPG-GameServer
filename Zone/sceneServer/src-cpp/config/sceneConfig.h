@@ -28,7 +28,7 @@ struct SceneConfig
 {
     // ---------------- 场景服本体 ----------------
     uint32_t sceneId = 1;                   // 场景编号（握手时上报网关）
-    uint8_t  serviceId = 8;                 // ServerID::kScene_1
+    uint8_t  serviceId = 8;                 // ServerID::kScene
     uint32_t logicThreadNum = 4;            // 建议 2~4：每个 Lua VM 都加载全套脚本，内存 × N
     std::string luaDir = "./lua_script";
     // 默认相对配置文件目录，不依赖进程工作目录。

@@ -16,8 +16,8 @@
  *   - 连接落地的第一状态是"pending"（只有 connName/连接），**没有任何身份**；
  *   - 只有收到 SYS/kHandshake 且白名单校验通过，才把 serviceId/zoneId/sceneId 绑到这条连接上；
  *   - 绑定前收到的业务帧一律丢弃（否则任何人 connect 上来就能冒充场景服）；
- *   - 同一 serviceId 只保留最新连接（后到者替换），旧连接由调用方关闭 —— 这样
- *     "场景服重启后旧连接还没被 TCP 感知为断开"时不会出现两个同号节点。
+ *   - 场景实例按 serviceId/zoneId/sceneId 区分，每个实例可有多个 channelId；
+ *     同一通道的新连接替换旧连接，sceneIncarnation 变化使旧进程通道失效。
  */
 struct ServiceEndpoint
 {

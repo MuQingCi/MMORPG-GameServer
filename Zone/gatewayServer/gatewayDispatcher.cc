@@ -44,7 +44,7 @@ bool HasMagic(const Buffer* buf, uint16_t magic)
 // 防止后端连接伪造 Chat/Global 推送或未知业务推送。
 bool IsAllowedScenePush(const Header& h, uint8_t serviceId)
 {
-    constexpr uint8_t kSceneService = 8; // ServerID::kScene_1
+    constexpr uint8_t kSceneService = ServerID::kScene;
     constexpr uint16_t kPlayerModule = 3;
     constexpr uint16_t kPlayerPushState = 1;
     constexpr uint16_t kAoiModule = 100;
@@ -121,7 +121,7 @@ void GatewayDispatcher::OnClientClosed(uint64_t sessionId)
 
 void GatewayDispatcher::NotifySceneBinding(const ClientSession& s, bool online)
 {
-    if(!s.authed || s.playerId==0 || s.dstService!=ServerID::kScene_1) return;
+    if(!s.authed || s.playerId==0 || s.dstService!=ServerID::kScene) return;
     // A session without a scene assignment has not sent scene traffic yet.
     // Do not announce it to an arbitrary instance during auth/disconnect.
     if (s.sceneId == 0 || s.sceneConnName.empty()) return;
@@ -131,12 +131,60 @@ void GatewayDispatcher::NotifySceneBinding(const ClientSession& s, bool online)
     if (s.sceneId != 0 && (ep.serviceId != s.dstService || ep.zoneId != cfg_.zoneId ||
         ep.sceneId != s.sceneId || ep.channelId != s.backendChannelId ||
         ep.sceneIncarnation != s.sceneIncarnation)) return;
-    ClientData d{s.playerId,s.sessionId,s.epoch,cfg_.gatewayId,ep.sceneId};
-    Buffer out;
-    EncodeFrame(out,MakeHeader(LinkTypeOf(ep.serviceId),GatewayPlayer::kModule,
-        online ? GatewayPlayer::kOnline : GatewayPlayer::kOffline,0,s.playerId,
-        cfg_.selfServiceId,ep.serviceId),GatewayPlayer::Pack(d));
-    ep.conn->send(&out);
+    QueueSceneSubmission(s, ep, online);
+}
+
+void GatewayDispatcher::QueueSceneSubmission(const ClientSession& s, const ServiceEndpoint& ep,
+                                             bool online, const std::string& businessFrame, uint64_t seq)
+{
+    // 始终排队：同线程 runInLoop 会越过其它 IO 线程已排队的声明/离线。
+    ep.conn->getLoop()->queueInLoop([this, s, ep, online, businessFrame, seq] {
+        ServiceEndpoint current;
+        const bool ready = ep.conn->connected() && services_.GetByChannel(ep.connName, current) &&
+            current.conn == ep.conn && current.serviceId == ep.serviceId && current.zoneId == ep.zoneId &&
+            current.sceneId == ep.sceneId && current.channelId == ep.channelId &&
+            current.sceneIncarnation == ep.sceneIncarnation;
+        const auto submit = [&](bool declareOnline) {
+            if (!ready || !ep.conn->connected()) return false;
+            Buffer out;
+            if (!online || declareOnline)
+            {
+                ClientData d{s.playerId, s.sessionId, s.epoch, cfg_.gatewayId, ep.sceneId};
+                EncodeFrame(out, MakeHeader(LinkTypeOf(ep.serviceId), GatewayPlayer::kModule,
+                    online ? GatewayPlayer::kOnline : GatewayPlayer::kOffline, 0, s.playerId,
+                    cfg_.selfServiceId, ep.serviceId), GatewayPlayer::Pack(d));
+            }
+            out.append(businessFrame.data(), businessFrame.size());
+            if (out.readableBytes() != 0) ep.conn->send(&out);
+            // 同线程 send 已写入内核或本地写缓冲；发送错误会同步断开。
+            // 这不是远端绑定/加载确认。断开的连接不会再被用于业务。
+            if (!ep.conn->connected()) return false;
+            if (!online)
+                sceneOfflineFramesSent_.fetch_add(1, std::memory_order_relaxed);
+            else if (declareOnline)
+                sceneOnlineFramesSent_.fetch_add(1, std::memory_order_relaxed);
+            else
+                sceneBindingDeclareSkipped_.fetch_add(1, std::memory_order_relaxed);
+            if (!businessFrame.empty())
+                sceneBusinessFramesSent_.fetch_add(1, std::memory_order_relaxed);
+            backendFramesSent_.fetch_add((!online || declareOnline ? 1 : 0) +
+                                        (!businessFrame.empty() ? 1 : 0), std::memory_order_relaxed);
+            return true;
+        };
+        const bool accepted = online ? sessions_.SubmitScene(s, submit) : submit(false);
+        if (!accepted && seq != 0)
+        {
+            ReturnRoute route;
+            if (routes_.Take(seq, route))
+            {
+                ClientSession currentSession;
+                if (sessions_.Get(s.sessionId, currentSession) && currentSession.authed &&
+                    currentSession.epoch == s.epoch && currentSession.conn)
+                    RejectClient(currentSession.conn, route.clientRequestId, route.method,
+                                 "scene submission unavailable or stale binding");
+            }
+        }
+    });
 }
 
 void GatewayDispatcher::OnBackendConnected(const TcpConnectionPtr& conn)
@@ -518,7 +566,7 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
 
     ServiceEndpoint ep;
     bool found = false;
-    if (dst == ServerID::kScene_1)
+    if (dst == ServerID::kScene)
     {
         if (s.sceneId != 0)
             found = services_.GetByChannel(s.sceneConnName, ep) && ep.conn &&
@@ -593,16 +641,13 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
     // 转发：src=网关，dst=目标服务，playerId 用**会话绑定的**玩家，seq 换成 internalSeq
     Buffer out;
     std::string backendBody = body;
-    if(dst == ServerID::kScene_1) {
+    if(dst == ServerID::kScene) {
         ClientData d{s.playerId,s.sessionId,s.epoch,cfg_.gatewayId,ep.sceneId};
         if(!GatewayPlayer::Valid(d) || h.module == GatewayPlayer::kModule) {
             routes_.Take(internalSeq,r);
             RejectClient(conn,h.requestId,h.method,"invalid scene binding or reserved gateway route");
             return;
         }
-        // 每个请求前幂等声明当前绑定；后端重新连接后也能重新建立路由。
-        EncodeFrame(out,MakeHeader(LinkTypeOf(dst),GatewayPlayer::kModule,GatewayPlayer::kOnline,
-            0,s.playerId,cfg_.selfServiceId,dst),GatewayPlayer::Pack(d));
         backendBody = GatewayPlayer::Pack(d,body);
     }
     if (dst == ServerID::kChat && h.module == ServiceModule::kChat &&
@@ -624,8 +669,13 @@ void GatewayDispatcher::HandleClientFrame(const TcpConnectionPtr& conn, uint64_t
                 MakeHeader(LinkTypeOf(dst), h.module, h.method, internalSeq, s.playerId,
                            cfg_.selfServiceId, dst),
                  backendBody);
-    ep.conn->send(&out);
-    backendFramesSent_.fetch_add(1, std::memory_order_relaxed);
+    if (dst == ServerID::kScene)
+        QueueSceneSubmission(s, ep, true, std::string(out.peek(), out.readableBytes()), internalSeq);
+    else
+    {
+        ep.conn->send(&out);
+        backendFramesSent_.fetch_add(1, std::memory_order_relaxed);
+    }
 
     LOG_INFO << "relay c->b: session=" << sessionId << " player=" << s.playerId
              << " dst=" << ServerIdName(dst) << " module=" << h.module << " method=" << h.method
@@ -663,7 +713,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         // 两条硬校验：白名单 + 区服一致。二者都不通过就断开，
         // 而不是"注册失败但连接留着"（否则后面每个业务帧都要重复判断）。
         if (!ValidBackendHandshake(hs) || hs.targetGatewayId != cfg_.gatewayId ||
-            (hs.serviceId == ServerID::kScene_1 && hs.channelId >= cfg_.backendChannels))
+            (hs.serviceId == ServerID::kScene && hs.channelId >= cfg_.backendChannels))
         {
             backendFramesDropped_.fetch_add(1, std::memory_order_relaxed);
             conn->forceClose("backend handshake identity mismatch");
@@ -765,7 +815,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         }
         if (!routes_.Take(h.seq, r))
             return;
-        if (!legacyTestRoute && self.serviceId == ServerID::kScene_1 &&
+        if (!legacyTestRoute && self.serviceId == ServerID::kScene &&
             r.backendConnName == conn->name())
         {
             ClientSession current;
@@ -916,6 +966,10 @@ GatewayDispatcher::Stats GatewayDispatcher::Snapshot() const
     st.protocolMismatch     = protocolMismatch_.load(std::memory_order_relaxed);
     st.kickedSessions       = kickedSessions_.load(std::memory_order_relaxed);
     st.timedOutRoutes       = timedOutRoutes_.load(std::memory_order_relaxed);
+    st.sceneBusinessFramesSent = sceneBusinessFramesSent_.load(std::memory_order_relaxed);
+    st.sceneOnlineFramesSent = sceneOnlineFramesSent_.load(std::memory_order_relaxed);
+    st.sceneOfflineFramesSent = sceneOfflineFramesSent_.load(std::memory_order_relaxed);
+    st.sceneBindingDeclareSkipped = sceneBindingDeclareSkipped_.load(std::memory_order_relaxed);
 
     st.clientSessions = sessions_.Size();
     st.backendReady   = services_.ReadyCount();

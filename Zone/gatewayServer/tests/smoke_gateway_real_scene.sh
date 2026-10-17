@@ -161,9 +161,9 @@ echo "OK: 真实场景服已注册，客户端走通 鉴权 -> 请求 -> 回包"
 LOG=$(cat logs/*/gateway.log 2>/dev/null || true)
 fail() { echo "FAIL: $1"; echo "---- gateway log ----"; echo "$LOG"; exit 1; }
 
-echo "$LOG" | grep -q "relay c->b: session=.* player=4242 dst=SCENE_1 module=3 method=2 requestId=2" \
+echo "$LOG" | grep -q "relay c->b: session=.* player=4242 dst=SCENE module=3 method=2 requestId=2" \
     || fail "缺少 客户端->场景服 的转发记录（playerId 必须由网关绑定）"
-echo "$LOG" | grep -q "relay b->c: session=.* from=SCENE_1 module=3 method=2 .* -> requestId=2" \
+echo "$LOG" | grep -q "relay b->c: session=.* from=SCENE module=3 method=2 .* -> requestId=2" \
     || fail "缺少 场景服->客户端 的回程记录"
 grep -q "response ok:" client.out || fail "客户端未收到 Response"
 

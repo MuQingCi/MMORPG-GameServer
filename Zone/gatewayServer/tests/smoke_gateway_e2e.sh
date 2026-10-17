@@ -121,7 +121,7 @@ echo "OK: SIGTERM 后进程已退出"
 LOG=$(cat logs/*/gateway.log 2>/dev/null || true)
 fail() { echo "FAIL: $1"; echo "---- gateway log ----"; echo "$LOG"; exit 1; }
 
-echo "$LOG" | grep -q "backend registered: SCENE_1"   || fail "日志缺少后端注册记录"
+echo "$LOG" | grep -q "backend registered: SCENE"   || fail "日志缺少后端注册记录"
 echo "$LOG" | grep -q "relay c->b:"                   || fail "日志缺少 客户端->后端 转发记录"
 echo "$LOG" | grep -q "relay b->c:"                   || fail "日志缺少 后端->客户端 回程记录"
 echo "$LOG" | grep -q "push b->c:"                    || fail "日志缺少 后端推送记录"

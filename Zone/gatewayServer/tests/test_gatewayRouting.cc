@@ -7,6 +7,42 @@
 #include <cstdint>
 #include <string>
 
+TEST(ClientSessionSceneSubmissionTracksExactBinding)
+{
+    ClientSessionTable t;
+    const auto sid = t.Create(nullptr, ServerID::kScene, 1);
+    uint64_t kicked = 0;
+    CHECK(t.Bind(sid, 123, ServerID::kScene, 2, kicked));
+    CHECK(t.SetSceneBinding(sid, 11, 0, 99, "unique-connection"));
+    ClientSession s;
+    CHECK(t.Get(sid, s));
+    int calls = 0;
+    CHECK(!t.SubmitScene(s, [&](bool online) { ++calls; CHECK(online); return false; }));
+    CHECK(t.SubmitScene(s, [&](bool online) { ++calls; CHECK(online); return true; }));
+    CHECK(t.SubmitScene(s, [&](bool online) { ++calls; CHECK(!online); return true; }));
+    for (int field = 0; field < 6; ++field)
+    {
+        auto stale = s;
+        if (field == 0) ++stale.epoch;
+        if (field == 1) ++stale.playerId;
+        if (field == 2) ++stale.sceneId;
+        if (field == 3) ++stale.backendChannelId;
+        if (field == 4) ++stale.sceneIncarnation;
+        if (field == 5) stale.sceneConnName += "old";
+        CHECK(!t.SubmitScene(stale, [&](bool) { ++calls; return true; }));
+    }
+    CHECK_EQ(calls, 3);
+    CHECK(t.Bind(sid, 123, ServerID::kScene, 3, kicked));
+    CHECK(!t.SubmitScene(s, [&](bool) { ++calls; return true; }));
+    CHECK(t.Get(sid, s));
+    CHECK(t.SubmitScene(s, [&](bool online) { CHECK(online); return true; }));
+    CHECK(t.SetDstService(sid, ServerID::kChat));
+    CHECK(!t.SubmitScene(s, [&](bool) { ++calls; return true; }));
+    CHECK(t.Erase(sid));
+    CHECK(!t.SubmitScene(s, [&](bool) { ++calls; return true; }));
+    CHECK_EQ(calls, 3);
+}
+
 // ---------------------------------------------------------------------------
 // 网关三张表的语义（都在"多客户端复用一条后端连接"这条链路上）：
 //   ClientSessionTable : 会话身份（playerId / epoch / 顶号）
@@ -94,9 +130,9 @@ TEST(ClientSessionKickOldSession)
 TEST(ClientSessionPinsSceneForSessionLifetime)
 {
     ClientSessionTable t;
-    const uint64_t sid = t.Create(nullptr, ServerID::kScene_1, 1000);
+    const uint64_t sid = t.Create(nullptr, ServerID::kScene, 1000);
     uint64_t kicked = 0;
-    CHECK(t.Bind(sid, 7788, ServerID::kScene_1, 1100, kicked));
+    CHECK(t.Bind(sid, 7788, ServerID::kScene, 1100, kicked));
     CHECK(t.SetSceneBinding(sid, 22, 1, 9001, "scene-22-channel-1"));
     CHECK(!t.SetSceneBinding(sid, 23, 1, 9002, "scene-23-channel-1"));
     ClientSession s;

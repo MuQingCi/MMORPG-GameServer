@@ -10,7 +10,7 @@
 
 ### 网关玩家绑定（新增，需网关与场景服同步升级）
 
-- GateFrame v1 的 32 字节头不变；网关发往 `kScene_1` 的玩家消息 body 使用 `base/gatewayPlayer.h` 中的版本化信封。场景服剥离信封后才将玩法载荷交给 Lua，不接受旧的裸 body 玩家请求。
+- GateFrame v1 的 32 字节头不变；网关发往 `kScene` 的玩家消息 body 使用 `base/gatewayPlayer.h` 中的版本化信封。场景服剥离信封后才将玩法载荷交给 Lua，不接受旧的裸 body 玩家请求。
 - 信封为小端：magic(u16=0x4750)、version(u16=1)、playerId(u64)、clientSession(u64)、clientEpoch(u32)、gatewayId(u32)、sceneId(u32)，共 32 字节，随后为原始玩法载荷。
 - 网关专用 module=200，method=1/2 表示 ONLINE/OFFLINE，载荷为空、seq=0。该路由不允许公网客户端指定。ONLINE 表示有效会话绑定，不表示数据加载完成或 AOI 场景准入成功。
 - `NetServer` 独占 `GatewayClientIndex`：网关连接 session -> 多个玩家绑定，另有玩家到连接的反向索引及历史世代。普通请求只校验绑定，不能创建/换绑；离线精确匹配；断链为该连接的全部有效绑定产生逐玩家离线通知。
@@ -21,7 +21,7 @@
 
 网关当前在 Auth、服务绑定时尝试发送 ONLINE，且在**每条场景业务请求之前**发送一次幂等 ONLINE，再发送带信封的业务帧。重复 ONLINE 不清空视野基线、不提升 Actor epoch；不能据此宣称已实现断线重连后的可靠在线集合恢复。
 
-当前限制：gatewayId 必须稳定且区服内唯一；跨网关覆盖拒绝，尚未实现权威接管凭证。网关本地 epoch 重启回绕、后端连接重连后同 epoch 恢复、可靠在线集合对齐尚未实现。网关 TCP send 不承诺离线通知已应用；链路关闭由场景服逐绑定清理兜底，但进程崩溃、连接存活而通知丢失仍需租约/快照。现有后端寻址仍是 serviceId 单实例，不将此次 sceneId 校验误认为多场景路由已经完成。
+当前限制：gatewayId 必须稳定且区服内唯一；跨网关覆盖拒绝，尚未实现权威接管凭证。网关本地 epoch 重启回绕、后端连接重连后同 epoch 恢复、可靠在线集合对齐尚未实现。网关 TCP send 不承诺离线通知已应用；链路关闭由场景服逐绑定清理兜底，但进程崩溃、连接存活而通知丢失仍需租约/快照。网关支持按 sceneId 区分多个场景实例，但会话选定后固定到具体通道，不支持自动迁移或故障接管。
 
 - **面向网关**：主动连接区服共享配置中的网关内网地址，使用 `GateFrame` 握手、收发业务消息；本地直连监听默认关闭。
 - **面向玩法**：按 `(module, method)` 路由 protobuf 请求，在玩家所属的逻辑线程中执行 Lua 处理器并生成响应或推送。
@@ -271,7 +271,7 @@ sequenceDiagram
 
 ## 与 BackendServer 的消息流
 
-场景服本身是网关的后端服务：启动后从 `ZoneServer.gateways` 读取地址，**反向连接网关内网端口**，发送 `GateFrame(module=SYS, method=kHandshake)`。握手体是 `serviceId(u8)+zoneId(u32 小端)+sceneId(u32 小端)`，共 9 B；出站 `srcServiceID` 取 `SceneServer.serviceId`，示例为 `8` (`ServerID::kScene_1`)。网关检查区服 ID 与白名单，注册前不接受业务帧；同服务号重新注册会替换旧连接。
+场景服本身是网关的后端服务：启动后从 `ZoneServer.gateways` 读取地址，**反向连接网关内网端口**，发送 `GateFrame(module=SYS, method=kHandshake)`。握手体是公共 `BackendHandshake` 定义的版本化 27 B 结构，包含服务类型、区服、场景实例、进程世代、目标网关和通道编号。出站 `srcServiceID` 取 `SceneServer.serviceId`，示例为 `8` (`ServerID::kScene`)，表示服务类型而非实例编号。网关检查区服 ID 与白名单，注册前不接受业务帧；不同 sceneId 可并存，同实例同通道重连替换旧连接。
 
 ```text
 SceneServer NetServer -- 握手 GateFrame --> Gateway privateConfig 端口
@@ -279,7 +279,7 @@ Gateway -- 业务 GateFrame(dst=SceneServer.serviceId) --> NetServer
 NetServer -- 响应/推送 GateFrame(dst=ServerID::kGateway) --> Gateway
 ```
 
-网络层处理非阻塞收发、帧解码及缓冲/帧速率限制；当前没有完整的后端心跳或同服务号多实例路由能力。
+网络层处理非阻塞收发、帧解码及缓冲/帧速率限制；支持同服务类型的多场景实例接入，但当前没有完整的后端心跳、自动迁移或故障接管能力。
 
 ### 玩家绑定与断链清理数据流图
 

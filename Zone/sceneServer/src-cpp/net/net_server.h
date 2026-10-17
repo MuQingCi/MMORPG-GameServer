@@ -28,7 +28,7 @@ struct NetConfig
     bool        listenEnable = false;         // 场景服通常不需要监听（反向连网关）
     std::string listenAddr   = "0.0.0.0";
     uint16_t    listenPort   = 12345;
-    uint8_t     serviceId    = ServerID::kScene_1;  // 本服务 id（出站帧 srcServiceID）
+    uint8_t     serviceId    = ServerID::kScene;  // 本服务 id（出站帧 srcServiceID）
     uint32_t    zoneId       = 1;             // 区服 id（握手时上报网关）
     uint32_t    sceneId      = 1;             // 场景 id（握手时上报网关）
     uint64_t    sceneIncarnation = 0;          // 进程世代，启动时生成一次

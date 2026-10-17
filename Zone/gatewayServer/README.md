@@ -219,7 +219,9 @@ Client Request --> 网关组 GateFrame(src=网关, dst=目标服务, seq=interna
 Client <-- ClientFrame <-- 网关回程路由 <-- GateFrame 响应/主动推送 <-- Backend
 ```
 
-握手体为 `serviceId(u8)+zoneId(u32 小端)+sceneId(u32 小端)`，共 9 B；头部整数为大端。未注册后端不能发送业务帧，同号重连替换旧连接。正常响应应沿用请求 `seq/module/method/playerId`；网关会校验已注册连接身份及请求上下文。当前 `sceneId` 只记录，不用于多实例路由，握手成功没有协议层 Ack。
+握手体为版本化的 27 B 结构：`protocolVersion(u16)+serviceId(u8)+zoneId(u32)+sceneId(u32)+sceneIncarnation(u64)+targetGatewayId(u32)+channelId(u32)`，整数为小端；GateFrame 头部整数为大端。未注册后端不能发送业务帧，握手成功没有协议层 Ack。正常响应应沿用请求 `seq/module/method/playerId`；网关会校验已注册连接身份及请求上下文。
+
+`ServerID::kScene=8` 表示场景服务类型，不是第一个场景实例；日志名称为 `SCENE`。不同实例按 `(serviceId, zoneId, sceneId)` 区分，同一实例可配置多个通道。新会话在 `defaultSceneId=0` 时从可用实例中选择，非零时仅选择指定实例；选定后固定到具体通道，不自动迁移或故障接管。同实例同通道重连替换旧连接，进程世代变化使旧进程通道失效。
 
 ### 场景玩家绑定数据流图
 
@@ -232,8 +234,9 @@ flowchart TD
     N -->|ONLINE 200/1；seq=0| B[场景服 NetServer / GatewayClientIndex]
     S --> ACK[AuthAck：只代表网关鉴权成功]
     R[普通场景 Request] --> P[生成当前 ClientData]
-    P -->|同一次发送：先幂等 ONLINE| B
-    P -->|随后发送信封 + 原玩法 body；seq 非零| B
+    P --> T[后端 EventLoop 排队；复核完整会话与连接身份]
+    T -->|仅本绑定首次提交：先 ONLINE| B
+    T -->|发送信封 + 原玩法 body；seq 非零| B
     C[客户端关闭] --> O[NotifySceneBinding OFFLINE；删除会话与路由]
     O -->|OFFLINE 200/2；seq=0；后端可用时| B
     D[BindService 改变目标] --> E[更新目标；旧场景 OFFLINE / 新场景 ONLINE]
@@ -247,10 +250,13 @@ flowchart TD
 注意事项：
 
 - 客户端 session、场景服内部连接 session、Actor epoch 与 clientEpoch 是不同概念。
-- AuthAck 不等待场景 ONLINE 已应用，不表示角色加载或进场成功。每条场景请求前的 ONLINE 是幂等声明，不是可靠在线集合对齐协议。
+- AuthAck 不等待场景 ONLINE 已应用，不表示角色加载或进场成功。首次分配 Scene 后，Online 与首条业务合帧提交；稳定绑定后只发业务帧，仍保留每条业务的 32 B 绑定信封。
+- Online 去重以当前会话的 playerId/sessionId/clientEpoch、Scene/channel/incarnation 和进程内唯一连接名为边界。重新鉴权或服务切换清除声明状态；后端断链不自动迁移、不重放业务，旧声明不能用于新连接。
+- 所有 Scene 提交（含 Offline）统一排入目标后端 EventLoop。Online 与业务在会话表锁内复核并提交；已关闭、已换 epoch 或已换目标的排队业务会取消并清理回程路由。声明标志仅表示已交给本地发送路径，不是远端确认；Scene 生命周期队列和加载失败错误语义保持不变。
+- 网关统计增加 `sceneFrames(business/online/offline)` 和 `sceneDeclareSkipped`，按本地成功提交计数；`backendFramesSent` 包含实际提交的 Scene 生命周期帧。稳定绑定 N 条业务对应 1 帧 Online + N 帧业务，而非 N 组双帧；不能据此推算整体吞吐翻倍。
 - 顶号由新的 ONLINE 更新绑定，旧会话关闭不能笼统描述为必定发送 OFFLINE；场景服根据精确绑定/世代过滤旧通知。
 - 网关发送 OFFLINE 不承诺场景已应用；内部链路关闭时由场景服枚举该连接绑定并逐玩家清理。
-- 目前只针对 `kScene_1=8` 包装绑定信封；网关/场景服须同步升级。多网关 ID 必须稳定且区服内唯一，跨网关权威接管、同 epoch 断线恢复及进程重启后的世代恢复尚未完善。
+- 目前只针对 `kScene=8` 包装绑定信封；网关/场景服须同步升级。多网关 ID 必须稳定且区服内唯一，跨网关权威接管、同 epoch 断线恢复及进程重启后的世代恢复尚未完善。
 
 ## 内部组件
 
