@@ -5,6 +5,7 @@
 #include "service/aoi/aoiPushSink.h"
 #include "service/aoi/aoiReplica.h"
 #include "service/aoi/aoiViewSet.h"
+#include "metrics/aoiDiagnostics.h"
 #include <functional>
 #include <cstddef>
 #include <optional>
@@ -78,6 +79,9 @@ public:
     bool ViewOf(EntityId observer, std::vector<AoiEntity>& out) const;
     AoiServiceStats Stats() const;
     uint64_t tickCount() const { return tickCount_; }
+    
+    void setDiagnostics(AoiDiagnostics* diagnostics) { diagnostics_ = diagnostics; }
+    AoiDiagnostics* diagnostics() const { return diagnostics_; }
 
     std::optional<EntityId> EntityOf(uint64_t playerId) const;
     std::optional<uint64_t> BusinessIdOf(EntityId id) const;
@@ -115,5 +119,6 @@ private:
     uint64_t ownerSeq_ = 0;
     int64_t nextTickTime_ = 0;
     uint64_t tickCount_ = 0;
+    AoiDiagnostics* diagnostics_ = nullptr;
 };
 #endif

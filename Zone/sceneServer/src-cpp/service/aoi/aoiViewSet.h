@@ -109,6 +109,8 @@ public:
 
     // 返回已成功提交到客户端基线的实体状态，仅供所属逻辑线程构造增量。
     bool committedBaseline(EntityId observerId, ViewBaseline& out) const;
+    // 仅限所属线程的借用；不得跨越修改、观察者重置/移除，或可重入回调保留该借用；调用方必须在提交发送之前完成读取
+    const ViewBaseline* borrowCommittedBaseline(EntityId observerId) const;
 
     const std::vector<EntityId> forEachObserver() const;
     bool markNeedResync(EntityId observerId, uint32_t clientEpoch);

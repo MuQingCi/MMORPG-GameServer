@@ -210,7 +210,15 @@ AoiOwnerSnapshot AoiService::BuildOwnerSnapshot() const
 //推送
 AoiPushResult AoiService::pushToClient(const AoiClientPushRequest& request)
 {
-    return sink_.sendToClient(request);
+    AoiDiagnostics::Scope timing(diagnostics_, AoiDiagnostics::Stage::ClientAdmission);
+    const auto result = sink_.sendToClient(request);
+    if (diagnostics_) 
+    {
+        diagnostics_->add(AoiDiagnostics::Counter::Bytes, request.body.size());
+        diagnostics_->add(result == AoiPushResult::kAccepted ? AoiDiagnostics::Counter::Accepted
+                                                          : AoiDiagnostics::Counter::Rejected);
+    }
+    return result;
 }
 
 AoiWorkerPublishResult AoiService::pushToWorkers(const AoiWorkerPublishRequest& request)
@@ -287,7 +295,7 @@ AoiViewSet& AoiService::views()
 bool AoiService::ViewOf(EntityId observer, std::vector<AoiEntity>& out) const
 {
     out.clear();
-    return replica_.getVisibleEntity(observer, out);
+    return replica_.getVisibleEntity(observer, out, false, diagnostics_);
 }
 
 AoiServiceStats AoiService::Stats() const
@@ -406,6 +414,7 @@ void AoiService::FlushRemoteMoves()
 
 void AoiService::RetryPublishes()
 {
+    AoiDiagnostics::Scope timing(diagnostics_, AoiDiagnostics::Stage::RemotePublish);
     if(!hooks_.encodeEvent) 
         return;
     for(auto it = pendingPublishes_.begin(); it != pendingPublishes_.end();) 
@@ -444,6 +453,8 @@ void AoiService::ProcessObservers()
         if(!dirtyObservers_.contains(observer) && !viewSet_.hasPending(observer) &&
            !viewSet_.needResync(observer)) 
             continue;
+        AoiDiagnostics::Scope timing(diagnostics_, AoiDiagnostics::Stage::ObserverPass);
+        if (diagnostics_) diagnostics_->add(AoiDiagnostics::Counter::Observers);
         if(hooks_.processObserver(*this, observer)) 
             dirtyObservers_.erase(observer);
     }

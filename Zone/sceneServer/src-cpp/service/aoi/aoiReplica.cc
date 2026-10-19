@@ -120,24 +120,34 @@ void AoiReplica::removeWatcher(uint64_t observerId, uint32_t cell)
 
 //------------------查询相关------------------
 //获取该观察者可以看见的所有实例Id数组
-bool AoiReplica::getVisibleEntity(EntityId observerId, std::vector<AoiEntity>& out, bool includeSelf) const
+bool AoiReplica::getVisibleEntity(EntityId observerId, std::vector<AoiEntity>& out, bool includeSelf,
+                                  AoiDiagnostics* diagnostics) const
 {
+    AoiDiagnostics::Scope timing(diagnostics, AoiDiagnostics::Stage::Query);
     out.clear();
     auto obEntPtr = findById(observerId);
     if(obEntPtr == nullptr)
         return false;
     std::unordered_set<EntityId> seen;
     std::vector<uint32_t> watchCellIdx = grid_->getWatchCellIdx(obEntPtr->x, obEntPtr->y);
+    uint64_t candidates = 0;
     for(auto idx : watchCellIdx)
     {
         for(auto eId : grid_->entities(idx))
         {
+            ++candidates;
             if((!includeSelf && eId == observerId) || !seen.insert(eId).second)
                 continue;
             const auto ent = ents_.find(eId);
             if(ent != ents_.end() && ent->second.cellIdx == idx)
                 out.push_back(ent->second);
         }
+    }
+    if (diagnostics) 
+    {
+        diagnostics->add(AoiDiagnostics::Counter::Cells, watchCellIdx.size());
+        diagnostics->add(AoiDiagnostics::Counter::Candidates, candidates);
+        diagnostics->add(AoiDiagnostics::Counter::Visible, out.size());
     }
     return true;
 }
@@ -334,7 +344,6 @@ void AoiReplica::onLocalEntry(const AoiEvent& ev, uint32_t cellIdx, std::unorder
         auto& ent = it->second;
         //先移除旧实例的所有关注格
         auto oldWatch = grid_->getWatchCellIdx(ent.x, ent.y);
-        //TODO 需约定该步骤是否已经清除自身在自身格子的观察ID
         for(auto idx : oldWatch)
             grid_->removeWatcher(ev.eId, idx);
         grid_->removeEntity(ent.entityId, ent.cellIdx);
@@ -348,7 +357,6 @@ void AoiReplica::onLocalEntry(const AoiEvent& ev, uint32_t cellIdx, std::unorder
     }
     //将实例ID添加到实例关注格watcher
     auto cellVec = grid_->getWatchCellIdx(ev.target_x, ev.target_y);
-    //TODO 若addWatcher包含自身格子则不需要新增，若不包含则还需要手动添加
     for(auto cellIdx : cellVec)
         grid_->addWatcher(ev.eId, cellIdx);
     //注册实例
@@ -358,18 +366,11 @@ void AoiReplica::onLocalEntry(const AoiEvent& ev, uint32_t cellIdx, std::unorder
     auto& watcherVec = grid_->watchers(cellIdx);
     for(auto wIdx : watcherVec)
         dirtyObservers.insert(wIdx);
-
-    //TODO 投递事件到其他逻辑线程
-
 }
 
 //本地移动-本地对象即观察者，需将旧Cell中本Id从watchers移除并在所有新watcheCell中添加本Id
 void AoiReplica::onLocalMove(const AoiEvent& ev, uint32_t cellIdx, std::unordered_set<uint64_t>& dirtyObservers)
 {
-    //!明确未知Move直接拒绝，只放行已保存副本的实例Move
-
-    //TODO 此处可获得旧观察者ID,新观察者ID,若需要发送消息可以在此处得到对应EID
-
     //1.先移除旧格事件
     auto entIt = ents_.find(ev.eId);
     if(entIt == ents_.end())
@@ -412,7 +413,6 @@ void AoiReplica::onLocalMove(const AoiEvent& ev, uint32_t cellIdx, std::unordere
         grid_->addWatcher(ev.eId, idx);
     
     //3.更新实例ID
-    //TODO 待核验初始化/更新是否有缺漏
     auto& ent = entIt->second;
     updateEntity(ent, ev, cellIdx);
 
@@ -450,7 +450,6 @@ void AoiReplica::onLocalLeave(const AoiEvent& ev, uint32_t cellIdx, std::unorder
     auto oldWatch = grid_->getWatchCellIdx(it->second.x, it->second.y);
 
     //移除旧位置的观察格子
-    //TODO 需约定该步骤是否已经清除自身在自身格子的观察ID
     for(auto idx : oldWatch)
         grid_->removeWatcher(ev.eId, idx);
 
@@ -501,9 +500,7 @@ void AoiReplica::onRemoteEntry(const AoiEvent& ev, uint32_t cellIdx, std::unorde
 
 void AoiReplica::onRemoteMove(const AoiEvent& ev, uint32_t cellIdx, std::unordered_set<uint64_t>& dirtyObservers)
 {
-    //TODO 此处可获得旧观察者ID,新观察者ID,若需要发送消息可以在此处得到对应EID
     //更新新旧格子内部实例，保存新旧格子的观察者
-
     auto entIt = ents_.find(ev.eId);
     if(entIt == ents_.end())
         return;
@@ -535,7 +532,6 @@ void AoiReplica::onRemoteMove(const AoiEvent& ev, uint32_t cellIdx, std::unorder
     }
     
     //2.更新实例ID
-    //TODO 待核验初始化/更新是否有缺漏
     auto& ent = entIt->second;
     updateEntity(ent, ev, cellIdx);
 

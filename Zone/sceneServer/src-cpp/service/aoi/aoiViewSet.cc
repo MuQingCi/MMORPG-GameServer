@@ -251,6 +251,12 @@ bool AoiViewSet::committedBaseline(EntityId observerId, ViewBaseline& out) const
     return true;
 }
 
+const ViewBaseline* AoiViewSet::borrowCommittedBaseline(EntityId observerId) const
+{
+    const auto it=views_.find(observerId);
+    return it==views_.end() ? nullptr : &it->second.committedState_;
+}
+
 const std::vector<EntityId> AoiViewSet::forEachObserver() const
 {
     size_t sizew = views_.size();

@@ -4,6 +4,7 @@
 #include "service/aoi/aoiGrid.h"
 #include "service/aoi/aoiTypes.h"
 #include "config/aoiConfig.h"
+#include "metrics/aoiDiagnostics.h"
 
 #include <cstdint>
 #include <memory>
@@ -31,7 +32,8 @@ public:
     void addWatcher(uint64_t observerId, uint32_t cell);
     void removeWatcher(uint64_t observerId, uint32_t cell);
 
-    bool getVisibleEntity(EntityId observerId, std::vector<AoiEntity>& out, bool includeSelf = false) const;
+    bool getVisibleEntity(EntityId observerId, std::vector<AoiEntity>& out, bool includeSelf = false,
+                          AoiDiagnostics* diagnostics = nullptr) const;
 
     //获取格子索引对应的视野格
     const AoiCell& cell(uint32_t cellIdx) const;
