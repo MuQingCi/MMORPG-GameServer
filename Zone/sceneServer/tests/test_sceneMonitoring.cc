@@ -45,6 +45,19 @@ TEST(MonitoringScheduleSkipsMissedDeadlinesWithoutInventingSamples)
     CHECK_EQ(normal.take(4500000).missedMetrics, 2u);
 }
 
+TEST(MonitoringBusyOnlyDrainsWithoutEnablingFullDiagnostics)
+{
+    MonitoringFiles files; SceneMetrics metrics(1); MsgBus bus(1);
+    bus.enableBusyDiagnostics();
+    SceneMonitoringService service(metrics,bus,files.path()); CHECK(service.prepare());
+    Msg m; m.head.seq=123;
+    bus.busyDiagnostics()->record(0,BusyDiagnostics::Reason::Direct,100,m,0,0,0,256,1048576);
+    service.sampleDue(1000000);
+    CHECK(readFile(files.path()+".busy.jsonl").find("\"seq\":123")!=std::string::npos);
+    CHECK(!std::filesystem::exists(files.path()+".queues.jsonl"));
+    CHECK(service.finish());
+}
+
 TEST(MonitoringFastSamplesAndSnapshotReadsPreserveMetricsWindow)
 {
     MonitoringFiles files;
@@ -94,13 +107,13 @@ TEST(MonitoringMetricsWriteFailureDoesNotStopDiagnosticCollection)
     bus.enableDiagnostics();
     SceneMonitoringService service(metrics, bus, files.path());
     CHECK(service.prepare());
-    std::filesystem::create_directory(files.path()); // rename cannot replace a directory
+    std::filesystem::create_directory(files.path()); // rename 不能替换目录
     service.sampleDue(1000000);
     CHECK(service.status().metricsWriteFailed);
     CHECK(!service.status().diagnosticWriteFailed);
     CHECK_EQ(service.status().diagnosticSamples, 1u);
     CHECK(readFile(files.path() + ".queues.jsonl").find("\"fullSnapshot\":true") != std::string::npos);
-    CHECK(service.finish()); // Preserve old semantics: metrics write failure is not a drain failure.
+    CHECK(service.finish()); // 保留原有语义：指标写入失败不等于排空失败。
 }
 
 TEST(MonitoringDiagnosticFailureIsStickyAndMetricsContinue)
@@ -182,7 +195,7 @@ TEST(MonitoringMemoryOnlyLifecycleDoesNotEnableDiagnosticRecorder)
         service.stopPeriodic();
         CHECK_EQ(service.status().diagnosticSamples, 0u);
         CHECK_EQ(service.snapshot().sampleSequence, 1u);
-    } // Destructor joins but does not consume a final business window.
+    } // 析构函数汇合线程，但不采集最终业务窗口。
     metrics.worker(0).recordHandlerDuration(42);
     CHECK_EQ(metrics.worker(0).collectWindow().handlerMaxUs, 42u);
 }

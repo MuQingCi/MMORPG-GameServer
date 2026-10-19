@@ -46,6 +46,30 @@ TEST(AoiViewSnapshotAllPartsRequiredAndFrozenBaseline)
     CHECK(!views.references(99));
 }
 
+TEST(AoiViewBorrowedBaselineIsReadOnlyAndTracksCommittedState)
+{
+    AoiViewSet views;
+    CHECK(views.borrowCommittedBaseline(1) == nullptr);
+    CHECK(views.registryObserver(1,10));
+    const auto* baseline=views.borrowCommittedBaseline(1);
+    CHECK(baseline != nullptr);
+    CHECK(baseline->empty());
+    auto snapshot=views.beginSnapshot(1,ViewBaseline{{2,State(1,5)}},1);
+    CHECK(snapshot.has_value());
+    CHECK(views.markSnapshotPartAccepted(*snapshot,0));
+    CHECK(views.commitSnapshot(*snapshot));
+    baseline=views.borrowCommittedBaseline(1);
+    CHECK_EQ(baseline->at(2).spatialVersion,5u);
+    auto token=views.prepareSend(1);
+    CHECK(token.has_value());
+    CHECK(views.commitAccepted(1,*token,{{AoiMsgKind::kMove,2,State(1,6)}}));
+    CHECK_EQ(views.borrowCommittedBaseline(1)->at(2).spatialVersion,6u);
+    CHECK(views.resetObserver(1,10,11));
+    CHECK(views.borrowCommittedBaseline(1)->empty());
+    CHECK(views.removeObserver(1,11));
+    CHECK(views.borrowCommittedBaseline(1) == nullptr);
+}
+
 TEST(AoiViewSnapshotRevisionSessionAndAbortGuards)
 {
     AoiViewSet views;

@@ -17,16 +17,26 @@ SceneServer:
     scanIdleMs: 10000       # 空闲玩家扫描间隔（ms）
 
     net:
+        # 普通待处理任务按工作线程设限；生命周期任务保留，不设硬上限。
+        pendingBusinessMaxTasks: 256
+        pendingBusinessMaxBytes: 1048576
+        pendingBusinessTimeoutMs: 500
+        pendingPerWorkerAttempts: 32
+        pendingGlobalAttempts: 128
+        pendingRetryIntervalMs: 10
         listenEnable: false  # 场景服通常反向连网关；本地联调/工具需要监听时打开
         listenAddr: 0.0.0.0 # 不要绑 127.0.0.1：网关在别的机器/容器里
         listenPort: 12345
         maxReadBufferBytes: 1048576    # 单连接读缓冲上限（防对端狂发把内存吃光）
         maxWriteBufferBytes: 4194304   # 单连接写缓冲上限（防慢客户端吃内存）
-        maxFramesPerSec: 1000          # 单连接帧速率上限（防刷包）
-        maxDecodeErrors: 64            # 累计协议错误上限，超过断开连接
+        maxFramesPerSec: 10000  #1000          # 单连接帧速率上限（防刷包）
+        maxDecodeErrors: 200   #64            # 累计协议错误上限，超过断开连接
 
     timerTickMs: 50         # 时间轮步长 = 定时器精度
     timerWheelSlots: 256    # 槽数：覆盖范围 = 256 × 50ms = 12.8s
+
+    db:
+        activeIndex: true     #是否开启活跃索引来优化dbtask的扫描耗时
 
     aoi:                      #当前采用九宫格
         tickMs: 50            #tick周期（Ms）

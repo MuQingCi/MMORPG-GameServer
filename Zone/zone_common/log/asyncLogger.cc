@@ -20,8 +20,7 @@ void AsyncLogger::start()
 void AsyncLogger::stop()
 {
     {
-        // Change the predicate under the same mutex as wait, preventing a
-        // notification from being lost between the predicate check and sleep.
+        // 在与等待操作相同的互斥锁下修改谓词，防止在谓词检查与进入休眠之间丢失通知
         std::lock_guard<std::mutex> lock(mutex_);
         if(!running_) return;
         running_ = false;
@@ -35,15 +34,13 @@ void AsyncLogger::stop()
 
 void AsyncLogger::append(const char* data, size_t len)
 {
-    // 必须加锁：append 会被任意业务线程调用，而 buffers_/currentBuffer_
-    // 以及 Buffer 本身都不是线程安全的（旧实现无锁 -> 多线程下必然踩数据）
+    // 必须加锁：append 会被任意业务线程调用，而 buffers_/currentBuffer_以及 Buffer 本身都不是线程安全的（旧实现无锁 -> 多线程下必然踩数据）
     std::lock_guard<std::mutex> lock(mutex_);
 
     if(currentBuffer_->writeableBytes() > len)
     {
         currentBuffer_->append(data, len);
-        // The wait predicate also checks currentBuffer_: notification alone
-        // cannot wake a predicate wait while all completed buffers are empty.
+        // 等待谓词也检查 currentBuffer_：所有已完成缓冲区为空时，仅发送通知无法使带谓词的等待结束
         cond_.notify_one();
         return;
     }
@@ -105,7 +102,7 @@ void AsyncLogger::threadFunc()
                 buffersToWrite.pop_back();
             }
         }
-        // All buffers in this batch are consumed; retain only the two spares.
+        // 本批缓冲区已全部消费，只保留两个备用缓冲区
         buffersToWrite.clear();
     }
 }

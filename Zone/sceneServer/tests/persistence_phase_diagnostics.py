@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit bounded original-load diagnostics; no phase interventions or automatic retries."""
+"""显式、有界的原负载诊断，不干预阶段，不自动重试。"""
 import argparse
 import hashlib
 import json
@@ -87,7 +87,7 @@ def main(argv=None):
             result['passed']=True
         except Exception as error:
             result['failure']=str(error)
-            # Keep partial summaries where possible, without concealing the original failure.
+            # 尽可能保留部分汇总，但不得掩盖原始失败。
             try:
                 result['scenes']=analyze_run(path,require_complete=False)
             except Exception as analysis_error:

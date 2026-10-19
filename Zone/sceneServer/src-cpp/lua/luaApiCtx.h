@@ -29,13 +29,13 @@ struct TimerOp;
  *   - env        : 本线程的 LuaEnv（回调登记、定时器登记）
  *
  * currentPlayerId / currentSession / currentEpoch 由 DispatchC2S 在调用 Lua 前写入，
- * 供 net.send / db.* 自动带上"我是谁"，避免脚本自己传错身份。
+ * 供 net.send / db.* 自动带上"我是谁"，避免脚本自己传错身份
  */
 struct LuaApiCtx
 {
     LuaEnv*        env = nullptr;
     MsgBus*        bus = nullptr;
-    std::function<bool(Msg)> submitDbTask; // Owner-thread registration before dispatch.
+    std::function<bool(Msg)> submitDbTask; // 在派发前由所属线程注册
     PlayerManager* players = nullptr;
     PlayerService* playerService = nullptr; // 进场/移动/离场的权威变更与 AOI 通知收口
     ITimerService* timer = nullptr;

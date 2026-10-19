@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline load/recovery report; never controls execution or alters evidence."""
+"""离线负载/恢复报告，绝不控制执行或改变证据。"""
 import argparse
 import json
 import pathlib
@@ -13,7 +13,7 @@ def analyze_samples(rows, duration):
         for key, value in row.items():
             if re.fullmatch(r'scene\d+_worker\d+_queue', key):
                 peaks[key] = max(peaks.get(key, 0), value)
-        # Missing/invalid measurements cannot prove recovery.
+        # 测量缺失或无效不能证明已经恢复。
         required = ['client_in_flight', 'gateway_pendingRoutes']
         required += [f'scene{s}_worker{w}_queue' for s in (0, 1) for w in range(4)]
         required += [f'scene{s}_netQueue' for s in (0, 1)]
@@ -77,8 +77,8 @@ def report_batch(path):
         verification = artifact/'run'/'persistence-verification.json'
         row['persistenceVerification'] = json.loads(verification.read_text()) if verification.exists() else None
         row['recoveryServiceSnapshots'] = read_jsonl(artifact/'run'/'recovery.jsonl')
-        # Closed-loop underdelivery may be server response backpressure OR generator
-        # saturation. Do not infer either cause solely from configured/actual RPS.
+        # 闭环负载未达目标可能源于服务端响应背压，也可能源于负载生成器
+        # 饱和；不能仅凭配置 RPS 和实际 RPS 判断原因。
         row['capacityAttribution'] = 'same-host closed-loop; generator limitation not excluded'
         runs.append(row)
     return dict(evidence=str(path), runs=runs)

@@ -12,7 +12,7 @@
 
 class MsgBus;
 
-// Pure deadline arithmetic, independently testable without sleeping or running a server.
+// 纯截止时间计算，无需休眠或启动服务器即可独立测试。
 class MonitoringSchedule
 {
 public:
@@ -39,8 +39,8 @@ struct SceneMonitoringStatus
     uint64_t maxMetricsTaskUs = 0, maxDiagnosticTaskUs = 0;
 };
 
-// Borrows recorders: they must outlive this service. Lifecycle methods have one owner.
-// Business threads only update recorders; external readers use snapshot()/status().
+// 借用记录器，其生命周期必须长于本服务；生命周期方法由单一所有者调用。
+// 业务线程只更新记录器；外部读取方使用 snapshot()/status()。
 class SceneMonitoringService
 {
 public:
@@ -52,11 +52,11 @@ public:
     bool prepare();
     bool start();
     void stopPeriodic();
-    // Call after business producers/consumers stop. Idempotent; destructor does not finalize.
+    // 业务生产者/消费者停止后调用；该方法幂等，析构函数不执行最终采集。
     bool finish();
     SceneMetricsSnapshot snapshot() const;
     SceneMonitoringStatus status() const;
-    // Deterministic scheduler entry; lifecycle owner/tests only, never concurrently with start().
+    // 确定性的调度入口；仅供生命周期所有者或测试使用，不得与 start() 并发调用。
     void sampleDue(uint64_t nowUs);
 
 private:
@@ -72,6 +72,7 @@ private:
     MetricsSampler sampler_;
     std::unique_ptr<MonitoringSchedule> schedule_;
     std::ofstream diagnosticOutput_;
+    std::ofstream busyOutput_;
     uint64_t startUs_ = 0, previousDiagnosticUs_ = 0;
     bool prepared_ = false, finished_ = false, finalSucceeded_ = true;
     bool diagnostics_ = false;

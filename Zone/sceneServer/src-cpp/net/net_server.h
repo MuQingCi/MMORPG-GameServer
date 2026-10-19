@@ -5,10 +5,12 @@
 #include "common/msg.h"
 #include "common/msgBus.h"
 #include "base/proto.h"
+#include "net/workerPendingTasks.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <queue>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -38,12 +40,13 @@ struct NetConfig
     size_t   maxWriteBufferBytes = 4 * 1024 * 1024;
     uint32_t maxFramesPerSec     = 1000;
     uint32_t maxDecodeErrors     = 64;
+    WorkerPendingTasks::Limits pending;
 };
 
 /**
  * @brief 需要反向连接的对端（网关集群）
  *
- * 设计文档 3.1.3 修正方向：场景服启动时**主动**连接网关集群（可连多个做冗余），
+ * 场景服启动时**主动**连接网关集群（可连多个做冗余），
  * 而不是等网关拿连接池来连。理由：响应无法与请求匹配、回程地址无法表达、
  * 应用层重试对非幂等请求（释放技能）危险。
  */
@@ -59,11 +62,10 @@ struct PeerConfig
 /**
  * @brief 场景服网络线程（单线程 epoll + ET）
  *
- * 职责边界（非常重要，越界就会产生数据竞争）：
+ * 职责边界（越界就会产生数据竞争）：
  *   - 独占持有：fd、读/写缓冲、半包重组、会话->worker 亲和表；
- *   - 对外只通过 MsgBus 收发 Msg：其它线程**不允许**碰 Conn / fd / Buffer；
- *   - 出站消息的传输层字段（src/dst/链路类型/重试标记）由本层补齐，
- *     业务层只提供 Module/Method/seq/playerId/body。
+ *   - 对外只通过 MsgBus 收发 Msg：其它线程 不允许 碰 Conn / fd / Buffer；
+ *   - 出站消息的传输层字段（src/dst/链路类型/重试标记）由本层补齐，业务层只提供 Module/Method/seq/playerId/body
  *
  * 两条投递路径：
  *   出站：逻辑线程 MsgBus::sendToNet(MSGTYPE_SEND) -> 唤醒 eventfd -> 本线程编码落帧
@@ -85,6 +87,7 @@ public:
     bool connectTo(const PeerConfig& peer);
 
 private:
+    friend struct NetServerTestPeer;
     struct Conn
     {
         int      fd = -1;
@@ -125,6 +128,8 @@ private:
     bool registerConn(Conn&& conn, uint32_t events);
     MsgBus::WorkerId workerForSession(uint64_t session, bool assignIfMissing, uint64_t playerId);
 
+    void sendRetTip(const Msg& request, int32_t code, const char* text);
+
     MsgBus* m_bus_ = nullptr;
     NetConfig cfg_;
 
@@ -140,9 +145,14 @@ private:
     // 以下成员只允许网络线程访问
     std::unordered_map<uint64_t, Conn> conns_;
     GatewayClientIndex clients_;
-    std::vector<Msg> pendingClientNotifications_;
+
+    WorkerPendingTasks pendingTasks_;
+    void submitPlayerTask(const Msg& message, bool lifecycle);
+    uint64_t nextPendingWarningUs_=0;
     void retryClientNotifications();
     std::unordered_map<uint64_t, MsgBus::WorkerId> sessionWorker_;
+    std::unordered_map<uint32_t, std::vector<Msg>> pendingLivecycle_;
+    const size_t kMaxPendingTask = 1024;
 };
 
 #endif

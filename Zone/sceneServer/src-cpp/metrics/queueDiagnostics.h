@@ -7,8 +7,10 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#include "metrics/workDiagnostics.h"
+#include "metrics/aoiDiagnostics.h"
 
-// Test-only diagnostics. No network/persistence representation.
+// 仅供测试的诊断数据，不定义网络或持久化表示。
 class QueueDiagnostics {
 public:
     static uint64_t nowUs() {
@@ -35,6 +37,8 @@ public:
         auto& c=*channels_.at(channel); std::lock_guard<std::mutex> lock(c.mutex); return c.admissions;
     }
     std::atomic<bool> writeFailed{false};
+    WorkDiagnostics& work(size_t channel) { return channels_.at(channel)->work; }
+    AoiDiagnostics& aoi(size_t channel) { return channels_.at(channel)->aoi; }
     void dequeued(uint32_t worker,size_t category,uint64_t begin,uint64_t end) {
         auto& c=*channels_.at(worker);
         std::lock_guard<std::mutex> lock(c.mutex);
@@ -63,8 +67,10 @@ public:
         std::vector<std::array<uint64_t, 5>> admissions;
         std::vector<Event> events;
         uint64_t droppedEvents = 0;
+        std::vector<WorkDiagnostics::Snapshot> work;
+        std::vector<AoiDiagnostics::Snapshot> aoi;
     };
-    // Cumulative counters; only a full collection drains the bounded event buffers.
+    // 累计计数器；只有完整采集才会排空有界事件缓冲区。
     Snapshot collect(uint64_t now, const std::vector<size_t>& depths, size_t net, bool full = true) {
         Snapshot snapshot;
         snapshot.monotonicUs = now;
@@ -83,6 +89,8 @@ public:
                 std::lock_guard<std::mutex> lock(c.mutex);
                 snapshot.waits.push_back(c.waits);
                 snapshot.admissions.push_back(c.admissions);
+                snapshot.work.push_back(c.work.snapshot());
+                snapshot.aoi.push_back(c.aoi.snapshot());
                 events.swap(c.events);
                 snapshot.droppedEvents += c.dropped;
             }
@@ -90,14 +98,16 @@ public:
         }
         return snapshot;
     }
-    // Compatibility wrapper; serialization happens after all channel locks are released.
+    // 兼容包装；所有通道锁释放后才进行序列化。
     std::string json(uint64_t now, const std::vector<size_t>& depths, size_t net, bool full = true);
 
 private:
     struct Channel {
+        WorkDiagnostics work;
+        AoiDiagnostics aoi;
         std::mutex mutex;
         std::array<Wait,4> waits{};
-        std::array<uint64_t,5> admissions{}; // attempt, accepted, backpressure, invalid target, invalid message
+        std::array<uint64_t,5> admissions{}; // 尝试、接纳、背压、无效目标、无效消息
         std::vector<Event> events;
         uint64_t dropped=0;
     };

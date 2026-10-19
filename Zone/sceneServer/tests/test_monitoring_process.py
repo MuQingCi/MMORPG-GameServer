@@ -1,6 +1,6 @@
-"""Opt-in real-process monitoring checks; never connects to a database.
+"""按需启用的真实进程监控检查，绝不连接数据库。
 
-Set SCENE_MONITORING_BINARY to the absolute sceneServer executable path.
+将 SCENE_MONITORING_BINARY 设置为 sceneServer 可执行文件的绝对路径。
 """
 import json
 import os

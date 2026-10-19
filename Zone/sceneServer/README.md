@@ -1,10 +1,13 @@
 # 场景服务器（sceneServer）
 
+> 同步日期：2026-10-19。本文按当前工作区维护，不代表已提交版本；`docs/*`、`LoginServer/` 和指定构建目录受根 `.gitignore` 忽略。本地证据链接不保证随仓库检出提供，历史测试不等于本轮重跑。
+
 ## 约定
 - 场景服是内部服务，不直接接收客户端 `ClientFrame`。默认主动连接网关，`ConnNew/ConnClose` 表示内部 TCP 链路事件，不能等同于某个玩家上下线。
 - 玩家上线/下线由网关版本化绑定信封表达；网络层校验后通过消息总线投递到玩家所属逻辑 worker。普通玩法请求只能使用已有绑定，不能隐式创建 Player。
-- 当前入站玩法为进场、移动、示例路径和退出；战斗与完整客户端视野同步尚未实现。
-- 下文 Mermaid 图展示当前数据流。实线表示已接通链路；标注“未绑定”的虚线表示已有接口但尚未接通的客户端视野处理，不代表功能已经完成。
+- 当前入站玩法为进场、移动、示例路径和退出；已接入 AOI 观察者差集/全量视野推送，战斗尚未实现。
+- 客户端 `ViewResyncReq` 已登记入站路由，由所属 worker 标记视野重同步；它与跨 worker owner 快照恢复不是同一协议。
+- 下文 Mermaid 图展示当前数据流。AOI 推送进入本地发送队列不等于客户端收到，也不表示具备可靠送达或跨进程场景迁移能力。
 
 ## 内部功能
 
@@ -14,12 +17,12 @@
 - 信封为小端：magic(u16=0x4750)、version(u16=1)、playerId(u64)、clientSession(u64)、clientEpoch(u32)、gatewayId(u32)、sceneId(u32)，共 32 字节，随后为原始玩法载荷。
 - 网关专用 module=200，method=1/2 表示 ONLINE/OFFLINE，载荷为空、seq=0。该路由不允许公网客户端指定。ONLINE 表示有效会话绑定，不表示数据加载完成或 AOI 场景准入成功。
 - `NetServer` 独占 `GatewayClientIndex`：网关连接 session -> 多个玩家绑定，另有玩家到连接的反向索引及历史世代。普通请求只校验绑定，不能创建/换绑；离线精确匹配；断链为该连接的全部有效绑定产生逐玩家离线通知。
-- 生命周期向 worker 投递失败会排队按顺序重试；积压期间普通玩法请求可被丢弃，不自动重放非幂等业务。待补队列及历史世代目前尚无容量/租约回收策略，正式部署前需增加预算和告警。
+- 生命周期向 worker 投递失败会排队按顺序重试；普通业务使用有条数/字节/期限预算的积压，拒绝或过期时按协议返回 busy/timeout，不自动重放非幂等业务。生命周期积压及历史身份仍需容量/租约治理，不能宣称全系统内存有界。
 - `onNetMsg()` 先处理网关绑定通知。只有 ONLINE 创建/换绑 Player，普通合法玩法路由也不能隐式创建 Actor。Player 保存当前 ClientData；`Player::session()` 仍是场景服网络连接，不是客户端 session。`clientEpoch` 与 Actor epoch 分开使用。
 - `ConnClose` 仅处理内部链路日志，不再删除某个“最后出现的玩家”。当前断链策略为该连接绑定的玩家全部下线；业务需要断线保留/租约等待时应调整此策略。
 - 登录业务须在数据加载与准入成功后调用 `player.enter_scene`；绑定鉴权不自动进入 AOI。进场后使用已验证的 clientEpoch 注册观察者。网络层不读取 Player 或 AOI。
 
-网关当前在 Auth、服务绑定时尝试发送 ONLINE，且在**每条场景业务请求之前**发送一次幂等 ONLINE，再发送带信封的业务帧。重复 ONLINE 不清空视野基线、不提升 Actor epoch；不能据此宣称已实现断线重连后的可靠在线集合恢复。
+网关按实际场景通道进行 ONLINE 声明，首次声明可与首条业务合帧提交；稳定绑定后的业务只携带绑定信封，不再每次重复 ONLINE。重复 ONLINE 不清空视野基线、不提升 Actor epoch；声明成功只表示本地提交，不证明断线重连后的可靠在线集合恢复。
 
 当前限制：gatewayId 必须稳定且区服内唯一；跨网关覆盖拒绝，尚未实现权威接管凭证。网关本地 epoch 重启回绕、后端连接重连后同 epoch 恢复、可靠在线集合对齐尚未实现。网关 TCP send 不承诺离线通知已应用；链路关闭由场景服逐绑定清理兜底，但进程崩溃、连接存活而通知丢失仍需租约/快照。网关支持按 sceneId 区分多个场景实例，但会话选定后固定到具体通道，不支持自动迁移或故障接管。
 
@@ -187,7 +190,7 @@ sequenceDiagram
 | `3/5` | `gs.LogoutReq` → `gs.LogoutAck` | C++ 退出处理 |
 | `200/1`、`200/2` | ONLINE、OFFLINE，无业务载荷，`seq=0` | 网关专用生命周期处理，不开放给客户端 |
 
-另有仅出站的 `gs.SCPushState`、`gs.RetTip` 路由；登记出站类型不等于完整视野推送已经实现。
+另有仅出站的 `gs.SCPushState`、`gs.RetTip` 路由；AOI 视野消息以当前 Protobuf 和协议文档为准，路由登记或发送入队不等于客户端已收到。
 
 ### 场景服将结果返回给客户端
 
@@ -268,6 +271,16 @@ sequenceDiagram
 ### 能力边界
 
 当前可靠性范围是**单进程内的有界内存任务登记、队列背压重试、DB 结果回投重试、幂等去重和 ACK 回收**。`PendingDbTasks` 与 `DbResultLedger` 不落盘，因此不提供进程崩溃后的任务恢复、跨重启去重、跨网关接管或 COMMIT 断链未知结果的自动对账。真实数据库验收也不等同于任意 MySQL/MariaDB 版本兼容性证明。
+
+### 活跃任务调度索引
+
+Worker 构造时从 `SceneServer.db.activeIndex` 选择 `PendingDbTasks::SchedulingPolicy`：`true` 使用活跃索引，`false` 使用完整扫描。仓库 `Zone/sceneServer/config/sceneConfig.yaml` 当前显式设置 `true`，结构缺省仍为 `false`。这是场景本地 DB 调度键，不受共享 DB 配置迁移禁令影响；其他迁移 DB 键仍拒绝。旧环境变量 `SCENE_EXPERIMENT_ACTIVE_DB_INDEX` 不再控制策略，不支持热切换。
+
+活跃索引集中维护需要投递、等待结果或待 ACK 的任务；失败项及时退出调度，但保留历史身份与原 `unsettled()` 语义。完整历史、60 秒回收窗口、ACK 背压及重复结果重新激活 ACK 语义不变。已有任务后 `enableActiveIndex()` 返回 `false`，不会静默切换；接口及 Sender 仅在所属线程调用，Sender 不可重入修改同一实例。启动日志记录 `active-index` / `legacy-scan`。
+
+2026-10-19 的 3G2S、256 × 20 RPS、120 秒归档：成功吞吐 5,119.17 → 5,119.88 RPS（约 +0.014%），两 Scene 平均 CPU 约 4.02 → 2.48 核（原始值观测下降约 38.35%），p99 39.384 → 26.881 ms。后段两个维护函数 Self 合计 63.70% → 1.34%；固定 32 活跃/16,384 历史微基准 CPU/轮 325.017 → 0.259 μs（约 -99.92%），不是业务吞吐增幅。测试供给封顶且玩家分布不同，最大容量收益未测定。
+
+见[热点报告](../../docs/benchmark-results/busy-hotspot-profile-20261019/report.md)、[加固台账](../../docs/benchmark-results/active-index-hardening-20261019/execution-ledger.md)、[监测模块](src-cpp/metrics/README.md)及[压测索引](../../docs/benchmark-results/README.md)。历史报告中的实验开关状态只适用于当时二进制。
 
 ## 与 BackendServer 的消息流
 
@@ -357,11 +370,11 @@ flowchart TD
     O -->|AOI_OWNER_SNAPSHOT；入队失败待重试| R
     R -->|ApplyOwnerSnapshot| V
     T --> W[脏观察者 / 视野状态]
-    W -.->|processObserver 尚未绑定| C[客户端差集 / 全量视野协议适配]
-    C -.->|待接通；已有发送接口| N[WorkerPushSink::sendToClient → 网络队列]
+    W -->|ProcessAoiClientObserver| C[客户端差集 / 全量视野协议适配]
+    C -->|WorkerPushSink::sendToClient| N[网络队列 → 网关 → 客户端]
 ```
 
-当前 `LogicThread` 已注入 `AoiServiceRouter::PublishHooks`，跨 worker ENTRY/MOVE/LEAVE 与 owner 快照恢复通过**进程内消息总线**运行，不走网关 TCP，不属于跨场景进程迁移。恢复轮询间隔当前为 1000 ms，不能把请求入队视为恢复完成。`processObserver` 尚未绑定，所以副本同步成功仍不代表客户端收到视野推送。
+当前 `LogicThread` 已注入 `AoiServiceRouter::PublishHooks`，并绑定 `ProcessAoiClientObserver`。跨 worker ENTRY/MOVE/LEAVE 与 owner 快照恢复通过**进程内消息总线**运行，不走网关 TCP，不属于跨场景进程迁移。恢复轮询间隔当前为 1000 ms，不能把请求入队视为恢复完成。客户端视野推送经 `WorkerPushSink` 进入网络队列；副本同步或队列接受仍不代表客户端收到。
 
 ## 内部消息处理流程
 
@@ -375,12 +388,12 @@ flowchart TD
 
 ### 最小玩家验收链路
 
-1. 客户端在网关执行 Auth，网关为场景服发布可信 ONLINE（仅建立 Player/会话绑定）。
+1. 客户端在网关执行 Auth；实际选定场景通道后，网关首次声明 ONLINE（仅建立 Player/会话绑定，不是角色加载成功确认）。
 2. 客户端发送 `module=3, method=4`，body 为 `gs.EnterSceneReq`（空消息）。场景服 C++ 准入入口使用当前开发期默认 Player 数据，出生点 `(0,0,0)`，通过 PlayerService 建立 AOI 实体并注册观察者；返回 `gs.EnterSceneAck`，包含 entity_id、generation 和位置。重复请求保留当前位置，不重新分配世代。
 3. 客户端发送 `module=3, method=2` 的 `gs.WalkReq`。Lua 校验请求起点等于权威坐标、移动距离不超过 100，再调用 `player.move`；C++ 验证地图边界并同步 AOI。错误 RetTip 沿原请求头和 seq 返回，不改变位置。
 4. 客户端可以发送 `module=3, method=5` 的空 `gs.LogoutReq`，返回 `gs.LogoutAck`；Player 被清理，此客户端会话再发业务请求不会复活 Actor。重新 Auth 获得新 epoch 后可再次进入。客户端直接断开也通过网关 OFFLINE 完成同样的场景清理。
 
-此链路是运行与协议验收，不是生产登录系统：尚无角色数据库加载、权威登录票据、出生点配置、存档成功确认。AOI 实体同步已工作，但观察者差集/视野推送 hook 尚未绑定，不能将进场与移动成功解释为其他玩家已经收到视野推送。
+上述无 DB 最小链路不是生产登录系统。启用持久化时可从数据库加载角色快照并进行保存，见下文真实数据库验收；权威登录票据与正式账号链路不在此验收范围。AOI 观察者差集/全量推送已接入，但进场与移动成功不等于其他玩家已实际收到视野推送。
 
 `SceneServer.mapPath` 可指定地图文件，默认 `map.yaml`，相对路径按场景配置文件目录解析。启动前加载地图并由 SceneServer 持有，向全部 worker 注入只读引用；地图加载失败不启动网络线程。
 
@@ -449,3 +462,11 @@ python3 Zone/sceneServer/tests/persistence_e2e.py \
 该验收覆盖正常时序和受控的队列/结果处理，不证明进程崩溃后内存任务不丢失、跨重启任务恢复、COMMIT 断链后的未知结果自动对账、跨网关接管、死锁不存在或所有 MySQL/MariaDB 版本兼容。若因 `SIGKILL` 或主机故障无法清理，应先确认残留进程属于本次临时目录，再手工清理，不能停止其他数据库实例。
 
 文档路径以 `GameServer` 为根目录；各段构建与测试命令默认从根目录执行。运行示例在子 shell 中切换工作目录，退出后不改变当前终端目录。`luaDir` 和相对日志路径基于工作目录，`mapPath` 相对路径基于场景配置目录。
+
+## 最新吞吐观测的归属与边界
+
+2026-10-19 最近客户端等待优化轮，3G2S、512 × 20 RPS、30 秒成功吞吐 **10,228.37 RPS**、p99 **178.06 ms**、业务错误/unresolved 为 0；较早独立 60 秒轮为 **10,239.08 RPS**、p99 **83.59 ms**、零业务错误。它们说明两个 Scene 合计在特定移动/AOI 场景下具有短时万级端到端成功吞吐证据，不保证单 Scene、混合业务或长期稳定。
+
+最新轮服务 CPU 0–9、客户端 CPU 10–15，仍有早段下探与追赶，最大调度滞后约 5.22 秒；与旧同绑核客户端的约 +73.2% 变化不能归于本节活跃索引，也不是严格冻结布局 A/B。capacity 模式未最终逐玩家核对 DB 快照；perf 收尾仍 exit=-15，不能用其不完整占比证明优化。数据和限制见[压测归档索引](../../docs/benchmark-results/README.md)。
+
+LoginServer **待实现**，职责仅为账号认证、登录凭证、区服列表与角色归属查询。跨 worker AOI 不意味着不同 Scene 或不同 Zone 自动互通，详见[顶层区服关系](../../README.md)。

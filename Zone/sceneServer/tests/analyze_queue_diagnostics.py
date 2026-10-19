@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline 100ms aggregation. Spans mean sampled nonempty, NOT proven continuous backlog."""
+"""离线按 100ms 聚合；区间表示采样时非空，不能证明持续积压。"""
 import argparse
 import collections
 import json

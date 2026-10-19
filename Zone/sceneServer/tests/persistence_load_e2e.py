@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit isolated 2 gateway x 2 scene persistence acceptance (stdlib only)."""
+"""显式、隔离的 2 Gateway × 2 Scene 持久化验收（仅使用标准库）。"""
 import json
 import argparse
 import os
@@ -99,7 +99,7 @@ def connect_player(public_port, player):
 
 def rejected_enter(sock):
     body = request(sock, 4, 2)
-    # RetTip(code=1010, text=...) is not EnterSceneAck's integer-only layout.
+    # RetTip(code=1010, text=...) 并非 EnterSceneAck 的纯整数字段布局。
     assert body.startswith(b"\x08\xf2\x07\x12"), "expected load-failed RetTip 1010"
 
 
@@ -289,7 +289,7 @@ def main(build_path, negative_save=False, connections=8, rps=10, duration=10, dr
                         success = False
             for handle in handles:
                 handle.close()
-            # Preserve only diagnostic artifacts, never datadir, socket or credentials.
+            # 仅保留诊断产物，不保留数据库数据目录、套接字或凭据。
             paths = list(work.glob("*.log")) + list(work.glob("*.jsonl"))
             if (work / "run").exists():
                 paths += [p for p in (work / "run").rglob("*")

@@ -16,12 +16,15 @@
 SceneServer::SceneServer(const SceneConfig& cfg)
     : cfg_(cfg), metrics_(cfg.logicThreadNum), luaDir_(cfg.luaDir)
 {
-    // bus 最先创建：net/timer/db/logic 全都依赖它。
-    // Redis 分片数必须在这里定下来：MsgBus 的 Redis 队列数 = 分片数，
-    // 而 db.redis 绑定层算出的分片索引会直接用作队列下标（不一致会越界/错投）。
+    // bus 最先创建：net/timer/db/logic 全都依赖它
+    // Redis 分片数必须在这里定下来：MsgBus 的 Redis 队列数 = 分片数，而 db.redis 绑定层算出的分片索引会直接用作队列下标（不一致会越界/错投）
     bus_ = std::make_unique<MsgBus>(cfg_.logicThreadNum, cfg_.zone.db.redis.ShardCount());
     const char* diagnostics = std::getenv("SCENE_QUEUE_DIAGNOSTICS");
-    if(diagnostics && std::string(diagnostics)=="1") bus_->enableDiagnostics();
+    if(diagnostics && std::string(diagnostics)=="1") 
+        bus_->enableDiagnostics();
+    const char* busy = std::getenv("SCENE_BUSY_DIAGNOSTICS");
+    if(busy && std::string(busy)=="1") 
+        bus_->enableBusyDiagnostics();
     monitoring_ = std::make_unique<SceneMonitoringService>(metrics_, *bus_, cfg_.metricsPath);
 }
 
@@ -161,7 +164,7 @@ void SceneServer::stop()
     if (dbThread_)
         dbThread_->stop();
 
-    // Final snapshot is taken only after business producers and consumers stop.
+    // 只有业务生产者与消费者都停止后才采集最终快照。
     if (!monitoring_->finish()) drained = false;
     shutdownSucceeded_.store(drained, std::memory_order_release);
     LOG_INFO << "scene server stopped";

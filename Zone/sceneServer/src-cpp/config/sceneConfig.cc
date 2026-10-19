@@ -1,5 +1,7 @@
 #include "config/sceneConfig.h"
 #include <filesystem>
+#include <charconv>
+#include <limits>
 
 #include "base/yaml.h"
 #include "log/logger.h"
@@ -37,7 +39,18 @@ bool CheckMigratedKeys(const YamlLite& y, const std::string& path, std::string& 
     {
         const std::string full = std::string("SceneServer.") + m.key;
         // 容器键（db / log）本身没有值，Has() 看不到，必须用前缀匹配
-        const bool present = y.Has(full) || y.HasPrefix(full + ".");
+        bool present = y.Has(full);
+        if (std::strcmp(m.key, "db") == 0)
+        {
+            // activeIndex 属于本地调度器，而非共享数据库连接。
+            // 在 HasPrefix 可能将迁移的键标记为已消费之前，检查尚未消费的键。
+            for (const auto& key : y.UnusedKeys())
+                if (key.compare(0, full.size() + 1, full + ".") == 0 &&
+                    key != full + ".activeIndex")
+                    present = true;
+        }
+        else
+            present = present || y.HasPrefix(full + ".");
         if (present)
         {
             err = path + ": key '" + full + "' has moved to zoneConfig.yaml (" + m.target + ")";
@@ -73,6 +86,7 @@ LogicThread::Config SceneConfig::MakeLogicConfig() const
     c.luaInstructionLimit = luaInstructionLimit;
     c.redisNs = RedisNs();
     c.persistenceEnabled = zone.dbEnable;
+    c.activeIndex = activeIndex;
     return c;
 }
 
@@ -168,12 +182,15 @@ bool SceneConfig::Load(const std::string& path, SceneConfig& out, std::string& e
     out.luaDir = y.GetStr("SceneServer.luaDir", out.luaDir);
     out.metricsPath = y.GetStr("SceneServer.metricsPath", out.metricsPath);
     auto mapPath = std::filesystem::path(y.GetStr("SceneServer.mapPath", "map.yaml"));
-    if(mapPath.is_relative()) mapPath = std::filesystem::path(path).parent_path() / mapPath;
+    if(mapPath.is_relative()) 
+        mapPath = std::filesystem::path(path).parent_path() / mapPath;
     out.mapPath = std::filesystem::absolute(mapPath).lexically_normal().string();
     out.luaInstructionLimit = y.GetUInt("SceneServer.luaInstructionLimit", out.luaInstructionLimit);
     out.idleWaitMs = y.GetInt("SceneServer.idleWaitMs", out.idleWaitMs);
     out.flushIntervalMs = y.GetInt("SceneServer.flushIntervalMs", out.flushIntervalMs);
     out.scanIdleMs = y.GetInt("SceneServer.scanIdleMs", out.scanIdleMs);
+
+    out.activeIndex = y.GetBool("SceneServer.db.activeIndex");
 
     // ---------------- 网络 ----------------
     out.net.listenEnable = y.GetBool("SceneServer.net.listenEnable", out.net.listenEnable);
@@ -191,6 +208,28 @@ bool SceneConfig::Load(const std::string& path, SceneConfig& out, std::string& e
         (uint32_t)y.GetUInt("SceneServer.net.maxFramesPerSec", out.net.maxFramesPerSec);
     out.net.maxDecodeErrors =
         (uint32_t)y.GetUInt("SceneServer.net.maxDecodeErrors", out.net.maxDecodeErrors);
+
+    auto pendingUInt=[&](const char* key,auto& target) {
+        const std::string full=std::string("SceneServer.net.")+key;
+        if(!y.Has(full)) return true;
+        const auto text=y.GetStr(full);
+        uint64_t value=0;
+        const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+        using Value=std::decay_t<decltype(target)>;
+        if(text.empty() || parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size() ||
+           !value || value>std::numeric_limits<Value>::max()) {
+            err=path+": invalid positive integer "+full;return false;
+        }
+        target=static_cast<Value>(value);return true;
+    };
+    auto& pending=out.net.pending;
+    if(!pendingUInt("pendingBusinessMaxTasks",pending.maxBusinessTasks) ||
+       !pendingUInt("pendingBusinessMaxBytes",pending.maxBusinessBytes) ||
+       !pendingUInt("pendingBusinessTimeoutMs",pending.businessTimeoutMs) ||
+       !pendingUInt("pendingPerWorkerAttempts",pending.perWorkerAttempts) ||
+       !pendingUInt("pendingGlobalAttempts",pending.globalAttempts) ||
+       !pendingUInt("pendingRetryIntervalMs",pending.retryIntervalMs)) return false;
+    if(!pending.valid()) {err=path+": invalid pending limits (timeout<=3600000ms,retry<=1000ms)";return false;}
 
     // 本服务身份会写进出站帧头的 srcServiceID，必须与网关口中的 serviceId 一致
     out.net.serviceId = out.serviceId;

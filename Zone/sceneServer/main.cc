@@ -57,13 +57,11 @@ int main(int argc, char** argv)
         scenePath = argv[2];
 
     // ---------------- 0. 信号基础设置（必须在创建任何线程之前）----------------
-    // ★ 顺序为什么关键：线程会**继承创建时刻的信号掩码**。
+    //   顺序为什么关键：线程会**继承创建时刻的信号掩码**。
     //   若在 asyncLogger.start()、SceneServer::start() 之后才阻塞这三个信号，
     //   工作线程（日志/网络/逻辑/DB）就会以"未阻塞"的掩码运行 —— 任何被投递到
     //   这些线程的 SIGTERM/SIGINT 都会按默认动作**直接杀死进程**，抢走主线程
     //   sigwait 的优雅退出流程。
-    //   实测（旧顺序）：向某个工作线程发 SIGTERM → 进程 exit 143，日志里
-    //   没有任何 "signal 15 received"（主线程根本没机会处理）。
     sigset_t set;
     sigemptyset(&set);
     sigaddset(&set, SIGINT);
@@ -149,7 +147,7 @@ int main(int argc, char** argv)
     if (!server.start())
     {
         LOG_ERROR << "scene server start failed";
-        // Partial startup must stop producers before detaching/joining the logger.
+        // 启动未完全成功时，必须先停止生产者，再解绑日志器并汇合其线程。
         server.stop();
         Logger::set_AsyncLogger(nullptr);
         asyncLogger.stop();

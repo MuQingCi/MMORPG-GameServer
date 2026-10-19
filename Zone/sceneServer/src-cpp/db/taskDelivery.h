@@ -4,16 +4,20 @@
 #include "common/msg.h"
 #include "common/msgBus.h"
 #include <atomic>
+#include <array>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 
-// 所有方法均在所属线程执行。AwaitResult 状态不会自动重新执行任务：
-// 超时不能证明数据库尚未提交。
+// 所有方法均在所属线程执行。AwaitResult 状态不会自动重新执行任务：超时不能证明数据库尚未提交。Sender 不得重入修改同一 PendingDbTasks 实例
 class PendingDbTasks 
 {
 public:
     static constexpr size_t kMaxTasks = 65536;
     enum class State { PendingDispatch, AwaitResult, Completed, DispatchFailed };
+    enum class SchedulingPolicy { LegacyScan, ActiveIndex };
+    PendingDbTasks() = default;
+    explicit PendingDbTasks(SchedulingPolicy policy) : indexed_(policy == SchedulingPolicy::ActiveIndex) {}
     struct Task {
         Msg request;
         State state = State::PendingDispatch;
@@ -24,13 +28,27 @@ public:
         int64_t completedAt = 0;
     };
     using Sender = std::function<DispatchResult(const Msg&)>;
+    struct ScanProbe {
+        // 等待派发、等待结果、完成后等待 ACK、历史、失败。
+        std::array<uint64_t,5> visited{};
+        uint64_t callbacks=0,wallNs=0,cpuNs=0,callbackWallNs=0,callbackCpuNs=0,cpuClockFailures=0;
+    };
     static uint64_t newTaskId() { return allocateId(); }
+    SchedulingPolicy schedulingPolicy() const
+    { return indexed_ ? SchedulingPolicy::ActiveIndex : SchedulingPolicy::LegacyScan; }
+    // 兼容入口；明确拒绝运行开始后的配置。
+    bool enableActiveIndex()
+    {
+        if(!tasks_.empty()) return false;
+        indexed_=true;
+        return true;
+    }
     
     bool submit(Msg request, int64_t now, const Sender& send) ;
 
     bool observeStatus(const Msg& status);
     // 控制消息重试不会重新提交原 SQL 或 Redis 命令。
-    void tickControls(int64_t now, const Sender& send);
+    void tickControls(int64_t now, const Sender& send, ScanProbe* probe = nullptr);
 
     static Msg control(const Msg& request, uint8_t kind) 
     {
@@ -42,12 +60,15 @@ public:
     }
 
     bool acknowledgeDuplicate(const Msg& result);
-    void tick(int64_t now, const Sender& send);
+    void tick(int64_t now, const Sender& send, ScanProbe* probe = nullptr);
     bool complete(const Msg& result) ;
 
     const Task* find(uint64_t id) const;
 
     size_t size() const { return tasks_.size(); }
+    // 仅限所属线程；只用于诊断采样，绝不参与调度。
+    // 总数、等待派发、等待结果、完成后等待 ACK、历史、失败。
+    std::array<uint64_t,6> diagnosticSnapshot() const;
 
     bool unsettled() const;
     static bool same(const Msg& a, const Msg& b) 
@@ -59,6 +80,13 @@ public:
             a.head.Module == b.head.Module && a.head.Method == b.head.Method && a.head.seq == b.head.seq;
     }
 private:
+    static bool needsScheduling(const Task& task)
+    {
+        return task.state == State::PendingDispatch || task.state == State::AwaitResult ||
+            (task.state == State::Completed && task.ackPending);
+    }
+    void activate(uint64_t id) { if(indexed_) active_.insert(id); }
+    void deactivate(uint64_t id) { if(indexed_) active_.erase(id); }
     static uint64_t allocateId() 
     {
         static std::atomic<uint64_t> next{1};
@@ -76,6 +104,8 @@ private:
     }
     // 已完成记录持续保留，直到容量压力需要回收。
     std::unordered_map<uint64_t, Task> tasks_;
+    std::unordered_set<uint64_t> active_;
+    bool indexed_=false;
 };
 
 // 每个 DB 通道独占一份记录表。执行完成与结果投递是

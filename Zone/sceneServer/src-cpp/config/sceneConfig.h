@@ -41,6 +41,7 @@ struct SceneConfig
     int64_t flushIntervalMs = 30000;   // 定期快照间隔（防宕机丢数据）
     int64_t scanIdleMs = 10000;        // 空闲玩家扫描间隔
 
+    bool    activeIndex = false;
     // ---------------- 定时器 ----------------
     uint64_t timerTickMs = 50;
     uint32_t timerWheelSlots = 256;

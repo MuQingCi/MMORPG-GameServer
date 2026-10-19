@@ -56,8 +56,8 @@ enum NetMessageType : uint8_t
     kSceneMsg   = 10,
 };
 
-// 服务类型 id（srcServiceID / dstServiceID），不是进程/实例编号。
-// 场景实例由 zoneId + sceneId 区分，同一实例的连接由 channelId 区分。
+// 服务类型 id（srcServiceID / dstServiceID），不是进程/实例编号
+// 场景实例由 zoneId + sceneId 区分，同一实例的连接由 channelId 区分
 enum ServerID : uint8_t
 {
     kServiceAny = 0,   // 仅用于"不过滤"（测试/工具）
@@ -97,11 +97,8 @@ struct Header
 };
 
 // ---------------------------------------------------------------------------
-// SYS 通道（module = 1）在**服务间链路**上的方法号。
-//
-// 为什么放在公共协议层：这条链路上唯一必须两侧一致的控制消息就是"后端服务向网关
-// 上报身份"的握手。把常量留在各自服务里必然漂移（一侧改号、另一侧静默不解帧），
-// 场景服的 Method::SYS_HANDSHAKE 现在直接引用这里的值。
+// SYS 通道（module = 1）在 服务间链路 上的方法号
+// 为什么放在公共协议层：这条链路上唯一必须两侧一致的控制消息就是"后端服务向网关上报身份"的握手。把常量留在各自服务里必然漂移（一侧改号、另一侧静默不解帧），场景服的 Method::SYS_HANDSHAKE 现在直接引用这里的值
 // ---------------------------------------------------------------------------
 namespace SysModule
 {
@@ -124,7 +121,7 @@ namespace ServiceMethod
 {
 constexpr uint16_t kPrivateChat = 1;
 constexpr uint16_t kZoneShout = 2;
-constexpr uint16_t kAdminBroadcast = 3; // reserved: requires trusted authorization
+constexpr uint16_t kAdminBroadcast = 3; // 预留：要求可信授权
 constexpr uint16_t kGlobalPing = 1;
 }
 
@@ -132,9 +129,9 @@ constexpr uint16_t kGlobalPing = 1;
  * @brief 服务间握手体（后端服务 -> 网关）
  *
  * v1 布局：protocolVersion(u16) + serviceId(u8) + zoneId(u32) + sceneId(u32) +
- * sceneIncarnation(u64) + targetGatewayId(u32) + channelId(u32) = 27 字节，整数为小端。
- * 握手体属于链路控制信息，不需要 protobuf，也**不允许客户端伪造**：
- * 客户端链路上根本没有这个 method（客户端协议是独立的 ClientFrame）。
+ * sceneIncarnation(u64) + targetGatewayId(u32) + channelId(u32) = 27 字节，整数为小端
+ * 握手体属于链路控制信息，不需要 protobuf，也 不允许客户端伪造：
+ * 客户端链路上根本没有这个 method（客户端协议是独立的 ClientFrame）
  */
 struct BackendHandshake
 {
@@ -166,9 +163,8 @@ Header MakeHeader(uint8_t msgType,
 /**
  * @brief 把一条完整消息编码追加到 out 尾部
  *
- * 注意：只往 out **追加**，绝不假设 out 是空的。
- * 旧实现直接对"连接的 sendBuffer"编码，会把上一轮未发完的残余
- * 与新消息当成一条消息算长度，帧边界永久错乱。
+ * 注意：只往 out 追加，绝不假设 out 是空的
+ * 旧实现直接对"连接的 sendBuffer"编码，会把上一轮未发完的残余与新消息当成一条消息算长度，帧边界永久错乱
  */
 void EncodeFrame(Buffer& out, const Header& head, const std::string& body);
 
@@ -193,9 +189,8 @@ enum class DecodeStatus
  *
  * 语义保证：
  *   - 返回 kOk 时 body 恰好是这一帧的业务数据，buf 从下一帧开始；
- *   - 返回 kNeedMore 时不消费任何数据（含"没有魔数"的垃圾前缀清理例外：
- *     会丢弃到最多保留 1 字节，避免无界积压）；
- *   - 返回 kError 时已尽力重同步到下一个候选魔数之后，调用方应计数并在达到阈值时断开。
+ *   - 返回 kNeedMore 时不消费任何数据（含"没有魔数"的垃圾前缀清理例外：会丢弃到最多保留 1 字节，避免无界积压）；
+ *   - 返回 kError 时已尽力重同步到下一个候选魔数之后，调用方应计数并在达到阈值时断开
  */
 DecodeStatus DecodeFrame(Buffer& buf,
                          Header& head,

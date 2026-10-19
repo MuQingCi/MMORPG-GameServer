@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded isolated persistence staircase with paired no-DB controls."""
+"""有界、隔离的持久化阶梯测试，配有成对的无数据库对照。"""
 import argparse
 import json
 import os

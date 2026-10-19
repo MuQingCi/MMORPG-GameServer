@@ -1,4 +1,45 @@
 #include "db/taskDelivery.h"
+#include <chrono>
+#include <time.h>
+
+namespace {
+uint64_t wallNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+uint64_t cpuNs(uint64_t& failures)
+{
+    timespec value{};
+    if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&value)!=0) { ++failures; return 0; }
+    return static_cast<uint64_t>(value.tv_sec)*1000000000+value.tv_nsec;
+}
+
+class ProbeTimer {
+public:
+    ProbeTimer(PendingDbTasks::ScanProbe& probe,bool callback)
+        : probe_(probe),callback_(callback),wall_(wallNs()),cpu_(cpuNs(probe.cpuClockFailures)) {}
+    ~ProbeTimer() {
+        const auto cpu=cpuNs(probe_.cpuClockFailures);
+        const auto wall=wallNs();
+        (callback_ ? probe_.callbackWallNs : probe_.wallNs)+=wall-wall_;
+        if(cpu>=cpu_) (callback_ ? probe_.callbackCpuNs : probe_.cpuNs)+=cpu-cpu_;
+    }
+private:
+    PendingDbTasks::ScanProbe& probe_;
+    bool callback_;
+    uint64_t wall_,cpu_;
+};
+
+void visit(PendingDbTasks::ScanProbe& probe,const PendingDbTasks::Task& task)
+{
+    using State=PendingDbTasks::State;
+    const size_t index=task.state==State::PendingDispatch ? 0 :
+        task.state==State::AwaitResult ? 1 : task.state==State::Completed ?
+        (task.ackPending ? 2 : 3) : 4;
+    ++probe.visited[index];
+}
+}
 
 
 bool PendingDbTasks::submit(Msg request, int64_t now, const Sender& send) 
@@ -18,6 +59,7 @@ bool PendingDbTasks::submit(Msg request, int64_t now, const Sender& send)
             ++completed;
         if (completed == tasks_.end()) 
             return false;
+        deactivate(completed->first);
         tasks_.erase(completed);
     }
     
@@ -28,14 +70,17 @@ bool PendingDbTasks::submit(Msg request, int64_t now, const Sender& send)
     if (!inserted) 
         return same(it->second.request, request);
 
+    activate(it->first);
+
     const auto result = dispatch(it->second, now, send);
     
     if (result == DispatchResult::kInvalidTarget || result == DispatchResult::kInvalidMessage) 
     {
+        deactivate(it->first);
         tasks_.erase(it);
         return false;
     }
-    return true; // 即使当前遇到背压，也已完成任务登记。
+    return true; // 即使当前遇到背压，也已完成任务登记
 }
 bool PendingDbTasks::observeStatus(const Msg& status) 
 {
@@ -49,27 +94,49 @@ bool PendingDbTasks::observeStatus(const Msg& status)
         h.playerId != status.head.playerId || h.epoch != status.head.epoch || h.ctx != status.head.ctx)
         return false;
     it->second.observedStatus = static_cast<uint8_t>(status.body[0]);
-    // 未知状态不代表任务未执行；此处绝不重新提交原任务。
+    // 未知状态不代表任务未执行；此处绝不重新提交原任务
     return true;
 }
-// 控制消息重试不会重新提交原 SQL 或 Redis 命令。
-void PendingDbTasks::tickControls(int64_t now, const Sender& send) 
+// 控制消息重试不会重新提交原 SQL 或 Redis 命令
+void PendingDbTasks::tickControls(int64_t now, const Sender& send, ScanProbe* probe)
 {
-    for (auto& [id, task] : tasks_) 
-    {
-        (void)id;
-        if (now < task.nextTryAt) 
-            continue;
-        if (task.state == State::Completed && task.ackPending) 
-        {
-            if (IsAccepted(send(control(task.request, 1)))) 
-                task.ackPending = false;
-            task.nextTryAt = now + 100;
-        } 
-        else if (task.state == State::AwaitResult) {
-            send(control(task.request, 2));
-            task.nextTryAt = now + 5000;
+    auto scan=[&]<bool measured>(const Sender& sender) {
+        auto advance=[&](Task& task) {
+            if constexpr(measured)  
+                visit(*probe,task);
+            if (now < task.nextTryAt) 
+                return;
+            if (task.state == State::Completed && task.ackPending) {
+                if (IsAccepted(sender(control(task.request, 1)))) 
+                    task.ackPending = false;
+                task.nextTryAt = now + 100;
+            } else if (task.state == State::AwaitResult) {
+                sender(control(task.request, 2));
+                task.nextTryAt = now + 5000;
+            }
+        };
+        if(indexed_) {
+            for(auto it=active_.begin();it!=active_.end();) {
+                auto& task=tasks_.at(*it);
+                advance(task);
+                if(!needsScheduling(task))
+                    it=active_.erase(it);
+                else ++it;
+            }
+        } else {
+            for(auto& [id,task]:tasks_) { (void)id; advance(task); }
         }
+    };
+    if(probe) {
+        ProbeTimer timer(*probe,false);
+        Sender sender=[&](const Msg& message) {
+            ++probe->callbacks;
+            ProbeTimer callback(*probe,true);
+            return send(message);
+        };
+        scan.template operator()<true>(sender);
+    } else {
+        scan.template operator()<false>(send);
     }
 }
 
@@ -82,15 +149,45 @@ bool PendingDbTasks::acknowledgeDuplicate(const Msg& result)
         return false;
     it->second.ackPending = true;
     it->second.nextTryAt = 0;
+    activate(it->first);
     return true;
 }
-void PendingDbTasks::tick(int64_t now, const Sender& send) 
+void PendingDbTasks::tick(int64_t now, const Sender& send, ScanProbe* probe)
 {
-    for (auto& [id, task] : tasks_) 
+    auto scan=[&]<bool measured>(const Sender& sender) {
+        auto advance=[&](Task& task) {
+            if constexpr(measured) 
+                visit(*probe,task);
+
+            if (task.state == State::PendingDispatch && now >= task.nextTryAt)
+                dispatch(task, now, sender);
+        };
+        if(indexed_) 
+        {
+            for(auto it=active_.begin();it!=active_.end();) 
+            {
+                auto& task=tasks_.at(*it);
+                advance(task);
+                if(!needsScheduling(task)) 
+                    it=active_.erase(it);
+                else ++it;
+            }
+        } else {
+            for(auto& [id,task]:tasks_) 
+            { (void)id; advance(task); }
+        }
+    };
+    if(probe) 
     {
-        (void)id;
-        if (task.state == State::PendingDispatch && now >= task.nextTryAt)
-            dispatch(task, now, send);
+        ProbeTimer timer(*probe,false);
+        Sender sender=[&](const Msg& message) {
+            ++probe->callbacks;
+            ProbeTimer callback(*probe,true);
+            return send(message);
+        };
+        scan.template operator()<true>(sender);
+    } else {
+        scan.template operator()<false>(send);
     }
 }
 bool PendingDbTasks::complete(const Msg& result) 
@@ -243,4 +340,21 @@ void DbResultLedger::flush(const Sender& send, int64_t now)
         else 
             ++it;
     }
+}
+std::array<uint64_t,6> PendingDbTasks::diagnosticSnapshot() const
+{
+    std::array<uint64_t,6> counts{};
+    counts[0]=tasks_.size();
+    for(const auto& [id,task]:tasks_) 
+    {
+        (void)id;
+        switch(task.state) 
+        {
+        case State::PendingDispatch: ++counts[1]; break;
+        case State::AwaitResult: ++counts[2]; break;
+        case State::Completed: ++counts[task.ackPending ? 3 : 4]; break;
+        case State::DispatchFailed: ++counts[5]; break;
+        }
+    }
+    return counts;
 }

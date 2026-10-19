@@ -172,8 +172,8 @@ namespace Method
 
 struct MsgHead
 {
-    uint64_t taskId = 0; // Process-local DB delivery identity, independent of Lua ctx.
-    uint8_t dbControl = 0; // 1=result applied ACK, 2=status query
+    uint64_t taskId = 0; // 进程内的数据库投递身份，与 Lua ctx 无关。
+    uint8_t dbControl = 0; // 1=结果已应用的 ACK，2=状态查询
 
     ClientData clientBinding;
     bool hasClientBinding = false;
@@ -206,8 +206,8 @@ struct MsgHead
 
 struct Msg
 {
-    uint64_t diagnosticEnqueuedUs = 0; // Process-local; refreshed on every worker admission.
-    bool diagnosticSaveTask = false; // Save identity, not SYS_FLUSH (also used by loads).
+    uint64_t diagnosticEnqueuedUs = 0; // 仅在进程内有效；每次工作线程接纳任务时刷新。
+    bool diagnosticSaveTask = false; // 保存操作的身份，而非 SYS_FLUSH（加载操作也使用它）。
     MsgHead head;
     std::string body;
 };

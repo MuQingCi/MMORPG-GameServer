@@ -177,3 +177,134 @@ TEST(DbLedgerCapacityRequiresAppliedAckNotQueueAdmission)
     CHECK_EQ(ledger.status(505),0);
     CHECK(!ledger.handleControl(PendingDbTasks::control(request,2)));
 }
+
+TEST(ActiveTaskIndexExcludesHistoryAndPreservesAckRetry)
+{
+    PendingDbTasks tasks;
+    tasks.enableActiveIndex();
+    auto accepted=[](const Msg&){return DispatchResult::kAccepted;};
+    auto blocked=[](const Msg&){return DispatchResult::kBackpressure;};
+    for(uint64_t id=1;id<=512;++id) {
+        const auto request=Request(id);
+        CHECK(tasks.submit(request,0,accepted)); CHECK(tasks.complete(Result(request)));
+    }
+    tasks.tickControls(0,accepted);
+    CHECK_EQ(tasks.size(),512u); CHECK_EQ(tasks.diagnosticSnapshot()[4],512u);
+    PendingDbTasks::ScanProbe probe;
+    tasks.tick(100,accepted,&probe);
+    CHECK_EQ(probe.visited[3],0u); CHECK_EQ(probe.callbacks,0u);
+    CHECK(tasks.acknowledgeDuplicate(Result(Request(10))));
+    probe={};tasks.tickControls(100,blocked,&probe);
+    CHECK_EQ(probe.visited[2],1u); CHECK_EQ(probe.callbacks,1u);
+    probe={};tasks.tickControls(199,accepted,&probe); CHECK_EQ(probe.callbacks,0u);
+    probe={};tasks.tickControls(200,accepted,&probe); CHECK_EQ(probe.callbacks,1u);
+    probe={};tasks.tickControls(201,accepted,&probe); CHECK_EQ(probe.visited[3],0u);
+    auto request=Request(999);
+    CHECK(tasks.submit(request,0,blocked));
+    tasks.tick(100,accepted);
+    CHECK_EQ(tasks.find(999)->state,PendingDbTasks::State::AwaitResult);
+    int execution=0;
+    tasks.tick(10000,[&](const Msg&){++execution;return DispatchResult::kAccepted;});
+    CHECK_EQ(execution,0);
+    probe={};tasks.tickControls(5100,accepted,&probe); CHECK_EQ(probe.callbacks,1u);
+    auto changed=Request(10);changed.body="conflict";CHECK(!tasks.submit(changed,0,accepted));
+    auto forged=Result(Request(10));forged.body="forged result";
+    CHECK(!tasks.acknowledgeDuplicate(forged));
+}
+
+TEST(ActiveTaskIndexMatchesLegacyTransitions)
+{
+    PendingDbTasks legacy,indexed;indexed.enableActiveIndex();
+    std::vector<Msg> left,right;
+    auto sender=[](std::vector<Msg>& out) {
+        return [&out](const Msg& m) {
+            out.push_back(m);
+            if(m.head.taskId%7==0) return DispatchResult::kInvalidTarget;
+            return m.head.taskId%3==0 ? DispatchResult::kBackpressure : DispatchResult::kAccepted;
+        };
+    };
+    auto a=sender(left),b=sender(right);
+    for(uint64_t id=1;id<=200;++id) CHECK_EQ(legacy.submit(Request(id),0,a),indexed.submit(Request(id),0,b));
+    for(int64_t now=0;now<=10000;now+=100) {
+        for(uint64_t id=1;id<=200;++id) {
+            if(now==200 && id%2) CHECK_EQ(legacy.complete(Result(Request(id))),indexed.complete(Result(Request(id))));
+            if(now==500 && id%2) CHECK_EQ(legacy.acknowledgeDuplicate(Result(Request(id))),indexed.acknowledgeDuplicate(Result(Request(id))));
+        }
+        left.clear();right.clear();
+        legacy.tick(now,a);indexed.tick(now,b);
+        legacy.tickControls(now,a);indexed.tickControls(now,b);
+        auto order=[](const Msg& x,const Msg& y) {
+            return std::pair(x.head.taskId,x.head.dbControl)<std::pair(y.head.taskId,y.head.dbControl);
+        };
+        std::sort(left.begin(),left.end(),order);std::sort(right.begin(),right.end(),order);
+        CHECK_EQ(left.size(),right.size());
+        for(size_t i=0;i<std::min(left.size(),right.size());++i) {
+            CHECK_EQ(left[i].head.taskId,right[i].head.taskId);CHECK_EQ(left[i].head.dbControl,right[i].head.dbControl);
+        }
+        CHECK_EQ(legacy.diagnosticSnapshot(),indexed.diagnosticSnapshot());
+        CHECK_EQ(legacy.unsettled(),indexed.unsettled());
+    }
+}
+
+TEST(ActiveTaskIndexRedisAndCapacityReclamation)
+{
+    PendingDbTasks tasks; tasks.enableActiveIndex();
+    const auto accepted=[](const Msg&) {return DispatchResult::kAccepted;};
+    const auto blocked=[](const Msg&) {return DispatchResult::kBackpressure;};
+    for(uint64_t id=1;id<=PendingDbTasks::kMaxTasks;++id) {
+        auto request=Request(id);request.head.msgType=MSGTYPE_DB_TASK_REDIS;request.head.dbShard=1;
+        auto result=request;result.head.msgType=MSGTYPE_DB_RESULT_REDIS;
+        CHECK(tasks.submit(request,0,accepted));CHECK(tasks.complete(result));
+    }
+    tasks.tickControls(0,accepted);
+    auto request=Request(PendingDbTasks::kMaxTasks+1);
+    request.head.msgType=MSGTYPE_DB_TASK_REDIS;request.head.dbShard=1;
+    CHECK(!tasks.submit(request,0,blocked)); // 历史记录必须保留 60 秒安全窗口。
+    const auto now=NowMs()+60001;
+    const bool submitted=tasks.submit(request,now,blocked);
+    CHECK(submitted);
+    if(!submitted) return;
+    CHECK_EQ(tasks.size(),PendingDbTasks::kMaxTasks);
+    tasks.tick(now+100,accepted);
+    CHECK_EQ(tasks.find(request.head.taskId)->state,PendingDbTasks::State::AwaitResult);
+    auto result=request;result.head.msgType=MSGTYPE_DB_RESULT_REDIS;
+    CHECK(tasks.complete(result));
+    PendingDbTasks::ScanProbe probe;
+    tasks.tickControls(now+100,accepted,&probe);CHECK_EQ(probe.callbacks,1u);
+    probe={};tasks.tick(now+200,accepted,&probe);CHECK_EQ(probe.visited[3],0u);
+    CHECK(tasks.acknowledgeDuplicate(result));
+    probe={};tasks.tickControls(now+200,accepted,&probe);CHECK_EQ(probe.callbacks,1u);
+}
+
+TEST(TaskSchedulingPolicyIsExplicitAndRejectsLateSwitch)
+{
+    using Policy=PendingDbTasks::SchedulingPolicy;
+    PendingDbTasks legacy;
+    CHECK_EQ(legacy.schedulingPolicy(),Policy::LegacyScan);
+    PendingDbTasks indexed(Policy::ActiveIndex);
+    CHECK_EQ(indexed.schedulingPolicy(),Policy::ActiveIndex);
+    const auto accepted=[](const Msg&) {return DispatchResult::kAccepted;};
+    CHECK(legacy.submit(Request(900),0,accepted));
+    CHECK(!legacy.enableActiveIndex());
+    CHECK_EQ(legacy.schedulingPolicy(),Policy::LegacyScan);
+    CHECK(indexed.submit(Request(901),0,accepted));
+    CHECK(!indexed.enableActiveIndex());
+    CHECK_EQ(indexed.schedulingPolicy(),Policy::ActiveIndex);
+}
+
+TEST(ActiveIndexRemovesRetryFailureWithoutDiscardingIdentity)
+{
+    PendingDbTasks tasks;tasks.enableActiveIndex();
+    const auto blocked=[](const Msg&) {return DispatchResult::kBackpressure;};
+    const auto invalid=[](const Msg&) {return DispatchResult::kInvalidTarget;};
+    CHECK(!tasks.submit(Request(910),0,invalid));
+    CHECK_EQ(tasks.size(),0u);
+    CHECK(tasks.submit(Request(911),0,blocked));
+    tasks.tick(100,invalid);
+    PendingDbTasks::ScanProbe probe;
+    tasks.tick(200,invalid,&probe);
+    CHECK_EQ(probe.visited[4],0u);
+    CHECK_EQ(tasks.size(),1u);
+    CHECK_EQ(tasks.find(911)->state,PendingDbTasks::State::DispatchFailed);
+    CHECK(tasks.unsettled()); // 保留现有关闭语义。
+}

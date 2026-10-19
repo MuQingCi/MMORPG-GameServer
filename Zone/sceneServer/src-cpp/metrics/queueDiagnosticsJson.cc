@@ -26,6 +26,53 @@ std::string serializeQueueDiagnostics(const QueueDiagnostics::Snapshot& snapshot
         out<<"{\"worker\":"<<e.worker<<",\"kind\":\""<<e.kind<<"\",\"beginUs\":"<<e.begin
            <<",\"endUs\":"<<e.end<<",\"count\":"<<e.count<<'}';
     }
+    out<<"],\"work\":[";
+    auto duration=[&](const WorkDiagnostics::Duration& d) {
+        out<<"{\"count\":"<<d.count<<",\"sumUs\":"<<d.sumUs<<",\"maxUs\":"<<d.maxUs<<",\"bins\":[";
+        for(size_t i=0;i<d.bins.size();++i) { if(i) out<<','; out<<d.bins[i]; }
+        out<<"]}";
+    };
+    for(size_t i=0;i<snapshot.work.size();++i) {
+        if(i) out<<',';
+        out<<"{\"classes\":[";
+        for(size_t j=0;j<6;++j) {
+            if(j) out<<',';
+            const auto& c=snapshot.work[i].classes[j];
+            out<<"{\"attempted\":"<<c.attempted<<",\"accepted\":"<<c.accepted<<",\"rejected\":"<<c.rejected<<",\"firstRejectedUs\":"<<c.firstRejectedUs<<",\"handled\":";
+            duration(c.handled); out<<'}';
+        }
+        out<<"],\"phases\":[";
+        for(size_t j=0;j<snapshot.work[i].phases.size();++j) { if(j) out<<','; duration(snapshot.work[i].phases[j]); }
+        const auto& w=snapshot.work[i];
+        out<<"],\"dbSampleUs\":"<<w.dbSampleUs<<",\"dbTasks\":[";
+        for(size_t j=0;j<w.dbTasks.size();++j) { if(j) out<<','; out<<w.dbTasks[j]; }
+        out<<"],\"dbScanned\":["<<w.dbScanned[0]<<','<<w.dbScanned[1]<<"],\"netPending\":[";
+        for(size_t j=0;j<w.netPending.size();++j) { if(j) out<<','; out<<w.netPending[j]; }
+        out<<"],\"dbProbe\":[";
+        for(size_t p=0;p<w.dbProbe.size();++p) {
+            if(p) out<<',';
+            out<<'[';
+            for(size_t j=0;j<w.dbProbe[p].size();++j) { if(j) out<<','; out<<w.dbProbe[p][j]; }
+            out<<']';
+        }
+        out<<"]}";
+    }
+    out<<"],\"aoi\":[";
+    for(size_t i=0;i<snapshot.aoi.size();++i) {
+        if(i) out<<',';
+        const auto& a=snapshot.aoi[i];
+        out<<"{\"invalidTimes\":"<<a.invalidTimes<<",\"stages\":[";
+        for(size_t j=0;j<a.stages.size();++j) {
+            if(j) out<<',';
+            const auto& d=a.stages[j];
+            out<<"{\"count\":"<<d.count<<",\"sumUs\":"<<d.sumUs<<",\"maxUs\":"<<d.maxUs<<",\"bins\":[";
+            for(size_t k=0;k<d.bins.size();++k) { if(k) out<<','; out<<d.bins[k]; }
+            out<<"]}";
+        }
+        out<<"],\"counters\":[";
+        for(size_t j=0;j<a.counters.size();++j) { if(j) out<<','; out<<a.counters[j]; }
+        out<<"]}";
+    }
     out<<"]}\n"; return out.str();
 }
 

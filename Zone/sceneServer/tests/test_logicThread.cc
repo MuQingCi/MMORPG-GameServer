@@ -31,7 +31,7 @@ LogicThread::Config TestCfg()
     cfg.flushIntervalMs = 600000;   // 抬高：避免测试期间触发周期落盘
     cfg.scanIdleMs = 600000;        // 抬高：避免空闲扫描干扰
     cfg.luaInstructionLimit = 0;
-    cfg.persistenceEnabled = false; // Routing tests intentionally have no DB consumer.
+    cfg.persistenceEnabled = false; // 路由测试刻意不启动数据库消费者。
     return cfg;
 }
 
@@ -105,7 +105,7 @@ TEST(LogicThreadLoadsPlayerBeforeEnterAndDrainsSaveAck)
     gs::EnterSceneAck sceneAck; CHECK(sceneAck.ParseFromString(ack.body));
     CHECK_EQ(sceneAck.code(),0); CHECK_EQ(sceneAck.x(),10); CHECK_EQ(sceneAck.y(),20);
     lt.requestDrain();
-    // Loaded, unchanged player does not need a redundant write. ACK must drain.
+    // 已加载且未变化的玩家无需冗余写入，但 ACK 必须排空。
     CHECK(WaitUntil([&] { return lt.drainFinished(); }));
     lt.stop(); CHECK(lt.drainSucceeded()); CHECK_EQ(lt.playerCount(),0u);
 }
@@ -274,14 +274,14 @@ TEST(LogicThreadReloadRejectsOldResultsAndOfflineCancelsLoad)
     enter.body=gs::EnterSceneReq().SerializeAsString();
     CHECK(IsAccepted(bus.sendToWorker(0,enter)));
     Msg ack; CHECK(WaitUntil([&] { return bus.tryPopNet(ack); }));
-    // An unchanged loaded character needs no final write, but a re-login must
-    // still load under a new request identity and reject the old result.
+    // 已加载且未变化的角色无需最终写入，但重新登录时仍必须
+    // 使用新的请求身份加载，并拒绝旧结果。
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(42,GatewayPlayer::kOffline))));
     CHECK(WaitUntil([&] { return lt.playerCount()==0; }));
     CHECK(IsAccepted(bus.sendToWorker(0,BindingMsg(42,GatewayPlayer::kOnline,2))));
     Msg nextLoad; CHECK(WaitUntil([&] { return bus.tryPopDbMySql(nextLoad); }));
     CHECK(nextLoad.head.taskId!=load.head.taskId);
-    // A stale result cannot complete the new binding's load.
+    // 失效结果不能完成新绑定的加载。
     CHECK(IsAccepted(bus.sendToWorker(0,reply)));
     auto second=enter; second.head.clientBinding={42,2,2,1,1};
     CHECK(IsAccepted(bus.sendToWorker(0,second)));

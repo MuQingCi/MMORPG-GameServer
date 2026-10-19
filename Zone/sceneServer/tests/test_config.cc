@@ -30,6 +30,39 @@ std::string RepoConfig(const char* name)
 }
 }  // namespace
 
+TEST(SceneActiveIndexCoexistsWithMigratedDbGuard)
+{
+    for(const auto& value : {"true", "false"}) {
+        SceneConfig config;
+        std::string error;
+        CHECK(WriteFile(kTmpPath,std::string("SceneServer:\n    db:\n        activeIndex: ")+value+"\n"));
+        CHECK(SceneConfig::Load(kTmpPath,config,error));
+        CHECK_EQ(config.activeIndex,std::string(value)=="true");
+    }
+    for(const auto& key : {"enable", "mysql", "redis"}) {
+        SceneConfig config;
+        std::string error;
+        CHECK(WriteFile(kTmpPath,std::string("SceneServer:\n    db:\n        activeIndex: true\n        ")+key+": true\n"));
+        CHECK(!SceneConfig::Load(kTmpPath,config,error));
+        CHECK(error.find("zoneConfig.yaml")!=std::string::npos);
+    }
+    std::remove(kTmpPath);
+}
+
+TEST(ScenePendingConfigStrictValues)
+{
+    SceneConfig config;std::string error;
+    CHECK(WriteFile(kTmpPath,"SceneServer:\n    net:\n        pendingBusinessMaxTasks: 12\n        pendingBusinessTimeoutMs: 25\n"));
+    CHECK(SceneConfig::Load(kTmpPath,config,error));
+    CHECK_EQ(config.net.pending.maxBusinessTasks,12u);
+    CHECK_EQ(config.net.pending.businessTimeoutMs,25u);
+    for(const auto& bad : {"0","-1","abc","4294967296"}) {
+        CHECK(WriteFile(kTmpPath,std::string("SceneServer:\n    net:\n        pendingRetryIntervalMs: ")+bad+"\n"));
+        CHECK(!SceneConfig::Load(kTmpPath,config,error));
+    }
+    std::remove(kTmpPath);
+}
+
 TEST(YamlLiteBasics)
 {
     const std::string text =

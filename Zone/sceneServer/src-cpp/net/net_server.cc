@@ -3,10 +3,12 @@
 #include "common/hash.h"
 #include "base/proto.h"
 #include "base/utils.h"
+#include "common/msg.h"
 #include "log/logger.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -15,6 +17,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <utility>
+
+#include "gameProto.pb.h"
 
 namespace
 {
@@ -39,7 +43,7 @@ uint8_t LinkTypeOf(uint8_t serviceId)
 }  // namespace
 
 NetServer::NetServer(const NetConfig& cfg, MsgBus& bus)
-    : m_bus_(&bus), cfg_(cfg)
+    : m_bus_(&bus), cfg_(cfg), pendingTasks_(bus.numWorker(),cfg.pending)
 {
 }
 
@@ -234,8 +238,8 @@ void NetServer::run()
 
     while (started_.load(std::memory_order_acquire))
     {
-        // -1：纯阻塞等待。已有 eventfd 唤醒机制，不需要超时轮询
-        const int n = ::epoll_wait(epFd_, events, 256, pendingClientNotifications_.empty() ? -1 : 50);
+        //// -1：纯阻塞等待。已有 eventfd 唤醒机制，不需要超时轮询
+        const int n = ::epoll_wait(epFd_, events, 256, pendingTasks_.waitMs(QueueDiagnostics::nowUs()));
         if (n < 0)
         {
             if (errno == EINTR)
@@ -291,9 +295,11 @@ void NetServer::run()
             }
         }
 
-        // 关停前把队列里剩下的出站消息尽量发出去（例如踢人提示）
         processBusMsg();
     }
+
+    // 关停前把队列里剩下的出站消息尽量发出去（例如踢人提示）
+    processBusMsg();
 
     for (auto& kv : conns_)
     {
@@ -398,9 +404,7 @@ void NetServer::onPeerReadable(Conn& conn)
             continue;
         if (n == 0)
         {
-            // 对端关闭：先把已读到的整帧交给逻辑层，再把连接标记为"只允许回写"，
-            // 由下面的统一收尾处关闭 —— 不能只打日志不关，否则连接会一直挂在 conns_ 里，
-            // 逻辑层也收不到 CONN_CLOSE（玩家下线清理就不会发生）。
+            // 对端关闭：先把已读到的整帧交给逻辑层，再把连接标记为"只允许回写"，由下面的统一收尾处关闭 —— 不能只打日志不关，否则连接会一直挂在 conns_ 里
             LOG_INFO << "peer closed, session=" << session;
             conn.peerClosed = true;
             break;
@@ -516,15 +520,15 @@ void NetServer::onPeerWritable(Conn& conn)
     IsAccepted(m_bus_->sendToWorker(wid, std::move(m)));
 }
 
+//消息帧处理入口
 void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
 {
-    // 握手是传输层事件，不进逻辑层（也避免逻辑层持有 fd/连接状态）
+    // 握手是传输层事件，不进逻辑层,也避免逻辑层持有 fd/连接状态
     if (head.module == SysModule::kSYS && head.method == SysMethod::kHandshake)
     {
         handleHandshake(conn, body);
         return;
     }
-
     Msg m;
     m.head.msgType = MsgType::MSGTYPE_CONN_DATA;
     m.head.Module = head.module;
@@ -533,52 +537,43 @@ void NetServer::onFrame(Conn& conn, const Header& head, const std::string& body)
     m.head.playerId = head.playerId;
     m.head.session = conn.session;
     m.body = body;
-    if(head.playerId != 0) 
+
+    if(head.playerId != 0)
     {
         ClientData d; std::string payload;
         if(conn.peerServiceID != ServerID::kGateway || head.srcServiceID != ServerID::kGateway ||
            !GatewayPlayer::Unpack(body,d,payload) || d.playerId != head.playerId ||
-           d.sceneId != cfg_.sceneId || (conn.gatewayId != 0 && conn.gatewayId != d.gatewayId)) 
+           d.sceneId != cfg_.sceneId || (conn.gatewayId != 0 && conn.gatewayId != d.gatewayId))
         {
             LOG_WARNING << "reject invalid gateway player envelope, session=" << conn.session;
+
+            //非法网关玩家信封则立刻回包
+            sendRetTip(m, gs::ERROR_CODE_INVALID_GATEWAY_ENVELOPE, "Invalid gateway player envelope!");
             return;
         }
 
         conn.gatewayId = d.gatewayId;
         const bool online = head.module == GatewayPlayer::kModule && head.method == GatewayPlayer::kOnline;
         const bool offline = head.module == GatewayPlayer::kModule && head.method == GatewayPlayer::kOffline;
-        
-        if(head.module == GatewayPlayer::kModule && (!payload.empty() || (!online && !offline))) 
-            return;
-        
-        if(online ? !clients_.Bind(conn.session,d) : !clients_.Matches(conn.session,d)) 
+
+        if(head.module == GatewayPlayer::kModule && (!payload.empty() || (!online && !offline)))
             return;
 
-        if(offline) 
+        if(online ? !clients_.Bind(conn.session,d) : !clients_.Matches(conn.session,d))
+            return;
+
+        if(offline)
             clients_.Unbind(conn.session,d);
 
-        m.head.clientBinding=d; m.head.hasClientBinding=true; m.body=std::move(payload);
-        // 生命周期不得因 worker 队列满而静默丢弃；普通玩法允许明确丢弃/告警。
-        if(!pendingClientNotifications_.empty() || !IsAccepted(m_bus_->sendToWorkerByPlayerId(head.playerId,m))) 
-        {
-            if(online || offline) 
-                pendingClientNotifications_.push_back(std::move(m));
-            else 
-                LOG_WARNING << "drop player request: worker queue full, pid=" << head.playerId;
-        }
+        m.head.clientBinding=d;
+        m.head.hasClientBinding=true;
+        m.body=std::move(payload);
+        submitPlayerTask(m,online || offline);
         return;
     }
 
-    if (head.playerId != 0)
-    {
-        // Actor 亲和：正确性由 playerId 保证（同一玩家永远落在同一逻辑线程）
-        IsAccepted(m_bus_->sendToWorkerByPlayerId(head.playerId, std::move(m)));
-    }
-    else
-    {
-        // 会话亲和：登录中等尚未绑定玩家的会话消息
-        IsAccepted(m_bus_->sendToWorker(workerForSession(conn.session, true, 0), std::move(m)));
-    }
+    // 此处只剩 playerId == 0 的会话亲和消息。
+    IsAccepted(m_bus_->sendToWorker(workerForSession(conn.session, true, 0), std::move(m)));
 }
 
 void NetServer::handleHandshake(Conn& conn, const std::string& body)
@@ -590,8 +585,7 @@ void NetServer::handleHandshake(Conn& conn, const std::string& body)
         return;
     }
 
-    // 入站连接是网关到场景服的控制链路。Gateway 的握手 sceneId 按公共
-    // BackendHandshake 约定必须为 0；场景身份由本服配置及后续玩家信封约束。
+    // 入站连接是网关到场景服的控制链路。Gateway 的握手 sceneId 按公共BackendHandshake 约定必须为 0；场景身份由本服配置及后续玩家信封约束
     if (conn.outbound || hs.serviceId != ServerID::kGateway ||
         hs.serviceId != conn.peerServiceID || hs.zoneId != cfg_.zoneId || hs.sceneId != 0)
     {
@@ -634,8 +628,7 @@ void NetServer::processBusMsg()
 void NetServer::sendTo(Conn& conn, const Msg& m)
 {
     // 1. 先把这一条消息编码成单独的完整帧
-    //    绝不能在 conn.sendBuffer 上直接编码：它里面可能还堆着上一轮 EAGAIN 的残余，
-    //    那样会把"旧残余 + 新消息"当成一条消息算长度，帧边界永久错乱。
+    //    绝不能在 conn.sendBuffer 上直接编码：它里面可能还堆着上一轮 EAGAIN 的残余，那样会把"旧残余 + 新消息"当成一条消息算长度，帧边界永久错乱
     Buffer frame;
     EncodeFrame(frame,
                 MakeHeader(conn.linkType, m.head.Module, m.head.Method, m.head.seq,
@@ -694,8 +687,6 @@ void NetServer::enableWrite(Conn& conn, bool on)
     if (conn.fd < 0)
         return;
 
-    // 旧实现写成 if (writing == on) return; 会让"关闭写关注"变成 no-op，
-    // 结果是 EPOLLOUT 常驻 -> 每个可写事件都空转一次
     if (conn.writing == on)
         return;
 
@@ -725,8 +716,9 @@ void NetServer::handleClose(Conn& conn)
         ::close(fd);
     }
     conns_.erase(it);
+    pendingTasks_.cancelSession(session);
 
-    // 会话表必须在这里清理：旧实现只增不减，10 万次连接会留下常驻内存
+    //清理会话表
     MsgBus::WorkerId wid = hashutil::WorkerForSession(session, m_bus_->numWorker());
     auto wit = sessionWorker_.find(session);
     if (wit != sessionWorker_.end())
@@ -735,8 +727,8 @@ void NetServer::handleClose(Conn& conn)
         sessionWorker_.erase(wit);
     }
 
-    // 内部连接失效逐绑定通知；不再用连接上最后一个 playerId 代表全部玩家。
-    for(const auto& d : clients_.Close(session)) 
+    // 内部连接失效逐绑定通知；不再用连接上最后一个 playerId 代表全部玩家
+    for(const auto& d : clients_.Close(session))
     {
         Msg offline;
         offline.head.msgType=MSGTYPE_CONN_DATA;
@@ -744,8 +736,7 @@ void NetServer::handleClose(Conn& conn)
         offline.head.Method=GatewayPlayer::kOffline;
         offline.head.playerId=d.playerId; offline.head.session=session;
         offline.head.clientBinding=d; offline.head.hasClientBinding=true;
-        if(!pendingClientNotifications_.empty() || !IsAccepted(m_bus_->sendToWorkerByPlayerId(d.playerId,offline)))
-            pendingClientNotifications_.push_back(std::move(offline));
+        submitPlayerTask(offline,true);
     }
     Msg m;
     m.head.msgType = MsgType::MSGTYPE_CONN_CLOSE;
@@ -760,10 +751,93 @@ void NetServer::handleClose(Conn& conn)
 
 void NetServer::retryClientNotifications()
 {
-    for(auto it=pendingClientNotifications_.begin();it!=pendingClientNotifications_.end();) 
+    auto rejected=pendingTasks_.pump(QueueDiagnostics::nowUs(),
+        [this](size_t worker,const Msg& m){return m_bus_->sendToWorker(worker,m);},
+        [this](const Msg& m){return conns_.contains(m.head.session) &&
+            clients_.Matches(m.head.session,m.head.clientBinding);});
+    for(const auto& item:rejected) 
     {
-        if(IsAccepted(m_bus_->sendToWorkerByPlayerId(it->head.playerId,*it)))
-            it=pendingClientNotifications_.erase(it);
-        else break; // 生命周期顺序不允许 OFFLINE 越过待补 ONLINE
+        // 发送可能关闭连接；这里绝不能保留队列迭代器
+        if(conns_.contains(item.message.head.session) && clients_.Matches(item.message.head.session,item.message.head.clientBinding))
+            sendRetTip(item.message,item.code,item.code==gs::ERROR_CODE_PENDING_TIMEOUT ? "request pending timeout" : "request rejected");
     }
+    const auto now=QueueDiagnostics::nowUs();
+    if(now>=nextPendingWarningUs_) 
+    {
+        nextPendingWarningUs_=now+1000000;
+        if(auto* diagnostic=m_bus_->diagnostics()) {
+            uint64_t buffered=0,maximum=0;
+            for(const auto& [session,conn]:conns_) 
+            {
+                (void)session;
+                const auto bytes=conn.sendBuffer.readableBytes();
+                buffered+=bytes;
+                maximum=std::max<uint64_t>(maximum,bytes);
+            }
+            diagnostic->event(m_bus_->numWorker(),"net_send_buffer_bytes",now,now,buffered);
+            diagnostic->event(m_bus_->numWorker(),"net_send_buffer_max_bytes",now,now,maximum);
+        }
+        for(size_t w=0;w<m_bus_->numWorker();++w) 
+        {
+            const auto& s=pendingTasks_.stats(w);
+            if(auto* diagnostic=m_bus_->diagnostics())
+                diagnostic->work(w).netPending({s.directBusy,s.taskLimitBusy,s.byteLimitBusy,s.expired,
+                    s.businessTasks,s.businessBytes,s.lifecycleTasks,s.stale,s.internalErrors,s.accepted});
+            if(s.lifecycleTasks>=1024 || s.internalErrors) 
+                LOG_WARNING << "pending worker=" << w
+                << " lifecycle=" << s.lifecycleTasks << " business=" << s.businessTasks
+                << " internalErrors=" << s.internalErrors << " busy=" << s.busy << " expired=" << s.expired;
+        }
+    }
+}
+
+void NetServer::submitPlayerTask(const Msg& message,bool lifecycle)
+{
+    const auto worker=m_bus_->workerForPlayerId(message.head.playerId);
+    const auto result=pendingTasks_.submit(worker,message,lifecycle,
+        QueueDiagnostics::nowUs(),[this](size_t worker,const Msg& m){return m_bus_->sendToWorker(worker,m);});
+
+    if(result==WorkerPendingTasks::Admission::Busy) 
+    {
+        if(auto* diagnostic=m_bus_->busyDiagnostics()) 
+        {
+            const auto& s=pendingTasks_.stats(worker);
+            // 拒绝不会入队/移除任何事件;
+            const auto reason=(s.businessTasks==0 && s.lifecycleTasks==0) ? BusyDiagnostics::Reason::Direct :
+                s.businessTasks>=cfg_.pending.maxBusinessTasks ? BusyDiagnostics::Reason::TaskLimit : BusyDiagnostics::Reason::ByteLimit;
+            diagnostic->record(worker,reason,QueueDiagnostics::nowUs(),message,s.businessTasks,s.businessBytes,
+                s.lifecycleTasks,cfg_.pending.maxBusinessTasks,cfg_.pending.maxBusinessBytes);
+        }
+        sendRetTip(message,gs::ERROR_CODE_SERVER_BUSY,"server busy");
+    }
+    else if(result==WorkerPendingTasks::Admission::InternalError) {
+        LOG_ERROR << "player dispatch invariant failure pid=" << message.head.playerId;
+        if(!lifecycle) sendRetTip(message,gs::ERROR_CODE_INTERNAL,"server internal error");
+    }
+}
+
+void NetServer::sendRetTip(const Msg& request, int32_t code, const char* text)
+{
+    if (request.head.session == 0)
+        return;
+
+    gs::RetTip tip;
+    tip.set_code(code);
+    tip.set_text(text != nullptr ? text : "");
+
+    Msg m;
+    m.head.msgType = MsgType::MSGTYPE_SEND;
+    // 非零 seq 是对客户端请求的回包：网关只接受原 module/method/playerId/seq
+    // 无关联号的通知仍使用 RetTip 的出站 SYS 路由
+    m.head.Module = request.head.seq ? request.head.Module : Module::SYS;
+    m.head.Method = request.head.seq ? request.head.Method : Method::SYS_RET_TIP;
+    m.head.seq = request.head.seq;
+    m.head.session = request.head.session;
+    m.head.playerId = request.head.playerId;
+    m.body = tip.SerializeAsString();
+
+    auto connIt = conns_.find(m.head.session);
+    if(connIt == conns_.end())
+        return;
+    sendTo(connIt->second, m);
 }

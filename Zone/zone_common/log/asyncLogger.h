@@ -25,8 +25,8 @@ using BufferVector = std::vector<BufferPtr>;
     }
 
     void start();
-    // Owner calls after producers stop (and detaches Logger's global sink).
-    // Drains accepted buffers and joins; does not promise fsync durability.
+    // 所有者在生产者停止后调用（并解绑 Logger 的全局输出端）
+    // 排空已接纳的缓冲区并汇合线程，但不承诺 fsync 级别的持久性
     void stop();
 
     void append(const char* data, size_t len);

@@ -11,14 +11,15 @@
 #include <cstdint>
 #include <vector>
 #include "metrics/queueDiagnostics.h"
+#include "metrics/busyDiagnostics.h"
 
 struct Msg;
 
-// Accepted only means queue admission, not execution or persistence.
+// Accepted 只证明进入队列, 不确保执行/持久化
 enum class DispatchResult {
     kAccepted,
     kBackpressure,
-    kTargetStopped, // Reserved: current bus does not own thread lifecycle/admission gates.
+    kTargetStopped, // 预留：当前消息总线不负责线程生命周期或接纳门控。
     kInvalidTarget,
     kInvalidMessage
 };
@@ -31,12 +32,12 @@ class MsgQueue;
 /**
  * @brief 场景服内部全局消息总线
  *
- * 结构（与设计文档 3.2 对应）：
+ * 结构：
      -------------                                  ---------------------
  *   | 网络线程   |                                  | 逻辑线程 0 队列   |
  *   | 定时器线程 |---> worker_queues_（每线程一条）--| 逻辑线程 1 队列   |
  *   | DB 线程   |                                  | ...              |
- *   | 逻辑线程  |                                   ------------------- 
+ *   | 逻辑线程  |                                   -------------------
      ------------   ---> net_queue_（网络线程单消费者）
  *                  ---> mysql_queue_ / redis_queue_（两条 DB 通道，各自单消费者）
  *
@@ -47,7 +48,7 @@ class MsgQueue;
  *
  * 为什么 MySQL 与 Redis 必须分两条通道：
  *   Redis 是亚毫秒级、MySQL 是毫秒到几十毫秒级。共用一个队列时，
- *   一条慢 SQL 会把后面所有 Redis 读全部堵死（建议书 F2 / 设计文档 3.5）。
+ *   一条慢 SQL 会把后面所有 Redis 读全部堵死
  */
 class MsgBus
 {
@@ -59,8 +60,10 @@ public:
 
     explicit MsgBus(size_t numWorkers, size_t redisShards = 1);
     ~MsgBus();
-    // Configure before starting producers/consumers only.
+    // 只能在启动生产者/消费者之前配置。
     void enableDiagnostics() { diagnostics_ = std::make_unique<QueueDiagnostics>(numWorker()+3+redisShardCount()); }
+    void enableBusyDiagnostics() { busyDiagnostics_ = std::make_unique<BusyDiagnostics>(numWorker()); }
+    BusyDiagnostics* busyDiagnostics() const { return busyDiagnostics_.get(); }
     QueueDiagnostics* diagnostics() const { return diagnostics_.get(); }
 
     MsgBus(const MsgBus&) = delete;
@@ -74,6 +77,7 @@ public:
     // 无状态模块消息：同一模块的消息串行落到同一线程（避免模块内状态竞争）
     DispatchResult sendToModule(ModuleId mid, Msg m);
     DispatchResult sendToWorkerByPlayerId(PlayerId pid, Msg m);
+    WorkerId workerForPlayerId(PlayerId pid) const;
     // 精准投递（结果回投 / 会话亲和 / 定时器到期）
     DispatchResult sendToWorker(WorkerId wid, Msg m);
 
@@ -83,6 +87,7 @@ public:
     // 广播到全部逻辑线程（热更、全服公告等），msgs 必须可拷贝
     std::vector<DispatchResult> broadcastToLogic(const Msg& m);
     DispatchResult broadcastToLogicExcept(WorkerId except, const Msg& m, std::vector<uint8_t>* perWorkerOk);
+
     // ---------------- 辅助线程投递 ----------------
     DispatchResult sendToNet(Msg m);
     // 按 msgType 自动选择 DB 通道；Redis 通道再按 m.head.dbShard 选队列
@@ -126,10 +131,11 @@ private:
     DispatchResult diagnosticAdmission(size_t channel, DispatchResult result);
     bool diagnosticPop(size_t channel, Msg& out, bool popped);
     std::unique_ptr<QueueDiagnostics> diagnostics_;
+    std::unique_ptr<BusyDiagnostics> busyDiagnostics_;
     std::vector<std::unique_ptr<MsgQueue<Msg>>> worker_queues_;
 
     std::vector<std::unique_ptr<std::array<std::atomic<uint64_t>, 2>>> workerEnqueuedClassCounts_;
-    
+
     std::unique_ptr<MsgQueue<Msg>> net_queue_;
     std::unique_ptr<MsgQueue<Msg>> mysql_queue_;
     // 每个 Redis 分片一条队列：慢 SQL（MySQL 通道）与 Redis 互不影响，

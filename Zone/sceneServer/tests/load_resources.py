@@ -1,4 +1,4 @@
-"""Linux /proc sampling; counters are cumulative, not instantaneous CPU %."""
+"""Linux /proc 采样；计数器为累计值，并非瞬时 CPU 百分比。"""
 import os
 import pathlib
 import time

@@ -63,6 +63,7 @@ public:
         RedisNamespace redisNs;
         bool persistenceEnabled = true; // 无 DB 的开发模式中显式关闭持久化。
         int64_t shutdownDrainMs = 5000;
+        bool activeIndex = false;
     };
 
     LogicThread(uint32_t threadId, MsgBus& bus, const Config& cfg, const AoiConfig& aoiCfg,

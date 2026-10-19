@@ -1,4 +1,4 @@
-"""Guard SceneServer composition: no duplicate scheduler or window sampler owner."""
+"""检查 SceneServer 组合关系：调度器和窗口采样器不得存在重复所有者。"""
 import pathlib
 import unittest
 

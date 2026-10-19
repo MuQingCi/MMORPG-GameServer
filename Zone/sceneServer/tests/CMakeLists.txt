@@ -20,6 +20,7 @@ add_executable(scene_tests
     test_sceneMetrics.cc
     test_sceneMonitoring.cc
     test_gatewayBinding.cc
+    test_workerPendingTasks.cc
     test_aoiRouting.cc
     test_aoiService.cc
     test_aoiClientView.cc
@@ -42,6 +43,35 @@ target_compile_definitions(scene_tests PRIVATE
 target_link_libraries(scene_tests PRIVATE scene_core)
 
 add_test(NAME scene_tests COMMAND scene_tests)
+
+add_executable(config_diagnostics_test test_main.cc test_config.cc)
+target_include_directories(config_diagnostics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(config_diagnostics_test PRIVATE SCENE_SOURCE_DIR="${CMAKE_SOURCE_DIR}/sceneServer")
+target_compile_options(config_diagnostics_test PRIVATE -UNDEBUG)
+target_link_libraries(config_diagnostics_test PRIVATE scene_core)
+
+add_executable(work_diagnostics_test test_work_diagnostics.cc)
+target_link_libraries(work_diagnostics_test PRIVATE scene_core)
+target_compile_options(work_diagnostics_test PRIVATE -UNDEBUG)
+add_test(NAME work_diagnostics_test COMMAND work_diagnostics_test)
+
+add_executable(busy_diagnostics_test test_main.cc test_workerPendingTasks.cc test_sceneMonitoring.cc test_taskDelivery.cc)
+target_include_directories(busy_diagnostics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(busy_diagnostics_test PRIVATE scene_core)
+target_compile_options(busy_diagnostics_test PRIVATE -UNDEBUG)
+
+add_executable(db_scan_attribution_bench db_scan_attribution_bench.cc)
+target_link_libraries(db_scan_attribution_bench PRIVATE scene_core)
+target_compile_options(db_scan_attribution_bench PRIVATE -UNDEBUG)
+
+add_executable(aoi_diagnostics_test test_aoiDiagnostics.cc)
+target_link_libraries(aoi_diagnostics_test PRIVATE scene_core)
+target_compile_options(aoi_diagnostics_test PRIVATE -UNDEBUG)
+add_test(NAME aoi_diagnostics_test COMMAND aoi_diagnostics_test)
+
+add_executable(aoi_hotspot_bench aoi_hotspot_bench.cc)
+target_link_libraries(aoi_hotspot_bench PRIVATE scene_core)
+target_compile_definitions(aoi_hotspot_bench PRIVATE SCENE_SOURCE_DIR="${CMAKE_SOURCE_DIR}/sceneServer")
 
 # 显式执行的隔离真实数据库验收，不连接配置中的业务数据库。
 add_executable(persistence_dao_probe persistence_dao_probe.cc)

@@ -57,13 +57,20 @@ void SceneMonitoringService::fail(bool SceneMonitoringStatus::*field, const char
         status_.*field = true;
     }
     if (diagnostic && bus_.diagnostics()) bus_.diagnostics()->writeFailed.store(true);
-    if (first) LOG_ERROR << message; // One log per failure class, not one per tick.
+    if (first) LOG_ERROR << message; // 每类失败只记录一次日志，而非每个 tick 都记录。
 }
 
 bool SceneMonitoringService::prepare()
 {
     if (finished_) return false;
     if (prepared_) return true;
+    if(bus_.busyDiagnostics()) {
+        busyOutput_.open(path_+".busy.jsonl",std::ios::trunc);
+        if(path_.empty() || !busyOutput_) {
+            fail(&SceneMonitoringStatus::diagnosticWriteFailed,"busy diagnostics open failed",false);
+            return false;
+        }
+    }
     if (diagnostics_) {
         if (path_.empty()) {
             fail(&SceneMonitoringStatus::diagnosticWriteFailed, "queue diagnostics requires metricsPath", true);
@@ -87,7 +94,7 @@ bool SceneMonitoringService::start()
         if (running_) return true;
     }
     if (!prepare()) return false;
-    // The initial sample stays synchronous, before exposing the background thread.
+    // 首次采样保持同步执行，在后台线程对外可见之前完成。
     sampleDue(QueueDiagnostics::nowUs());
     try {
         std::lock_guard lock(waitMutex_);
@@ -154,7 +161,7 @@ void SceneMonitoringService::sampleDue(uint64_t now)
         if (due.diagnostic && previousDiagnosticUs_ && now >= previousDiagnosticUs_)
             status_.maxDiagnosticGapUs = std::max(status_.maxDiagnosticGapUs, now - previousDiagnosticUs_);
     }
-    // Share this tick's approximate queue depths without invoking the window sampler at 10ms.
+    // 复用本 tick 的近似队列深度，不以 10ms 周期调用窗口采样器。
     const auto depths = bus_.workerDepths();
     const auto net = bus_.netDepth();
     if (due.diagnostic) {
@@ -168,6 +175,11 @@ void SceneMonitoringService::collectMetrics(uint64_t now, const std::vector<size
 {
     const auto begin = QueueDiagnostics::nowUs();
     try {
+        if(auto* busy=bus_.busyDiagnostics()) {
+            busyOutput_<<"{\"monotonicUs\":"<<now<<",\"busy\":"<<BusyDiagnostics::json(busy->collect())<<"}\n";
+            busyOutput_.flush();
+            if(!busyOutput_) fail(&SceneMonitoringStatus::diagnosticWriteFailed,"busy diagnostics write failed",false);
+        }
         for (size_t id = 0; id < metrics_.workerCount(); ++id)
             metrics_.worker(id).setEnqueued(bus_.enqueuedBusinessCount(id), bus_.enqueuedInternalCount(id));
         const std::vector<uint64_t> queueDepths(depths.begin(), depths.end());
@@ -194,7 +206,7 @@ void SceneMonitoringService::writeMetrics(const SceneMetricsSnapshot& sampled)
     if (out) {
         auto json = serializeSceneMetrics(sampled);
         const auto state = status();
-        // Additive fields: old consumers still see exactly the same metrics and units.
+        // 只新增字段：旧读取方看到的原有指标及单位完全不变。
         json.resize(json.size() - 2);
         out << json
             << ",\"monitor_metricsWriteFailed\":" << (state.metricsWriteFailed ? "true" : "false")
@@ -248,6 +260,10 @@ bool SceneMonitoringService::finish()
         const auto net = bus_.netDepth();
         collectDiagnostic(now, depths, net, true);
         collectMetrics(now, depths, net);
+        if(busyOutput_.is_open()) {
+            busyOutput_.close();
+            if(!busyOutput_) fail(&SceneMonitoringStatus::diagnosticWriteFailed,"busy diagnostics close failed",false);
+        }
         if (diagnosticOutput_.is_open()) {
             diagnosticOutput_.close();
             if (!diagnosticOutput_)

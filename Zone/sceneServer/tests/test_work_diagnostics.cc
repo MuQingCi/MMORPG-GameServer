@@ -1,0 +1,143 @@
+#include "metrics/workDiagnostics.h"
+#include "db/taskDelivery.h"
+#include "net/workerPendingTasks.h"
+#include "metrics/queueDiagnosticsJson.h"
+#include "metrics/busyDiagnostics.h"
+#include <cassert>
+#include <thread>
+#include <vector>
+
+int main()
+{
+    BusyDiagnostics busy(2,2);
+    Msg correlated; correlated.head.playerId=123; correlated.head.seq=456;
+    correlated.head.clientBinding={123,789,2,3,10};
+    busy.record(0,BusyDiagnostics::Reason::Direct,100,correlated,0,0,0,256,1048576);
+    busy.record(1,BusyDiagnostics::Reason::TaskLimit,101,correlated,256,2000,1,256,1048576);
+    busy.record(1,BusyDiagnostics::Reason::ByteLimit,102,correlated,1,1048576,1,256,1048576);
+    auto evidence=busy.collect();
+    assert(evidence.events.size()==2 && evidence.dropped==1 && evidence.counts[2]==1);
+    assert(evidence.events[0].seq==456 && evidence.events[0].clientSession==789);
+    assert(evidence.events[1].businessTasks==256);
+    assert(BusyDiagnostics::json(evidence).find("\"seq\":456")!=std::string::npos);
+    auto drained=busy.collect();
+    assert(drained.events.empty() && drained.dropped==1 && drained.counts[0]==1);
+    busy.workerThread(1,999);
+    assert(busy.collect().workerTids[1]==999);
+    auto reject=[](size_t,const Msg&) { return DispatchResult::kBackpressure; };
+    Msg message; message.body="payload";
+    WorkerPendingTasks::Limits limits; limits.maxBusinessTasks=1;
+    WorkerPendingTasks pending(1,limits);
+    assert(pending.submit(0,message,false,0,reject)==WorkerPendingTasks::Admission::Busy);
+    assert(pending.stats(0).directBusy==1);
+    pending.submit(0,message,true,0,reject);
+    pending.submit(0,message,false,0,reject);
+    assert(pending.submit(0,message,false,0,reject)==WorkerPendingTasks::Admission::Busy);
+    assert(pending.stats(0).taskLimitBusy==1 && pending.stats(0).byteLimitBusy==0);
+    limits.maxBusinessBytes=1;
+    WorkerPendingTasks bytePending(1,limits);
+    bytePending.submit(0,message,true,0,reject);
+    assert(bytePending.submit(0,message,false,0,reject)==WorkerPendingTasks::Admission::Busy);
+    assert(bytePending.stats(0).byteLimitBusy==1);
+    assert(pending.stats(0).busy==pending.stats(0).directBusy+pending.stats(0).taskLimitBusy+pending.stats(0).byteLimitBusy);
+    pending.pump(500000,reject,[](const Msg&){return true;});
+    assert(pending.stats(0).expired==1 && pending.stats(0).busy==2);
+    PendingDbTasks tasks;
+    auto accepted=[](const Msg&) { return DispatchResult::kAccepted; };
+    auto blocked=[](const Msg&) { return DispatchResult::kBackpressure; };
+    PendingDbTasks measured;
+    PendingDbTasks::ScanProbe probe;
+    Msg measuredRequest; measuredRequest.head.msgType=MSGTYPE_DB_TASK_MYSQL; measuredRequest.head.taskId=987;
+    assert(measured.submit(measuredRequest,0,blocked));
+    measured.tick(99,accepted,&probe);
+    assert(probe.visited[0]==1 && probe.callbacks==0);
+    probe={}; measured.tick(100,accepted,&probe);
+    assert(probe.visited[0]==1 && probe.callbacks==1);
+    probe={}; measured.tickControls(5100,accepted,&probe);
+    assert(probe.visited[1]==1 && probe.callbacks==1);
+    Msg measuredResult=measuredRequest; measuredResult.head.msgType=MSGTYPE_DB_RESULT_MYSQL;
+    assert(measured.complete(measuredResult));
+    probe={}; measured.tickControls(5101,blocked,&probe);
+    assert(probe.visited[2]==1 && probe.callbacks==1);
+    probe={}; measured.tickControls(5201,accepted,&probe);
+    assert(probe.visited[2]==1 && probe.callbacks==1);
+    probe={}; measured.tickControls(5301,accepted,&probe);
+    assert(probe.visited[3]==1 && probe.callbacks==0);
+    assert(probe.wallNs>0 && probe.cpuNs>0);
+    Msg request; request.head.taskId=1; request.head.msgType=MSGTYPE_DB_TASK_MYSQL;
+    assert(tasks.submit(request,0,blocked));
+    auto state=tasks.diagnosticSnapshot();
+    assert(state[0]==1 && state[1]==1 && state[2]==0);
+    tasks.tick(100,accepted);
+    state=tasks.diagnosticSnapshot();
+    assert(state[1]==0 && state[2]==1);
+    Msg result=request; result.head.msgType=MSGTYPE_DB_RESULT_MYSQL;
+    assert(tasks.complete(result));
+    state=tasks.diagnosticSnapshot();
+    assert(state[3]==1 && state[4]==0);
+    tasks.tickControls(0,blocked);
+    assert(tasks.diagnosticSnapshot()[3]==1);
+    tasks.tickControls(100,accepted);
+    state=tasks.diagnosticSnapshot();
+    assert(state[0]==1 && state[3]==0 && state[4]==1);
+    assert(tasks.acknowledgeDuplicate(result));
+    assert(tasks.diagnosticSnapshot()[3]==1);
+    WorkDiagnostics stats;
+    stats.dbSnapshot(state,1234);
+    stats.dbScan(0,7); stats.dbScan(0,3); stats.dbScan(1,8);
+    stats.maintenance(9,42);
+    auto db=stats.snapshot();
+    assert(db.dbTasks==state && db.dbSampleUs==1234);
+    assert(db.dbScanned[0]==10 && db.dbScanned[1]==8);
+    assert(db.phases[9].sumUs==42);
+    assert(WorkDiagnostics::category(MSGTYPE_CONN_DATA) == 0);
+    assert(WorkDiagnostics::category(MSGTYPE_DB_RESULT_MYSQL) == 1);
+    assert(WorkDiagnostics::category(MSGTYPE_SERVICE) == 2);
+    assert(WorkDiagnostics::category(MSGTYPE_TIMER_FIRE) == 3);
+    assert(WorkDiagnostics::category(MSGTYPE_CONN_CLOSE) == 4);
+    assert(WorkDiagnostics::category(65535) == 5);
+    stats.admit(0, false, 42);
+    stats.admit(0, false, 100);
+    stats.admit(0, true, 101);
+    stats.complete(0, 100);
+    stats.complete(0, 101);
+    stats.maintenance(0, 500);
+    auto snapshot = stats.snapshot();
+    assert(snapshot.classes[0].attempted == 3);
+    assert(snapshot.classes[0].accepted == 1);
+    assert(snapshot.classes[0].rejected == 2);
+    assert(snapshot.classes[0].firstRejectedUs == 42);
+    assert(snapshot.classes[0].handled.count == 2);
+    assert(snapshot.classes[0].handled.sumUs == 201);
+    assert(snapshot.classes[0].handled.bins[0] == 1);
+    assert(snapshot.classes[0].handled.bins[1] == 1);
+    assert(snapshot.phases[0].count == 1);
+    std::vector<std::thread> producers;
+    for (int t=0; t<4; ++t) producers.emplace_back([&] {
+        for (int i=0; i<10000; ++i) stats.admit(2, i%2 == 0, 200+i);
+    });
+    for (auto& t:producers) t.join();
+    snapshot=stats.snapshot();
+    assert(snapshot.classes[2].attempted == 40000);
+    assert(snapshot.classes[2].accepted == 20000);
+    assert(snapshot.classes[2].rejected == 20000);
+    assert(stats.snapshot().classes[2].attempted == 40000);
+    QueueDiagnostics diagnostic(1);
+    diagnostic.work(0).dbSnapshot(state,1234);
+    diagnostic.work(0).dbScan(1,8);
+    diagnostic.work(0).maintenance(9,42);
+    const std::array<uint64_t,12> detail{{1,2,3,4,5,6,7,8,9,10,11,12}};
+    diagnostic.work(0).dbProbe(0,detail);
+    diagnostic.work(0).dbProbe(0,detail);
+    const std::array<uint64_t,10> net{{1,2,3,4,5,6,7,8,9,10}};
+    diagnostic.work(0).netPending(net);
+    auto full=diagnostic.collect(2000,{0},0,true);
+    assert(full.work[0].netPending==net);
+    assert(full.work[0].dbProbe[0][6]==14 && full.work[0].dbProbe[0][11]==24);
+    const auto json=serializeQueueDiagnostics(full);
+    assert(json.find("\"dbSampleUs\":1234")!=std::string::npos);
+    assert(json.find("\"dbProbe\":[[2,4,6,8,10,12,14,16,18,20,22,24]")!=std::string::npos);
+    assert(json.find("\"netPending\":[1,2,3,4,5,6,7,8,9,10]")!=std::string::npos);
+    assert(serializeQueueDiagnostics(full)==json);
+    assert(diagnostic.collect(2001,{0},0,false).work.empty());
+}

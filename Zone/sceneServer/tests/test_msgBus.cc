@@ -71,7 +71,7 @@ TEST(QueueDiagnosticsChannelAccounting)
     CHECK_EQ(bus.diagnostics()->admissions(3)[1],1u);
     m.head.msgType=MSGTYPE_DB_TASK_REDIS; m.head.dbShard=99;
     CHECK(!IsAccepted(bus.sendToDb(m)));
-    CHECK_EQ(bus.diagnostics()->admissions(5)[3],1u); // invalid-target channel
+    CHECK_EQ(bus.diagnostics()->admissions(5)[3],1u); // 无效目标通道
     Msg load;
     load.head.msgType=MSGTYPE_DB_TASK_MYSQL;
     load.head.Method=Method::SYS_FLUSH;

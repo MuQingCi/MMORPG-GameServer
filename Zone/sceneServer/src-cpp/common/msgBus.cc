@@ -44,7 +44,7 @@ MsgBus::~MsgBus() = default;
 
 DispatchResult MsgBus::sendToActor(ActorId id, Msg m)
 {
-    const WorkerId wid = static_cast<WorkerId>(hashutil::WorkerForActor(id, worker_queues_.size()));
+    const WorkerId wid = workerForPlayerId(id);
     return sendToWorker(wid, std::move(m));
 }
 
@@ -58,8 +58,13 @@ DispatchResult MsgBus::sendToModule(ModuleId mid, Msg m)
 DispatchResult MsgBus::sendToWorkerByPlayerId(PlayerId pid, Msg m)
 {
     // 玩家即 Actor：归属决策点全进程唯一，就在这一行
-    const WorkerId wid = static_cast<WorkerId>(hashutil::WorkerForActor(pid, worker_queues_.size()));
+    const WorkerId wid = workerForPlayerId(pid);
     return sendToWorker(wid, std::move(m));
+}
+
+MsgBus::WorkerId MsgBus::workerForPlayerId(PlayerId pid) const
+{
+    return static_cast<WorkerId>(hashutil::WorkerForActor(pid, worker_queues_.size()));
 }
 
 DispatchResult MsgBus::sendToWorker(WorkerId wid, Msg m)
@@ -74,6 +79,7 @@ DispatchResult MsgBus::sendToWorker(WorkerId wid, Msg m)
     const bool business = messageType == MSGTYPE_CONN_DATA;
     m.diagnosticEnqueuedUs = diagnostics_ ? QueueDiagnostics::nowUs() : 0;
     const bool ok = worker_queues_[wid]->try_push(std::move(m));
+    if(diagnostics_) diagnostics_->work(wid).admit(WorkDiagnostics::category(messageType),ok,QueueDiagnostics::nowUs());
     if (ok)
     {
         (*workerEnqueuedClassCounts_[wid])[business ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
