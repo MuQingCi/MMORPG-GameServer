@@ -51,7 +51,7 @@ int64_t alignUpTickUs(int64_t us)
     return (us + TimerQueue::kTickUs - 1) / TimerQueue::kTickUs * TimerQueue::kTickUs;
 }
 
-} // anonymous namespace
+} // namespace
 
 // ==================== TimerQueue 实现 ====================
 

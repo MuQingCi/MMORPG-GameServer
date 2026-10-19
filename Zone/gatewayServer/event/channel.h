@@ -15,8 +15,8 @@ public:
     Channel(EventLoop* loop, int fd);
     ~Channel();
 
-    //interfaces of public
-    //Get/Set info
+    //公共接口
+    //获取/设置相关信息
     int getFd() const { return fd_; }
     int getRevents() const { return revents_; }
     int getEvents() const { return events_; }
@@ -25,12 +25,12 @@ public:
     void setRevents(int revent) { revents_ = revent; }
     void setIndex(int idx) { index_ = idx; }
 
-    //set variable
+    //设置变量
     void setWriteCallback(const WriteCallback& cb) { writeCallback_ = cb; }
     void setReadCallback(const ReadCallback& cb) { readCallback_ = cb; }
     void setErrorCallback(const ErrorCallback& cb) { errorCallback_ = cb; }
 
-    //set events_
+    //设置 events_
     void enableReading(){ events_ |= EPOLLIN; update(); }
     void disableReading() { events_ &= ~EPOLLIN; update(); }
 
@@ -39,12 +39,12 @@ public:
 
     void disableAll(){ events_ = 0; update(); }
 
-    //get the state of events_
+    //获取 events_ 的状态
     bool isReading() const { return events_ & EPOLLIN; }
     bool isWriting() const { return events_ & EPOLLOUT; }
     bool isNonEvent() const { return events_ == 0; }
 
-    //other function
+    //其他功能
     
     void handleEvent();
 

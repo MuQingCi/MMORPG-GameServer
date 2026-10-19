@@ -89,7 +89,7 @@ void Socket::bind(const InetAddress& addr)
     int ret = ::bind(fd_, addr.getAddress(), addr.getSockLen());
 
     assert(ret == 0);
-    //Log
+    //TODO 此处打日志
 }
 
 
@@ -98,7 +98,7 @@ void Socket::listen(int num)
     int ret = ::listen(fd_, num);
     
     assert(ret == 0);
-    //Log
+    //TODO 此处打日志
 }
 
 

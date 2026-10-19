@@ -20,7 +20,7 @@ Channel::~Channel()
 
 void Channel::handleEvent()
 {
-    //Error
+    //错误事件
     if((revents_ & EPOLLERR ))
     {
         if(errorCallback_) errorCallback_();
@@ -29,7 +29,7 @@ void Channel::handleEvent()
         return;
     }
 
-    //Read
+    //读取事件
     if(revents_ & (EPOLLIN | EPOLLRDHUP | EPOLLPRI) )
     {
         if(readCallback_) readCallback_();
@@ -43,7 +43,7 @@ void Channel::handleEvent()
     }
 
 
-    //Write
+    //写入事件
     if(revents_ & EPOLLOUT)
     {
         if(writeCallback_) writeCallback_();

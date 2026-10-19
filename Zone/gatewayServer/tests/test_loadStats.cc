@@ -32,6 +32,19 @@ TEST(LoadStatsComputesCountersAndPercentiles)
     CHECK_EQ(snapshot.p99Us, (uint64_t)4000);
 }
 
+TEST(LoadStatsExportsMergeableLatencySamplesAndP90)
+{
+    LoadStats stats;
+    for (uint64_t i = 1; i <= 10; ++i)
+        stats.recordResult(Result::BusinessResponse, i * 100);
+    stats.recordResult(Result::BusinessError, 99999);
+    CHECK_EQ(stats.snapshot().p90Us, 900u);
+    const auto samples = stats.latencySamples();
+    CHECK_EQ(samples.size(), size_t(10));
+    CHECK_EQ(samples.front(), 100u);
+    CHECK_EQ(samples.back(), 1000u);
+}
+
 TEST(LoadStatsSettlesEveryTerminalAttempt)
 {
     LoadStats stats;

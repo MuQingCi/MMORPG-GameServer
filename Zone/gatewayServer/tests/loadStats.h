@@ -33,6 +33,7 @@ struct LoadStatsSnapshot
     uint64_t bytesSent = 0;
     uint64_t bytesReceived = 0;
     uint64_t p50Us = 0;
+    uint64_t p90Us = 0;
     uint64_t p95Us = 0;
     uint64_t p99Us = 0;
     uint64_t minUs = 0;
@@ -67,6 +68,7 @@ public:
     void recordSentBytes(uint64_t bytes);
     void recordLogout(bool success);
     LoadStatsSnapshot snapshot() const;
+    std::vector<uint64_t> latencySamples() const;
 
 private:
     mutable std::mutex mutex_;

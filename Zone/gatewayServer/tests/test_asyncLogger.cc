@@ -59,8 +59,8 @@ TEST(AsyncLoggerFlushesSuccessiveSmallBatches)
     AsyncLogger logger("batches",64*1024*1024,directory);
     logger.start();
     const auto path=LogPath(directory,"batches");
-    // Prime and recycle buffers with capacity greater than a small record.
-    // A brand-new Buffer may rotate on its first append and mask the predicate bug.
+    // 预先填充并回收容量大于单条小记录的缓冲区。
+    // 全新的 Buffer 可能在首次追加时轮换，从而掩盖等待谓词的缺陷。
     for(int i=0;i<4;++i) {
         const auto marker="prime-"+std::to_string(i)+"-"+std::string(4096,'p')+"\n";
         logger.append(marker.data(),marker.size());
@@ -81,14 +81,14 @@ TEST(AsyncLoggerStopDrainsAllAcceptedBatches)
     std::filesystem::remove_all(directory);
     AsyncLogger logger("drain",64*1024*1024,directory);
     logger.start();
-    // Enough records to cross buffer boundaries while the consumer writes.
+    // 写入足够多的记录，使消费者写出期间发生缓冲区切换。
     constexpr int count=4000;
     for(int i=0;i<count;++i) {
         const auto marker="drain-record-"+std::to_string(i)+"-"+std::string(128,'x')+"\n";
         logger.append(marker.data(),marker.size());
     }
     logger.stop();
-    logger.stop(); // Idempotent after the consumer has joined.
+    logger.stop(); // 消费者线程汇合后，重复调用仍然幂等。
     std::ifstream input(LogPath(directory,"drain"));
     std::string line;
     int seen=0;

@@ -1,6 +1,9 @@
 #include "loadStats.h"
 #include "loadClientProtocol.h"
+#include "loadPollWait.h"
 #include "metricsReader.h"
+#include "aoiVerifier.h"
+#include <filesystem>
 
 #include "base/buffer.h"
 #include "base/clientProto.h"
@@ -50,6 +53,9 @@ struct Options
     uint32_t rpsPerConnection = 10;
     uint32_t durationSec = 10;
     uint32_t drainSec = 0;
+    uint32_t warmupSec = 0;
+    uint32_t preparationTimeoutSec = 30;
+    bool stagger = false;
     uint64_t playerBase = 100000;
     uint64_t ticket = 998877;
     uint16_t module = 1;
@@ -67,6 +73,8 @@ struct Options
 };
 
 std::atomic<int64_t> g_startEpochMs{0};
+std::atomic<uint64_t> g_windowSuccessful{0};
+std::atomic<uint64_t> g_busyEvidenceCount{0};
 
 void Usage(const char* program)
 {
@@ -124,6 +132,9 @@ bool ParseArgs(int argc, char** argv, Options& options)
         if (arg == "--metrics-output") { const char* v = next("--metrics-output"); if (!v) return false; options.metricsOutput = v; continue; }
         if (arg == "--barrier-dir") { const char* v = next("--barrier-dir"); if (!v) return false; options.barrierDir = v; continue; }
         if (arg == "--scene") { options.scene = true; options.ping = false; continue; }
+        if (arg == "--stagger") { options.stagger = true; continue; }
+        if (arg == "--warmup") { const char* v=next("--warmup"); if(!v || !ParseUInt(v,value) || value>300)return false;options.warmupSec=value;continue; }
+        if (arg == "--preparation-timeout") { const char* v=next("--preparation-timeout");if(!v || !ParseUInt(v,value) || value<1 || value>600)return false;options.preparationTimeoutSec=value;continue; }
         if (arg == "--metrics-interval") { const char* v = next("--metrics-interval"); if (!v || !ParseUInt(v, value) || value == 0) return false; options.metricsIntervalSec = static_cast<uint32_t>(value); continue; }
         if (arg == "--port") { const char* v = next("--port"); if (!v || !ParseUInt(v, value) || value > 65535) return false; options.port = static_cast<uint16_t>(value); continue; }
         if (arg == "--connections") { const char* v = next("--connections"); if (!v || !ParseUInt(v, value) || value == 0) return false; options.connections = static_cast<uint32_t>(value); continue; }
@@ -316,13 +327,13 @@ struct PreparationBarrier
 };
 
 bool WaitForStart(const Options& options, PreparationBarrier& barrier, uint32_t index,
-                  const Clock::time_point durationDeadline)
+                  const Clock::time_point durationDeadline, int fd, Buffer& input, int32_t& x,int32_t& y)
 {
     {
         std::unique_lock<std::mutex> lock(barrier.mutex);
         ++barrier.ready;
         barrier.changed.notify_all();
-        if (!barrier.changed.wait_for(lock, std::chrono::seconds(30), [&] {
+        if (!barrier.changed.wait_for(lock, std::chrono::seconds(options.preparationTimeoutSec), [&] {
                 return barrier.failed || barrier.ready == barrier.expected;
             }) || barrier.failed)
             return false;
@@ -349,12 +360,16 @@ bool WaitForStart(const Options& options, PreparationBarrier& barrier, uint32_t 
             g_startEpochMs.store(epochMs);
             const auto target = Clock::time_point(std::chrono::milliseconds(epochMs));
             if (Clock::now() > target + std::chrono::seconds(60)) return false;
-            std::this_thread::sleep_until(target);
+            while(Clock::now()<target && !g_stopRequested) {
+                ClientHeader h;std::string b;
+                if(ReadFrame(fd,input,h,b,20) && h.kind==ClientKind::kPush) ApplySceneStatePush(h,b,x,y);
+            }
             return !g_stopRequested;
         }
         std::ifstream abortFile(options.barrierDir + "/ABORT");
         if (abortFile.good()) return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        ClientHeader h;std::string b;
+        if(ReadFrame(fd,input,h,b,20) && h.kind==ClientKind::kPush) ApplySceneStatePush(h,b,x,y);
     }
     return false;
 }
@@ -396,7 +411,7 @@ void SampleMetrics(const Options& options, LoadStats& stats)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     if (g_stopRequested) return;
 
-    const auto sampleStart = Clock::time_point(std::chrono::milliseconds(g_startEpochMs.load()));
+    const auto sampleStart = Clock::time_point(std::chrono::milliseconds(g_startEpochMs.load()))+std::chrono::seconds(options.warmupSec);
     for (uint32_t sampleIndex = 0;; ++sampleIndex)
     {
         const auto nextSample = sampleStart + std::chrono::seconds(sampleIndex);
@@ -415,6 +430,7 @@ void SampleMetrics(const Options& options, LoadStats& stats)
              << ",\"client_load_attempted\":" << client.loadAttempted
              << ",\"client_sent\":" << client.sent
              << ",\"client_business_succeeded\":" << client.businessSucceeded
+             << ",\"client_window_succeeded\":" << g_windowSuccessful.load()
              << ",\"client_schedule_delay_us\":" << client.scheduleDelayUs
              << ",\"client_schedule_delay_max_us\":" << client.maxScheduleDelayUs
              << ",\"client_completed\":" << client.completed
@@ -444,9 +460,11 @@ void SampleMetrics(const Options& options, LoadStats& stats)
     }
 }
 
-void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
+void RunConnection(const Options& options, uint32_t index, LoadStats& measuredStats,
                    const Clock::time_point start, PreparationBarrier& barrier)
 {
+    LoadStats warmupStats;
+    LoadStats& stats=measuredStats;
     const int fd = Connect(options);
     if (fd < 0)
     {
@@ -464,6 +482,19 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
     }
 
     int32_t x = 0, y = 0;
+    AoiVerifier aoiVerifier;
+    const bool verifyAoi = options.scene && std::getenv("AOI_VERIFY_TOTAL");
+    const bool sampledAoiObserver = verifyAoi && index == 0;
+    auto acceptAoi = [&](const ClientHeader& header, const std::string& body) {
+        if (!sampledAoiObserver || header.kind != ClientKind::kPush || header.module != 100) return;
+        if (header.method == 7) {
+            gs::SCPushViewDelta delta;
+            if (delta.ParseFromString(body)) aoiVerifier.delta(delta);
+        } else if (header.method == 8) {
+            gs::SCPushViewSnapshotPart part;
+            if (part.ParseFromString(body)) aoiVerifier.snapshot(part);
+        }
+    };
     uint64_t successfulMoves = 0;
     if (options.scene && !EnterScene(fd, input, x, y))
     {
@@ -474,8 +505,8 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
         return;
     }
 
-    if (!WaitForStart(options, barrier, index, start + std::chrono::seconds(30) +
-                      std::chrono::seconds(options.durationSec)))
+    if (!WaitForStart(options, barrier, index, start + std::chrono::seconds(options.preparationTimeoutSec) +
+                      std::chrono::seconds(options.durationSec),fd,input,x,y))
     {
         stats.recordResult(Result::TransportError);
         ::close(fd);
@@ -490,9 +521,12 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
     }
     const int32_t walkOrigin = x;
     int walkDirection = 1;
-    const auto loadStart = Clock::time_point(std::chrono::milliseconds(epochMs));
+    const auto warmupStart = Clock::time_point(std::chrono::milliseconds(epochMs));
+    const auto loadStart = warmupStart+std::chrono::seconds(options.warmupSec);
     const auto interval = std::chrono::microseconds(1000000ull / options.rpsPerConnection);
-    auto nextSend = loadStart + std::chrono::milliseconds(250);
+    const auto phase=options.stagger ? std::chrono::microseconds((options.playerBase+index)*7919 % interval.count()) : std::chrono::microseconds(250000);
+    auto nextSend = warmupStart + phase;
+    bool measuring=options.warmupSec==0;
     // requestId=1 用于 Auth，EnterScene 在发压前完成；业务请求从 3 开始。
     uint64_t requestId = options.scene ? 3 : 2;
     std::map<uint64_t, Clock::time_point> pending;
@@ -507,6 +541,11 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
     while (true)
     {
         auto now = Clock::now();
+        if(!measuring && now>=loadStart) {
+            measuring=true;
+            nextSend=loadStart+phase;
+        }
+        LoadStats& stats=measuring ? measuredStats : warmupStats;
         if (g_stopRequested && !stopSending)
             deadline = now;
         if (!stopSending && (now >= deadline || g_stopRequested))
@@ -561,9 +600,8 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
         }
 
         pollfd p{fd, POLLIN, 0};
-        const auto wakeAt = stopSending ? drainDeadline : std::min(nextSend, deadline);
-        const int waitMs = static_cast<int>(std::max<int64_t>(1,
-            std::chrono::duration_cast<std::chrono::milliseconds>(wakeAt - Clock::now()).count()));
+        const int waitMs = LoadPollWaitMs(Clock::now(),nextSend,deadline,drainDeadline,
+                                         stopSending,options.scene && !pending.empty());
         const int ready = ::poll(&p, 1, waitMs);
         if (ready < 0 && errno == EINTR)
         {
@@ -612,6 +650,7 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
             }
             if (header.kind == ClientKind::kPush)
             {
+                acceptAoi(header, body);
                 if (options.scene) ApplySceneStatePush(header, body, x, y);
                 continue;
             }
@@ -651,6 +690,7 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                 continue;
             }
             const auto latency = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - sent->second).count());
+            LoadStats& responseStats=sent->second<loadStart ? warmupStats : measuredStats;
             const LoadResponseKind classified = ClassifyLoadResponse(header, body, expectedModule, expectedMethod);
             std::string businessError;
             if (options.scene && !options.ping && classified == LoadResponseKind::BusinessError)
@@ -664,7 +704,18 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                     if (ack.ParseFromString(body) && ack.code() != 0)
                         businessError = std::to_string(ack.code()) + ":WalkAck";
                 }
-                stats.recordBusinessError(businessError.empty() ? "unclassified" : businessError);
+                responseStats.recordBusinessError(businessError.empty() ? "unclassified" : businessError);
+                static const bool busyEvidence=std::getenv("SCENE_BUSY_DIAGNOSTICS")!=nullptr;
+                if(busyEvidence && businessError=="1011:server busy") {
+                    const auto count=g_busyEvidenceCount.fetch_add(1);
+                    if(count<4096) {
+                        std::fprintf(stderr,"BUSY_EVIDENCE player=%llu request=%llu receivedUs=%llu measured=%d\n",
+                            static_cast<unsigned long long>(options.playerBase+index),
+                            static_cast<unsigned long long>(header.requestId),
+                            static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count()),
+                            sent->second>=loadStart);
+                    } else if(count==4096) std::fprintf(stderr,"BUSY_EVIDENCE_DROPPED\n");
+                }
             }
             Result result = Result::UnknownResponse;
             if (classified == LoadResponseKind::Success)
@@ -680,7 +731,9 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
                 stats.recordInFlightDelta(-1);
                 continue;
             }
-            stats.recordResult(result, latency, body.size());
+            if(sent->second>=loadStart && Clock::now()<deadline && classified==LoadResponseKind::Success)
+                ++g_windowSuccessful;
+            responseStats.recordResult(result, latency, body.size());
             if (options.scene && classified == LoadResponseKind::Success && expectedMethod == 2)
             {
                 const auto request = pendingBodies.find(header.requestId);
@@ -693,7 +746,7 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
             pending.erase(sent);
             pendingBodies.erase(header.requestId);
             pendingMethods.erase(header.requestId);
-            stats.recordInFlightDelta(-1);
+            responseStats.recordInFlightDelta(-1);
         }
     }
     if (!stopSending && !pending.empty())
@@ -716,9 +769,57 @@ void RunConnection(const Options& options, uint32_t index, LoadStats& stats,
         (drainFinished || (!stopSending && Clock::now() >= deadline));
     if (options.scene && connectionClean && !g_stopRequested)
     {
+        if (verifyAoi) {
+            // 测量窗口外的静止屏障。保持所有连接，
+            // 直到被采样的观察者捕获稳定后的 AOI 状态。
+            const std::filesystem::path directory = std::filesystem::path(options.barrierDir).parent_path()/"aoi-final";
+            std::filesystem::create_directories(directory);
+            const auto playerId = options.playerBase + index;
+            {
+                std::ofstream ready(directory/(std::to_string(playerId)+".ready"));
+                ready << "{\"playerId\":" << playerId << ",\"x\":" << x << ",\"y\":" << y << "}\n";
+            }
+            const size_t total = std::strtoul(std::getenv("AOI_VERIFY_TOTAL"), nullptr, 10);
+            const auto limit = Clock::now() + std::chrono::seconds(15);
+            auto allReady = Clock::time_point::max();
+            while (Clock::now() < limit) {
+                size_t ready = 0;
+                for (const auto& entry : std::filesystem::directory_iterator(directory))
+                    if (entry.path().extension() == ".ready") ++ready;
+                if (ready == total && allReady == Clock::time_point::max()) allReady = Clock::now();
+                if (allReady != Clock::time_point::max() && Clock::now() >= allReady + std::chrono::seconds(1)) break;
+                ClientHeader header; std::string body;
+                if (ReadFrame(fd, input, header, body, 50)) acceptAoi(header, body);
+            }
+            if (sampledAoiObserver) {
+                std::ofstream evidence(directory/(std::to_string(playerId)+".view.json"));
+                evidence << "{\"playerId\":" << playerId << ",\"complete\":" << (aoiVerifier.complete()?"true":"false")
+                         << ",\"errors\":" << aoiVerifier.errors() << ",\"viewSeq\":" << aoiVerifier.sequence() << ",\"entities\":[";
+                bool first = true;
+                for (const auto& [id, entity] : aoiVerifier.entities()) {
+                    if (!first) evidence << ',';
+                    first = false;
+                    evidence << "{\"entityId\":" << id << ",\"businessId\":" << entity.business_id()
+                             << ",\"x\":" << entity.x() << ",\"y\":" << entity.y()
+                             << ",\"generation\":" << entity.entity_generation()
+                             << ",\"spatialVersion\":" << entity.spatial_version() << "}";
+                }
+                evidence << "]}\n";
+                evidence.close();
+                std::ofstream done(directory/(std::to_string(playerId)+".done"));
+            }
+            while (Clock::now() < limit) {
+                size_t done = 0;
+                for (const auto& entry : std::filesystem::directory_iterator(directory))
+                    if (entry.path().extension() == ".done") ++done;
+                if (done == 3) break;
+                ClientHeader header; std::string body;
+                ReadFrame(fd, input, header, body, 50);
+            }
+        }
         const bool logoutOk = SendLogoutAndWait(fd, input, requestId++);
         stats.recordLogout(logoutOk);
-        if (!logoutOk) stats.recordResult(Result::BusinessError);
+        // 退出使用独立计数器，不计入业务完成数或错误数。
         if (logoutOk)
         {
             std::lock_guard<std::mutex> lock(barrier.mutex);
@@ -790,8 +891,8 @@ int main(int argc, char** argv)
         !options.additionalSceneMetrics.empty() || !options.metricsOutput.empty())
         metricsThread = std::thread(SampleMetrics, std::cref(options), std::ref(stats));
     for (auto& worker : workers) worker.join();
-    // No START means preparation failed; otherwise let the sampler write the
-    // duration+drain boundary even when workers have already drained early.
+    // 没有 START 表示准备失败；否则，即使工作线程提前排空，
+    // 也应让采样器写出测量时长加排空时长的边界。
     if (g_startEpochMs.load() <= 0) g_stopRequested = 1;
     if (metricsThread.joinable()) metricsThread.join();
 
@@ -835,11 +936,16 @@ int main(int argc, char** argv)
     std::fprintf(file, "\"sent\":%llu,\"schedule_delay_us\":%llu,\"schedule_delay_max_us\":%llu,",
                  (unsigned long long)result.sent, (unsigned long long)result.scheduleDelayUs,
                  (unsigned long long)result.maxScheduleDelayUs);
+    std::fprintf(file, "\"p90_us\":%llu,", (unsigned long long)result.p90Us);
     std::fprintf(file, "\"min_us\":%llu,\"p50_us\":%llu,\"p95_us\":%llu,\"p99_us\":%llu,\"max_us\":%llu}\n",
                  (unsigned long long)result.minUs, (unsigned long long)result.p50Us,
                  (unsigned long long)result.p95Us, (unsigned long long)result.p99Us,
                  (unsigned long long)result.maxUs);
     std::fclose(file);
+    std::ofstream latencyFile(options.output + ".latency-us.txt");
+    for (const auto latency : stats.latencySamples()) latencyFile << latency << '\n';
+    latencyFile.close();
+    if (!latencyFile) return 1;
     return result.errors == 0 && (!options.scene ||
         (result.logoutSucceeded == options.connections && result.logoutFailed == 0)) ? 0 : 1;
 }

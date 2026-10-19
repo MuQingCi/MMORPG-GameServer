@@ -260,7 +260,7 @@ TEST(ServiceRegistryRebindRemovesOldInstanceIndex)
     ServiceRegistry r;
     CHECK(r.AddPending("scene", nullptr));
     CHECK(r.Bind("scene", 8, 1, 1, 0, 77, 1000, nullptr));
-    CHECK(!r.Bind("scene", 8, 1, 2, 0, 88, 1001, nullptr)); // established connection cannot change identity
+    CHECK(!r.Bind("scene", 8, 1, 2, 0, 88, 1001, nullptr)); // 已建立的连接不能更改身份
     CHECK(r.AddPending("scene-replacement", nullptr));
     CHECK(r.Bind("scene-replacement", 8, 1, 2, 0, 88, 1001, nullptr));
 

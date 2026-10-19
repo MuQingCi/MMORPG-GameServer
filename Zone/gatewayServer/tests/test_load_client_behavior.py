@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box signal/drain and JSON accounting checks for gateway_load_client."""
+"""gateway_load_client 的信号/排空黑盒检查及 JSON 计账检查。"""
 import json
 import pathlib
 import socket

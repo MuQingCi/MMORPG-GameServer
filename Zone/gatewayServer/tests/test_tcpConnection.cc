@@ -5,6 +5,8 @@
 #include "gatewayDispatcher.h"
 #include "base/gatewayPlayer.h"
 #include "test_util.h"
+#include "gameProto.pb.h"
+#include "loadClientProtocol.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -146,11 +148,51 @@ TEST(GatewayDispatcherSceneSubmissionCountsAndCancelsStaleQueue)
         CHECK_EQ(stats.sceneBusinessFramesSent, (uint64_t)3);
         CHECK_EQ(stats.sceneBindingDeclareSkipped, (uint64_t)2);
         CHECK_EQ(stats.backendFramesSent, (uint64_t)4);
-        // 此请求尚未提交就关闭会话，不得发送或复活已声明状态。
-        feed(ClientKind::kRequest, 3, 2, 5, "must-not-send");
-        dispatcher.OnClientClosed(sid);
+        // 提交完成且套接字就绪后、关闭之前进行检查。
+        loop.runAfter(0.01,[&] {
+            Buffer backendBytes;
+            char data[8192];
+            const auto got=::recv(backendPair.clientFd,data,sizeof(data),MSG_DONTWAIT);
+            CHECK(got>0);if(got>0)backendBytes.append(data,got);
+            size_t replies=0;
+            for(;;) {
+                Header h;std::string body;
+                if(DecodeFrame(backendBytes,h,ServerID::kScene,body)!=DecodeStatus::kOk)break;
+                if(h.seq==0)continue;
+                gs::RetTip tip;
+                tip.set_code(replies==0 ? gs::ERROR_CODE_SERVER_BUSY : gs::ERROR_CODE_PENDING_TIMEOUT);
+                tip.set_text("pending failure");
+                Buffer reply;
+                EncodeFrame(reply,MakeHeader(kSceneMsg,h.module,h.method,h.seq,h.playerId,kScene,kGateway),tip.SerializeAsString());
+                dispatcher.OnBackendMessage(backend,&reply);++replies;
+            }
+            CHECK_EQ(replies,3u);
+            loop.runAfter(0.06,[&] {
+                char data[8192];
+                Buffer clientBytes;
+                const auto clientGot=::recv(clientPair.clientFd,data,sizeof(data),MSG_DONTWAIT);
+                CHECK(clientGot>0);if(clientGot>0)clientBytes.append(data,clientGot);
+                size_t correlated=0;
+                for(;;) {
+                    ClientHeader h;std::string body;
+                    if(DecodeClientFrame(clientBytes,h,body)!=DecodeStatus::kOk)break;
+                    if(h.kind!=ClientKind::kResponse)continue;
+                    CHECK_EQ(h.requestId,correlated+2);CHECK_EQ(h.module,3);CHECK_EQ(h.method,2);
+                    gs::RetTip tip;CHECK(tip.ParseFromString(body));
+                    CHECK_EQ(tip.code(),correlated==0 ? gs::ERROR_CODE_SERVER_BUSY : gs::ERROR_CODE_PENDING_TIMEOUT);
+                    CHECK_EQ(ClassifyLoadResponse(h,body,3,2),LoadResponseKind::BusinessError);
+                    ++correlated;
+                }
+                CHECK_EQ(correlated,3u);
+                CHECK_EQ(dispatcher.Snapshot().pendingRoutes,0u);
+                // 此请求尚未提交就关闭会话，不得发送或复活已声明状态。
+                feed(ClientKind::kRequest, 3, 2, 5, "must-not-send");
+                dispatcher.OnClientClosed(sid);
+            });
+        });
     });
-    loop.runAfter(0.02, [&] { loop.quit(); });
+    loop.runAfter(0.001, [] {}); // 唤醒事件循环启动前排队的提交
+    loop.runAfter(0.10, [&] { loop.quit(); });
     loop.loop();
     const auto stats = dispatcher.Snapshot();
     CHECK_EQ(stats.sceneBusinessFramesSent, (uint64_t)3);

@@ -121,16 +121,21 @@ void GatewayDispatcher::OnClientClosed(uint64_t sessionId)
 
 void GatewayDispatcher::NotifySceneBinding(const ClientSession& s, bool online)
 {
-    if(!s.authed || s.playerId==0 || s.dstService!=ServerID::kScene) return;
-    // A session without a scene assignment has not sent scene traffic yet.
-    // Do not announce it to an arbitrary instance during auth/disconnect.
-    if (s.sceneId == 0 || s.sceneConnName.empty()) return;
+    if(!s.authed || s.playerId==0 || s.dstService!=ServerID::kScene) 
+        return;
+
+    // 尚未分配 Scene 的会话还未发送过场景业务
+    // 认证或断连时，不要向任意实例发送该会话的上线通知
+    if (s.sceneId == 0 || s.sceneConnName.empty())
+        return;
     ServiceEndpoint ep;
     const bool found = services_.GetByChannel(s.sceneConnName, ep);
-    if(!found || !ep.conn || ep.sceneId==0) return;
+    if(!found || !ep.conn || ep.sceneId==0) 
+        return;
     if (s.sceneId != 0 && (ep.serviceId != s.dstService || ep.zoneId != cfg_.zoneId ||
         ep.sceneId != s.sceneId || ep.channelId != s.backendChannelId ||
-        ep.sceneIncarnation != s.sceneIncarnation)) return;
+        ep.sceneIncarnation != s.sceneIncarnation)) 
+        return;
     QueueSceneSubmission(s, ep, online);
 }
 
@@ -776,8 +781,7 @@ void GatewayDispatcher::HandleBackendFrame(const TcpConnectionPtr& conn, const H
         return;
     }
 
-    // A replaced/disconnected endpoint may still have a socket object long
-    // enough for queued callbacks to arrive. It is no longer authoritative.
+    // 被替换或断开的端点，其套接字对象可能仍会存活一段时间，足以接收到排队的回调，但该端点已不再具有权威性
     ServiceEndpoint activeEndpoint;
     if (self.sceneId != 0 &&
         (!services_.GetByChannel(conn->name(), activeEndpoint) ||

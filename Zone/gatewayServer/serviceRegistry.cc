@@ -62,8 +62,7 @@ bool ServiceRegistry::Bind(const std::string& connName, uint8_t serviceId, uint3
     if (sceneIncarnation != 0 && pool.sceneIncarnation != 0 &&
         sceneIncarnation != pool.sceneIncarnation)
     {
-        // A process restart changes the incarnation of the whole scene. Never
-        // leave old-generation channels eligible beside the new process.
+        // 进程重启会改变整个 Scene 的进程代次；绝不能让旧代次通道与新进程的通道同时处于可选状态
         bool sameIncarnationReconnect = false;
         for (const auto& oldSlot : pool.channels)
             if (oldSlot.state == BackendState::Ready && oldSlot.connName == connName &&
@@ -102,9 +101,7 @@ bool ServiceRegistry::Bind(const std::string& connName, uint8_t serviceId, uint3
     }
     if (oldConnName) oldConnName->clear();
 
-    // A channel is exclusive only within one scene pool. A reconnect may take
-    // over its occupied slot; keep a downgraded name record until the caller
-    // closes the old TCP connection so its close callback remains idempotent.
+    // 通道只在单个 Scene 池内独占。重连可以接管已占用的槽位；在调用方关闭旧 TCP 连接之前保留降级的名称记录，以保证旧连接的关闭回调仍然幂等
     if (slot.state == BackendState::Ready && slot.connName != connName)
     {
         const std::string staleName = slot.connName;
@@ -149,7 +146,7 @@ bool ServiceRegistry::Bind(const std::string& connName, uint8_t serviceId, uint3
                 oldSlot.channelId = oldChannelId;
             }
         }
-        oldRecord->second.serviceId = 0; // stale socket remains only for idempotent close callback
+        oldRecord->second.serviceId = 0; // 保留失效套接字仅用于幂等的关闭回调
     }
 
     ServiceEndpoint endpoint;

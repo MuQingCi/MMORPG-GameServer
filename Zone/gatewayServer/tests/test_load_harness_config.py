@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression checks for generated gateway/zone identity and endpoint configs."""
+"""生成的 Gateway/区服身份及端点配置的回归检查。"""
 import pathlib
 import re
 import tempfile

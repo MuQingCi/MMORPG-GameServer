@@ -121,6 +121,12 @@ void LoadStats::recordLogout(bool success)
     else ++logoutFailed_;
 }
 
+std::vector<uint64_t> LoadStats::latencySamples() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return latenciesUs_;
+}
+
 LoadStatsSnapshot LoadStats::snapshot() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -162,6 +168,7 @@ LoadStatsSnapshot LoadStats::snapshot() const
     out.minUs = sorted.front();
     out.maxUs = sorted.back();
     out.p50Us = percentile(0.50);
+    out.p90Us = percentile(0.90);
     out.p95Us = percentile(0.95);
     out.p99Us = percentile(0.99);
     return out;

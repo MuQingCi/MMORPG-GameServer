@@ -350,7 +350,7 @@ TEST(BackendHandshakeCodec)
     CHECK_EQ(out.targetGatewayId, (uint32_t)0x55667788);
     CHECK_EQ(out.channelId, (uint32_t)0x99aabbcc);
 
-    CHECK(!UnpackBackendHandshake(std::string(9, 'x'), out)); // legacy refused
+    CHECK(!UnpackBackendHandshake(std::string(9, 'x'), out)); // 拒绝旧格式
     CHECK(!UnpackBackendHandshake(body.substr(0, body.size()-1), out));
     CHECK(!UnpackBackendHandshake(body + "x", out));
     std::string badVersion = body;

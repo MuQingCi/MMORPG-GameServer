@@ -92,7 +92,7 @@ void Epoller::updateChannel(Channel* channel)
 
         if(ret < 0)
         {
-            //Log
+            //TODO 此处打日志
         }
 
         channel->setIndex(kAdded);
@@ -113,7 +113,7 @@ void Epoller::updateChannel(Channel* channel)
 
         if(ret < 0)
         {
-            //Log
+            //TODO 此处打日志
         }
     }
 }
@@ -135,7 +135,7 @@ void Epoller::removeChannel(Channel* channel)
 
     if(ret < 0)
     {
-        //Log
+        //TODO 此处打日志
     }
 
     channel->setIndex(kDeleted);

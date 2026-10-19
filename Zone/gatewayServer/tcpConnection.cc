@@ -295,7 +295,7 @@ void TcpConnection::sendFile(const std::string& filePath)
 }
 
 
-//---------------private---------------
+//---------------私有实现---------------
 void TcpConnection::sendInLoop(const void* data, size_t len)
 {
     loop_->assertInLoopThread();

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Real-process 2 gateway x 2 scene acceptance and sustained load.
-# Refuse the obsolete exploratory preflight/restart sequence: only the guarded
-# READY-barrier flow below may start clients, once the documented online-actor
-# preparation protocol is implemented.
+# 真实进程的 2 Gateway × 2 Scene 验收与持续负载。
+# 拒绝已废弃的探索性预检/重启流程：只有在文档规定的在线 Actor
+# 准备协议实现后，下方受保护的 READY 屏障流程
+# 才允许启动客户端。
 set -Eeuo pipefail
 GW_BIN="$(realpath "${1:?gatewayServer}")"
 SCENE_BIN="$(realpath "${2:?sceneServer}")"
@@ -105,7 +105,7 @@ text=text.replace('        - 1=127.0.0.1:13145',f'        - 1=127.0.0.1:{p1}\n  
 text=text.replace('    backendChannels: 1',f'    backendChannels: {channels}')
 pathlib.Path(out).write_text(text)
 PY
-# Disable external persistence and isolate logs for this run.
+# 本次运行禁用外部持久化，并隔离日志。
 if [[ -n "${LOAD_PERSISTENCE_ZONE_CONFIG:-}" ]]; then
     [[ -n "${LOAD_PERSISTENCE_CONTEXT:-}" && -f "$LOAD_PERSISTENCE_CONTEXT" ]] || { echo "FAIL: missing isolated persistence context"; exit 1; }
     cp "$LOAD_PERSISTENCE_ZONE_CONFIG" "$WORK/zone.yaml"
@@ -125,7 +125,7 @@ else
 fi
 sed -i "s#^        dir: .*#        dir: $WORK/logs#" "$WORK/zone.yaml"
 if [[ -n "${LOAD_PERSISTENCE_ZONE_CONFIG:-}" || "${LOAD_EXPLICIT_SCENE:-0}" == 1 ]]; then
-    # Explicit placement also supports matched no-DB staircase controls.
+    # 显式布置也支持匹配的无数据库阶梯对照。
     sed -i 's/defaultSceneId: 0/defaultSceneId: 10/' "$WORK/gw1.yaml"
     sed -i 's/defaultSceneId: 0/defaultSceneId: 20/' "$WORK/gw2.yaml"
 fi
@@ -145,10 +145,10 @@ wait_files() {
 }
 wait_files "$WORK/logs/$(date +%F)/gateway.log"
 
-# The async logger creates gateway.log before GatewayServer::start() has bound
-# both listeners. Do not infer readiness from the log file: prove each private
-# endpoint accepts a TCP connection before starting scenes (which connect only
-# once and would otherwise race the listen()).
+# 异步日志器创建 gateway.log 时，GatewayServer::start() 尚未绑定
+# 两个监听端点。不要通过日志文件推断就绪：启动 Scene 前，先确认每个私有
+# 端点都能接受 TCP 连接；Scene 只连接一次，
+# 否则会与 listen() 产生启动竞态。
 wait_private_ports() {
     local deadline=$((SECONDS+12))
     while (( SECONDS < deadline )); do
@@ -217,7 +217,7 @@ for gateway_id in 1 2; do
 done
 
 
-# One load client per Gateway; all connections pause until global READY.
+# 每个 Gateway 对应一个负载客户端；所有连接等待全局 READY 后再继续。
 mkdir -p "$WORK/start-barrier"
 rm -f "$WORK/start-barrier/START" "$WORK/start-barrier/ABORT" "$WORK/start-barrier"/*.ready
 "$LOAD_BIN" --host 127.0.0.1 --port "$PUB1" --connections "$CONNECTIONS_PER_GATEWAY" --rps "$RPS" --duration "$DURATION" --drain "$DRAIN" --scene --player-base 1100000 --ticket "$TOKEN" --barrier-dir "$WORK/start-barrier" --gateway-metrics "$WORK/gw1.metrics.json" --scene-metrics "$WORK/scene10.metrics.json" --scene-metrics-extra "$WORK/scene20.metrics.json" --metrics-output "$WORK/metrics-gw1.jsonl" --output "$WORK/load-gw1.json" > "$WORK/load-gw1.out" 2>&1 & L1=$!
@@ -240,8 +240,8 @@ import pathlib,sys,time
 target=time.clock_gettime_ns(time.CLOCK_MONOTONIC)//1_000_000+100
 pathlib.Path(sys.argv[1]).write_text(f"{target}\n")
 PY
-# Execution boundaries only: queue depth, stale metrics, latency and errors are data.
-# Keep the deprecated queue-seconds variable inert for old callers.
+# 这里只限定执行边界：队列深度、过期指标、延迟和错误均作为观测数据。
+# 保留已废弃的 queue-seconds 变量以兼容旧调用方，但不让其生效。
 RECOVERY="${LOAD_RECOVERY:-0}"
 load_deadline=$((SECONDS+DURATION+DRAIN+20))
 while kill -0 "$L1" 2>/dev/null || kill -0 "$L2" 2>/dev/null; do
@@ -256,7 +256,7 @@ done
 client_status=0
 wait "$L1" || client_status=1
 wait "$L2" || client_status=1
-# Observe recovery before any acceptance assertion or service shutdown.
+# 执行验收断言或关闭服务前，先观察恢复情况。
 python3 - "$WORK" "$RECOVERY" <<'PY'
 import json,pathlib,sys,time
 p=pathlib.Path(sys.argv[1]); duration=int(sys.argv[2]); start=time.monotonic()
@@ -307,7 +307,7 @@ if [[ -n "${LOAD_PERSISTENCE_CONTEXT:-}" ]]; then
     scene_index=0
     for scene_pid in "${PIDS[@]:2}"; do kill -TERM "$scene_pid"; done
     for scene_pid in "${PIDS[@]:2}"; do
-        # Bounded graceful shutdown; cleanup trap remains responsible on failure.
+        # 有界地优雅退出；失败时仍由清理 trap 负责收尾。
         for _ in $(seq 1 200); do kill -0 "$scene_pid" 2>/dev/null || break; sleep .1; done
         if kill -0 "$scene_pid" 2>/dev/null; then kill -KILL "$scene_pid"; echo "FAIL: scene shutdown timeout"; exit 1; fi
         shutdown_status=0

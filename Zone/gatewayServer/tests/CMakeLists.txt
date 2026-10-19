@@ -13,6 +13,7 @@ add_executable(gateway_tests
     test_gatewayRouting.cc
     test_loadStats.cc
     test_loadClientProtocol.cc
+    test_aoiVerifier.cc
     test_metricsReader.cc
     test_buffer.cc
     test_eventLoop.cc
@@ -35,6 +36,12 @@ target_sources(gateway_tests PRIVATE loadStats.cc)
 target_sources(gateway_tests PRIVATE metricsReader.cc)
 
 add_test(NAME gateway_tests COMMAND gateway_tests)
+
+add_executable(load_poll_wait_test test_main.cc test_loadPollWait.cc)
+target_include_directories(load_poll_wait_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(load_poll_wait_test PRIVATE -UNDEBUG)
+target_link_libraries(load_poll_wait_test PRIVATE gateway_core)
+add_test(NAME load_poll_wait_test COMMAND load_poll_wait_test)
 
 add_executable(gateway_load_client
     load_client.cc
@@ -106,6 +113,9 @@ else()
 endif()
 
 if(PYTHON3_EXECUTABLE)
+    add_test(NAME benchmark_matrix_contract
+        COMMAND ${PYTHON3_EXECUTABLE} -B
+                ${CMAKE_SOURCE_DIR}/sceneServer/tests/test_benchmark_matrix.py)
     add_test(NAME gateway_load_client_behavior
         COMMAND ${PYTHON3_EXECUTABLE} -B
                 ${CMAKE_CURRENT_SOURCE_DIR}/test_load_client_behavior.py)

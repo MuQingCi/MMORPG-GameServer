@@ -541,14 +541,14 @@ TEST(E2eBackendResponseContextGuard)
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
                                  req.seq, req.playerId, ServerID::kDB, ServerID::kGateway, "spoof"));
     CHECK(backend->expectClosedByPeer(1000));
-    // The original backend connection remains authoritative for this route.
+    // 该路由仍以原后端连接为权威来源。
 
     // 正确服务号但错误玩家/方法，同样不能抢占尚未消费的路由。
     CHECK(backend->sendGateFrame(NetMessageType::kSceneMsg, kModPlayer, kMethodMove,
                                  req.seq, 4002, ServerID::kScene, ServerID::kGateway, "wrong-player"));
     CHECK(backend->expectClosedByPeer(1000));
-    // A malformed response closes the original connection and invalidates its
-    // routes. A newly registered connection must not claim that old seq.
+    // 格式错误的响应会关闭原连接，并使其路由失效；
+    // 新注册的连接不能认领旧的 seq。
     backend.reset();
     backend = std::make_unique<e2e::Conn>();
     CHECK(backend->open(PrivatePort()));

@@ -43,11 +43,11 @@ public:
 
     bool isValid() const { return microSecondsSinceEpoch_ > 0;}
 
-    //To string 
+    // 转换为字符串
     std::string toFormattedString();   //YYYYMMDD hh:mm:ss.xxxx
     std::string toDateString();        //YYYYMMDD
 
-    //Other operation interfaces
+    //其他操作接口
     int64_t differMicroSecond(const Timestamp& rhs) const
     {
         return std::abs(rhs.getMicroSecond() - microSecondsSinceEpoch_);
