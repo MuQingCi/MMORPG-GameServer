@@ -4,12 +4,30 @@ syntax = "proto3";
 // 两端必须一致，否则 RouteTable::Validate() 会在启动时直接报错退出（这是设计上的保护）。
 package gs;
 
+// 对外应用错误码；数据库和传输层的原生错误使用独立的错误域。
+enum ErrorCode {
+    ERROR_CODE_OK = 0;
+    ERROR_CODE_INVALID_GATEWAY_ENVELOPE = 400;
+    ERROR_CODE_ROUTE_NOT_FOUND = 1001;
+    ERROR_CODE_HANDLER_NOT_IMPLEMENTED = 1002;
+    ERROR_CODE_LUA_NOT_READY = 1003;
+    ERROR_CODE_LUA_HANDLER_NOT_FOUND = 1004;
+    ERROR_CODE_INTERNAL = 1005;
+    ERROR_CODE_PLAYER_SESSION_INVALID = 1006;
+    ERROR_CODE_INVALID_REQUEST = 1007;
+    ERROR_CODE_OPERATION_REJECTED = 1008;
+    ERROR_CODE_PLAYER_NOT_READY = 1009;
+    ERROR_CODE_PLAYER_LOAD_FAILED = 1010;
+    ERROR_CODE_SERVER_BUSY = 1011;
+    ERROR_CODE_PENDING_TIMEOUT = 1012;
+}
+
 // ---------------------------------------------------------------------------
 // 通用
 // ---------------------------------------------------------------------------
 message RetTip
 {
-    int32  code = 1;   // 0 = 成功；非 0 见代码约定
+    int32  code = 1;   // ErrorCode；保留 int32 以兼容线协议及源码
     string text = 2;
 }
 

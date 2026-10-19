@@ -1,4 +1,39 @@
-# Gateway 链路协议（客户端 v2 / 服务间 v1）
+# 区服线协议与背压
+
+> 同步日期：2026-10-19。本文按当前工作区维护，不代表已提交版本；`docs/*`、`LoginServer/` 和指定构建目录受根 `.gitignore` 忽略。本地证据链接不保证随仓库检出提供，历史测试不等于本轮重跑。
+
+## 场景客户端视野路由补充
+
+场景 `Module::AOI=100`：method 7 为 `SCPushViewDelta`，8 为 `SCPushViewSnapshotPart`，9 为客户端 `ViewResyncReq`；入站请求的响应关联及实际 module/method 以 `routeTable.cc` / `LogicThread` 为准，不能因常量中另有 method 10 就假设已有独立响应路由。消息字段见 `Zone/proto/gameProto.proto`。内部 owner 快照 method 5/6 只在 worker 服务通道使用，不开放为客户端恢复协议。
+
+聊天也使用 module 100，但目标服务为 Chat；场景视野目标为 Scene，不能脱离服务路由仅按 module 解释。视野推送是 seq=0 的后端推送，经网关筛选玩家会话；发送队列接受不是客户端 ACK。
+
+## Scene Net backpressure
+
+公共应用错误以 `Zone/proto/gameProto.proto` 的 `gs.ErrorCode` 为权威；现有消息的
+`int32 code` 字段类型、字段号及既有错误数值不变。1011=SERVER_BUSY，1012=PENDING_TIMEOUT。
+二者均为失败，不代表成功或建议自动重试（业务可能非幂等）。1008 仍是操作拒绝而不是 busy。
+非零 seq 的错误响应保留原 module/method/playerId/seq，Gateway 还原客户端 requestId。
+历史 Lua move 示例仍复用1001/1002/1003表达移动校验失败；为避免改变旧线语义暂未改号，
+这些历史值需结合路由解释，不能认为所有旧脚本均已实现枚举语义。原生 DB errcode 属于另一域。
+
+每个 Net 线程持有按 MsgBus worker 划分的 FIFO：ONLINE/OFFLINE 优先直接投递，失败保留；
+已有积压时所有同 worker 消息追加。普通请求在空 pending 时若直接投递背压，立即回复1011；
+在非空 pending 时可进入有数量、记账字节上限的业务积压，否则回复1011。
+超时普通请求（包括被 lifecycle 挡在后面的任务）删除并回复1012，之后不再执行；
+断连清理普通积压，重试前校验连接及完整 binding，保留 lifecycle 和 OFFLINE 顺序。
+旧 binding 的普通消息被取消，不向新会话回复；已经入 MsgBus 的消息不在本层撤销范围内。
+
+配置键位于 `SceneServer.net`：pendingBusinessMaxTasks=256、pendingBusinessMaxBytes=1048576、
+pendingBusinessTimeoutMs=500、pendingPerWorkerAttempts=32、pendingGlobalAttempts=128、
+pendingRetryIntervalMs=10。均为正整数；等待上限3600000ms，重试间隔上限1000ms。
+字节为 `sizeof(pending task)+body.size()` 的业务记账量，并非分配器/RSS精确上限。
+生命周期积压没有硬内存上限，单 worker 达1024条时按秒告警；故不能宣称整个系统有界。
+重试 worker 轮转且有局部/全局尝试预算；同 worker 跨玩家阻塞仍是有意行为，
+不保证不同生产者间全局 FIFO。epoll 等待取最近普通任务期限和重试间隔。
+生命周期无限积压时清理扫描仍可能增加 Net CPU；需要后续准入治理，不能用丢 lifecycle 掩盖。
+
+## Gateway 链路协议（客户端 v2 / 服务间 v1）
 
 本文件约定 **Client ↔ Gateway** 与 **backendService ↔ Gateway** 两条独立的 TCP 字节流协议；实现分别位于 `zone_common/base/clientProto.{h,cc}` 与 `zone_common/base/proto.{h,cc}`。客户端 v2 新增角色名；旧 v1 客户端不兼容；服务间 v1 的头和场景服保持不变。
 
@@ -71,6 +106,6 @@
 
 ## 升级边界与待办
 
-- 此 v1 帧不含 traceId、deadline、幂等键或显式服务间 MessageKind；如要支持响应方法号不同于请求、服务间错误类别、超时预算及多实例场景路由，先设计 **v2** 并补跨版本测试，不能在 v1 悄悄改变现有字节偏移或含义。
-- `proto/proto.h` 现仅为旧路径兼容头，统一转发到 `zone_common/base/proto.h`；旧草案的 `BackendService` / `MessageKind` 已移除。服务号以 `ServerID` 为准（场景服 `kScene_1=8`），客户端消息类别以 `clientProto.h` 的 `ClientKind` 为准，不能把类别当成服务间帧的 `msgType`。
+- 此 v1 帧不含 traceId、deadline、幂等键或显式服务间 MessageKind；如要扩展响应方法号、服务间错误类别或超时预算，应先设计版本兼容并补测试，不能悄悄改变现有字节偏移或含义。当前多实例场景路由已通过版本化后端握手与注册身份实现，不等于这些头字段扩展已经完成。
+- `proto/proto.h` 现仅为旧路径兼容头，统一转发到 `zone_common/base/proto.h`；旧草案的 `BackendService` / `MessageKind` 已移除。服务号以 `ServerID` 为准（场景服 `kScene=8`），客户端消息类别以 `clientProto.h` 的 `ClientKind` 为准，不能把类别当成服务间帧的 `msgType`。
 - 目前网关按连接上的注册身份校验来源，但单纯的明文握手无法提供密码学认证；仍需登录票据升级、后端 mTLS/可信网络、握手超时和出站长度检查。

@@ -1,5 +1,7 @@
 # 最小全局服务
 
+> 同步日期：2026-10-19。本文按当前工作区维护，不代表已提交版本；`docs/*`、`LoginServer/` 和指定构建目录受根 `.gitignore` 忽略。本地证据链接不保证随仓库检出提供，历史测试不等于本轮重跑。
+
 `globalServer` 使用与聊天服相同的网络/逻辑两线程运行时，反向连接单个网关并以
 `serviceId=4` 握手。鉴权客户端发送 `module=101, method=1` 的 Request，
 服务端按相同 module/method/seq/playerId 回传原 body，用于验证全局服务接入和
@@ -10,6 +12,12 @@
 关联，不另定义全局服务专用帧头。全局 Ping/Echo 不使用角色名字段，body 原样回传。
 body 可以是任意字节（不按文本或 UTF-8 解析）；不支持的方法返回 `unsupported method`，
 响应头保留请求的 `module/method/seq/playerId`，以便网关恢复客户端请求号。
-详细字节布局见 `Zone/PROTOCOL.md`。
+详细字节布局见[线协议](../PROTOCOL.md)。
 
-运行命令与限制参见 `Zone/chatServer/README.md`。
+运行命令与限制参见[聊天服务 README](../chatServer/README.md)，其中命令以仓库根目录为工作目录。
+
+## 区服关系
+
+本服务是区服内的最小接入验证，不是跨 Zone 中心服务，不承担跨区路由、公会、排行榜或角色迁移。LoginServer **待实现**，职责仅为账号认证、登录凭证、区服列表与角色归属查询。
+
+[项目架构](../../README.md)中的 3G2S 测试是移动/AOI 端到端观测，不是本服务容量数据。性能证据与限制见[压测索引](../../docs/benchmark-results/README.md)。
