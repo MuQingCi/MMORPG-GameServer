@@ -2,32 +2,55 @@
 
 [![C++20](https://img.shields.io/badge/C++-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![Protocol Buffers](https://img.shields.io/badge/Protobuf-3.0+-brightgreen.svg)](https://developers.google.com/protocol-buffers)
+[![Lua](https://img.shields.io/badge/Lua-5.3%20%2F%205.4-2C2D72.svg)](https://www.lua.org/manual/)
+[![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C.svg)](https://cmake.org/documentation/)
+[![Python](https://img.shields.io/badge/Python-3-3776AB.svg)](https://docs.python.org/3/)
+[![Bash](https://img.shields.io/badge/Shell-Bash-4EAA25.svg)](https://www.gnu.org/software/bash/manual/)
+
+构建使用 CMake，玩法脚本使用 Lua；Python 3 和 Bash 用于测试与诊断脚本。数据库通道及持久化验收所需的额外依赖见[构建说明](#各子服务器的构建命令)。
 
 使用 C++20、Lua 和 Protobuf 开发的 MMORPG 分区分服服务端。
 
 ## 目录
 
 - [项目简介](#项目简介)
+- [文档导航](#文档导航)
 - [顶层设计](#顶层设计)
 - [子模块职责与边界](#子模块职责与边界)
-  - [网关](#网关)
-  - [场景服务器](#场景服务器)
-  - [一次场景请求](#一次场景请求)
-  - [区服拓扑](#区服拓扑)
+    - [网关](#网关)
+    - [场景服务器](#场景服务器)
+    - [一次场景请求](#一次场景请求)
+    - [区服拓扑](#区服拓扑)
 - [各子服务器的构建命令](#各子服务器的构建命令)
-  - [Gateway](#gateway)
-  - [Scene](#scene)
-  - [Chat](#chat)
-  - [Global](#global)
+    - [Gateway](#gateway)
+    - [Scene](#scene)
+    - [Chat](#chat)
+    - [Global](#global)
 - [测试数据](#测试数据)
-  - [3G2S 移动测试](#3g2s-移动测试)
-- [文档导航](#文档导航)
+    - [3G2S 移动测试](#3g2s-移动测试)
+- [计划清单](#计划清单)
+    - [实现LoginServer](#实现LoginServer)
+    - [实现区服](#实现区服)
+
 
 ## 项目简介
 
 项目按区服组织服务。网关负责客户端接入和请求路由，场景服处理玩家状态、Lua 玩法、AOI 与存档，聊天服提供区服内私聊和喊话。Global 目前只提供 Ping/Echo，LoginServer 尚未实现。
 
-本文介绍顶层设计、模块分工、构建方法和已有测试结果。服务配置、协议处理和内部实现见[文档导航](#文档导航)。
+本文介绍顶层设计、模块分工、构建方法和已有测试结果。服务配置、协议处理和内部实现见下面的**文档导航**
+
+## 文档导航
+
+| 文档                                                                      | 维护范围                           |
+| ------------------------------------------------------------------------- | ---------------------------------- |
+| [Gateway](Zone/gatewayServer/README.md)                                   | 接入、会话、路由、配置与运行       |
+| [Scene](Zone/sceneServer/README.md)                                       | worker、Lua、AOI、持久化与运行     |
+| [Chat](Zone/chatServer/README.md) / [Global](Zone/globalServer/README.md) | 当前业务与职责限制                 |
+| [线协议](Zone/PROTOCOL.md)                                                | ClientFrame / GateFrame 与业务消息 |
+| [监测模块](Zone/sceneServer/src-cpp/metrics/README.md)                    | 指标、诊断和调度策略               |
+| [持久化验收](Zone/sceneServer/tests/PERSISTENCE_ACCEPTANCE.md)            | 隔离数据库验证方法与历史结果       |
+
+文档中的文件链接只指向仓库提供的内容。构建示例从仓库根目录执行，`out/zone` 是由 CMake 新生成的目录，不是预先提供的测试文件。
 
 ## 顶层设计
 
@@ -190,17 +213,44 @@ cmake --build out/zone --target globalServer -j 2
 
 内存增长原因尚未确定，现有排查将 Scene 的 AOI 模块列为重点怀疑对象，仍需验证。万连接能力和最大容量尚未测定；这组结果只适用于上述移动/AOI 场景，不代表单 Scene、混合业务或小时级稳定性。
 
-## 文档导航
-
-| 文档                                                                      | 维护范围                           |
-| ------------------------------------------------------------------------- | ---------------------------------- |
-| [Gateway](Zone/gatewayServer/README.md)                                   | 接入、会话、路由、配置与运行       |
-| [Scene](Zone/sceneServer/README.md)                                       | worker、Lua、AOI、持久化与运行     |
-| [Chat](Zone/chatServer/README.md) / [Global](Zone/globalServer/README.md) | 当前业务与职责限制                 |
-| [线协议](Zone/PROTOCOL.md)                                                | ClientFrame / GateFrame 与业务消息 |
-| [监测模块](Zone/sceneServer/src-cpp/metrics/README.md)                    | 指标、诊断和调度策略               |
-| [持久化验收](Zone/sceneServer/tests/PERSISTENCE_ACCEPTANCE.md)            | 隔离数据库验证方法与历史结果       |
-
-文档中的文件链接只指向仓库提供的内容。构建示例从仓库根目录执行，`out/zone` 是由 CMake 新生成的目录，不是预先提供的测试文件。
 
 各 README 描述当前工作区。历史测试结果不代表当前版本已重新通过测试。
+
+
+## 计划清单
+
+### 实现LoginServer
+
+### 实现区服
+SceneServer
+- [ ] 框架功能
+    - [x] 实现可用且性能较好的基本Actor框架
+    - [x] 实现按玩家Id进行稳定哈希分片来选择对应Worker，使得玩家数据在对应线程上串行处理
+    - [x] 实现C++ 与 Lua 数据转换工具类并能正常嵌入并执行Lua脚本
+    - [x] 实现可靠DB任务投递与玩家数据定期落盘，支持MySQL事务与单SQL处理
+    - [x] 嵌入九宫格AOI视野
+    - [x] 将必要且可变数据参数化，支持水平拓展
+    - [ ] 转向模块化
+- [ ] 性能调优
+    - [x] 简要压测且RPS达到1W
+    - [ ] 优化AOI相关实现，降低服务器长时运行时的内存增长幅度
+    - [ ] 实现支持长时万级并发
+- [ ] 玩法类
+    - [ ] 实现敌人/NPC类
+    - [ ] 实现简易战斗功能
+    - [ ] 实现商城功能
+  
+ChatServer
+    - [x] 实现最简交流
+    - [ ] 实现跨服交流与全局广播
+  
+GlobalServer
+- [x] 实现最简GlobalServer：如支持Ping、Echo
+- [ ] 实现排行榜等功能
+      
+GatewayServer
+- [x] 实现对内外网监听并建立新连接
+- [x] 实现对客户端会话进行鉴权、对后端服务器连接进行绑定
+- [x] 实现根据客户端/后端服务器的请求自动路由到对应连接
+- [ ] 实现连接断开且网关未停止时自动重连且恢复对应数据
+- [ ] 实现心跳保活与定时器驱动重连
