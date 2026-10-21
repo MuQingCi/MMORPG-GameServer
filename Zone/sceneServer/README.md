@@ -1,43 +1,132 @@
 # 场景服务器（sceneServer）
 
-> 同步日期：2026-10-19。本文按当前工作区维护，不代表已提交版本；`docs/*`、`LoginServer/` 和指定构建目录受根 `.gitignore` 忽略。本地证据链接不保证随仓库检出提供，历史测试不等于本轮重跑。
+## 目录
 
-## 约定
-- 场景服是内部服务，不直接接收客户端 `ClientFrame`。默认主动连接网关，`ConnNew/ConnClose` 表示内部 TCP 链路事件，不能等同于某个玩家上下线。
-- 玩家上线/下线由网关版本化绑定信封表达；网络层校验后通过消息总线投递到玩家所属逻辑 worker。普通玩法请求只能使用已有绑定，不能隐式创建 Player。
-- 当前入站玩法为进场、移动、示例路径和退出；已接入 AOI 观察者差集/全量视野推送，战斗尚未实现。
-- 客户端 `ViewResyncReq` 已登记入站路由，由所属 worker 标记视野重同步；它与跨 worker owner 快照恢复不是同一协议。
-- 下文 Mermaid 图展示当前数据流。AOI 推送进入本地发送队列不等于客户端收到，也不表示具备可靠送达或跨进程场景迁移能力。
+- [本服务器简介](#本服务器简介)
+- [构建与运行](#构建与运行)
+- [配置](#配置)
+- [职责边界](#职责边界)
+- [约定](#约定)
+- [玩家绑定与服务功能](#玩家绑定与服务功能)
+  - [网关玩家绑定](#网关玩家绑定)
+- [与客户端之间的消息流](#与客户端之间的消息流)
+  - [请求与响应数据流图](#请求与响应数据流图)
+  - [场景服启动与网关注册时序](#场景服启动与网关注册时序)
+  - [玩家绑定与一条玩法请求的运行时序](#玩家绑定与一条玩法请求的运行时序)
+  - [断链和离线清理时序](#断链和离线清理时序)
+  - [消息定义](#消息定义)
+  - [场景服将结果返回给客户端](#场景服将结果返回给客户端)
+  - [最小玩家交互流程](#最小玩家交互流程)
+- [可靠数据库任务投递与玩家持久化](#可靠数据库任务投递与玩家持久化)
+  - [运行对象与所有权](#运行对象与所有权)
+  - [一次保存任务的生命周期](#一次保存任务的生命周期)
+  - [周期保存与停服排空](#周期保存与停服排空)
+  - [能力边界](#能力边界)
+  - [活跃任务调度索引](#活跃任务调度索引)
+- [与后端服务器之间的消息流](#与后端服务器之间的消息流)
+  - [玩家绑定与断链清理数据流图](#玩家绑定与断链清理数据流图)
+- [内部组件](#内部组件)
+  - [DB、定时器与热更新数据流图](#db定时器与热更新数据流图)
+  - [AOI 跨 worker 副本与恢复数据流图](#aoi-跨-worker-副本与恢复数据流图)
+- [内部消息处理流程](#内部消息处理流程)
+- [测试与数据](#测试与数据)
+  - [单元测试与进程测试](#单元测试与进程测试)
+  - [真实数据库持久化验收](#真实数据库持久化验收)
+  - [吞吐测试数据](#吞吐测试数据)
 
-## 内部功能
+## 本服务器简介
 
-### 网关玩家绑定（新增，需网关与场景服同步升级）
+场景服处理玩家状态、进场、移动、退出、AOI 和存档。C++ 管理玩家对象与基础校验，Lua 处理移动等示例玩法；战斗尚未实现。
 
-- GateFrame v1 的 32 字节头不变；网关发往 `kScene` 的玩家消息 body 使用 `base/gatewayPlayer.h` 中的版本化信封。场景服剥离信封后才将玩法载荷交给 Lua，不接受旧的裸 body 玩家请求。
-- 信封为小端：magic(u16=0x4750)、version(u16=1)、playerId(u64)、clientSession(u64)、clientEpoch(u32)、gatewayId(u32)、sceneId(u32)，共 32 字节，随后为原始玩法载荷。
-- 网关专用 module=200，method=1/2 表示 ONLINE/OFFLINE，载荷为空、seq=0。该路由不允许公网客户端指定。ONLINE 表示有效会话绑定，不表示数据加载完成或 AOI 场景准入成功。
-- `NetServer` 独占 `GatewayClientIndex`：网关连接 session -> 多个玩家绑定，另有玩家到连接的反向索引及历史世代。普通请求只校验绑定，不能创建/换绑；离线精确匹配；断链为该连接的全部有效绑定产生逐玩家离线通知。
-- 生命周期向 worker 投递失败会排队按顺序重试；普通业务使用有条数/字节/期限预算的积压，拒绝或过期时按协议返回 busy/timeout，不自动重放非幂等业务。生命周期积压及历史身份仍需容量/租约治理，不能宣称全系统内存有界。
-- `onNetMsg()` 先处理网关绑定通知。只有 ONLINE 创建/换绑 Player，普通合法玩法路由也不能隐式创建 Actor。Player 保存当前 ClientData；`Player::session()` 仍是场景服网络连接，不是客户端 session。`clientEpoch` 与 Actor epoch 分开使用。
-- `ConnClose` 仅处理内部链路日志，不再删除某个“最后出现的玩家”。当前断链策略为该连接绑定的玩家全部下线；业务需要断线保留/租约等待时应调整此策略。
-- 登录业务须在数据加载与准入成功后调用 `player.enter_scene`；绑定鉴权不自动进入 AOI。进场后使用已验证的 clientEpoch 注册观察者。网络层不读取 Player 或 AOI。
+客户端通过网关访问场景服，不直接连接这里。构建和启动方法见[构建与运行](#构建与运行)。
 
-网关按实际场景通道进行 ONLINE 声明，首次声明可与首条业务合帧提交；稳定绑定后的业务只携带绑定信封，不再每次重复 ONLINE。重复 ONLINE 不清空视野基线、不提升 Actor epoch；声明成功只表示本地提交，不证明断线重连后的可靠在线集合恢复。
+## 构建与运行
 
-当前限制：gatewayId 必须稳定且区服内唯一；跨网关覆盖拒绝，尚未实现权威接管凭证。网关本地 epoch 重启回绕、后端连接重连后同 epoch 恢复、可靠在线集合对齐尚未实现。网关 TCP send 不承诺离线通知已应用；链路关闭由场景服逐绑定清理兜底，但进程崩溃、连接存活而通知丢失仍需租约/快照。网关支持按 sceneId 区分多个场景实例，但会话选定后固定到具体通道，不支持自动迁移或故障接管。
+场景服运行前需要可用的网关。构建依赖见[主 README](../../README.md#各子服务器的构建命令)，以下命令从仓库根目录执行。
 
-- **面向网关**：主动连接区服共享配置中的网关内网地址，使用 `GateFrame` 握手、收发业务消息；本地直连监听默认关闭。
-- **面向玩法**：按 `(module, method)` 路由 protobuf 请求，在玩家所属的逻辑线程中执行 Lua 处理器并生成响应或推送。
-- **面向数据和定时任务**：通过消息总线异步处理 MySQL/Redis 任务、定时回调、玩家状态保存与 Lua 热更新。
+```bash
+cmake -S Zone -B out/zone -DSCENE_BUILD_TESTS=ON
+cmake --build out/zone --target sceneServer gatewayServer -j 2
+```
+
+Lua 绑定使用 5.4/5.3 API。升级依赖后请重新生成构建配置，避免 Protobuf 生成文件与运行库混用。
+
+从场景服目录启动以使用相对路径的 `./lua_script` 和日志目录。默认共享配置 `./config/zoneConfig.yaml` **不在此目录**，所以务必提供第一个位置参数；第二个参数显式指定场景配置：
+
+```bash
+(
+  cd Zone/sceneServer &&
+  ../../out/zone/bin/sceneServer \
+    ../config/zoneConfig.yaml \
+    ./config/sceneConfig.yaml
+)
+```
+
+日志写入 `ZoneServer.log.dir` 指定的目录（相对路径基于工作目录）；发送 `SIGUSR1` 重载 `luaDir` 下脚本，`SIGTERM` 或 `SIGINT` 触发有序退出。
+
+## 配置
+
+共享配置管理区服与数据库连接，场景配置管理当前实例和玩法参数。
+
+- 共享配置 `Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
+- 专属配置 `Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器/AOI 参数。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
+- AOI 当前仅支持 `nineGrid`，`tickMs/cellSize` 必须大于零，`viewRange` 为地图坐标单位，`cellPerLogicThread` 必须为 `0`；十字链表参数不支持。共享项不能重复放入场景配置，未知配置键会报错。
+- **网关地址：**共享配置默认 `gateways: 127.0.0.1:13145`，与网关 `privateConfig` 内网监听一致；`10000` 是客户端公网端口，不应用于场景服反向连接。跨机器部署须改成实际可达的内网地址，并确保 `zoneId` 一致、`serviceId=8` 位于网关 `allowedServices` 中。
+- 示例 `ZoneServer.db.enable: true`；实际运行需要可用的 MySQL、Redis 及对应账号。无数据库联调可以按需禁用 DB 通道，但相关持久化功能不工作。
+
+`SceneServer.mapPath` 可指定地图文件，默认 `map.yaml`，相对路径按场景配置文件目录解析。启动前加载地图并由 SceneServer 持有，向全部 worker 注入只读引用；地图加载失败不启动网络线程。
+
+`luaDir` 和相对日志路径按进程工作目录解析，`mapPath` 按场景配置文件目录解析。
 
 ## 职责边界
+
+网络线程管理连接，逻辑 worker 管理玩家和玩法状态；两者通过消息投递协作。
 
 - 客户端只连接网关的 `ClientFrame` 端口；场景服处理服务间 `GateFrame`，不负责客户端鉴权、登录票据验证或公网接入。
 - `NetServer` 持有网络连接与编解码，`LogicThread` 持有各自的 Lua VM 和玩家分片；数据库与定时器线程各司其职，跨线程只通过 `MsgBus` 投递消息。
 - 按 `playerId` 路由玩家请求到所属 worker；没有玩家 ID 时按会话分配。无效的 `(module, method)` 在创建玩家 Actor 之前拒绝。
 - 仅实现路由表中登记的玩法请求。进场/退出由 C++ 处理，移动/示例路径由 Lua 处理；其他未实现处理器明确返回错误。`net.listenEnable` 仅供本地联调/工具，不应作为公网客户端入口。
 
-## 与 Client 的消息流
+## 约定
+
+阅读协议和时序图时，需要区分内部连接、玩家会话和 AOI 准入。
+
+- 场景服是内部服务，不直接接收客户端 `ClientFrame`。默认主动连接网关，`ConnNew/ConnClose` 表示内部 TCP 链路事件，不能等同于某个玩家上下线。
+- 玩家上线/下线由网关版本化绑定信封表达；网络层校验后通过消息总线投递到玩家所属逻辑 worker。普通玩法请求只能使用已有绑定，不能隐式创建 Player。
+- 当前入站玩法为进场、移动、示例路径和退出；已接入 AOI 观察者差集/全量视野推送，战斗尚未实现。
+- 客户端 `ViewResyncReq` 已登记入站路由，由所属 worker 标记视野重同步；它与跨 worker owner 快照恢复不是同一协议。
+- 下文 Mermaid 图展示当前数据流。AOI 推送进入本地发送队列不等于客户端收到，也不表示具备可靠送达或跨进程场景迁移能力。
+
+## 玩家绑定与服务功能
+
+网关声明玩家绑定后，Scene 才能处理该玩家的进场和玩法请求。
+
+### 网关玩家绑定
+
+- GateFrame v1 的 32 字节头不变；网关发往 `kScene` 的玩家消息 body 使用 `base/gatewayPlayer.h` 中的版本化信封。场景服剥离信封后才将玩法载荷交给 Lua，不接受旧的裸 body 玩家请求。
+- 信封为小端：magic(u16=0x4750)、version(u16=1)、playerId(u64)、clientSession(u64)、clientEpoch(u32)、gatewayId(u32)、sceneId(u32)，共 32 字节，随后为原始玩法载荷。
+- 网关专用 module=200，method=1/2 表示 ONLINE/OFFLINE，载荷为空、seq=0。该路由不允许公网客户端指定。ONLINE 表示有效会话绑定，不表示数据加载完成或 AOI 场景准入成功。
+- `NetServer` 独占 `GatewayClientIndex`：网关连接 session -> 多个玩家绑定，另有玩家到连接的反向索引及历史世代。普通请求只校验绑定，不能创建/换绑；离线精确匹配；断链为该连接的全部有效绑定产生逐玩家离线通知。
+- 上下线通知投递失败后会排队，按顺序重试。普通业务的等待队列有条数、字节和期限限制，拒绝或过期时返回 busy/timeout，不自动重放非幂等业务。
+- 上下线通知积压和历史身份记录还缺少容量限制或租约管理，因此目前不能保证所有内存队列都有上限。
+- `onNetMsg()` 先处理网关绑定通知。只有 ONLINE 创建/换绑 Player，普通合法玩法路由也不能隐式创建 Actor。Player 保存当前 ClientData；`Player::session()` 仍是场景服网络连接，不是客户端 session。`clientEpoch` 与 Actor epoch 分开使用。
+- `ConnClose` 仅处理内部链路日志，不再删除某个“最后出现的玩家”。当前断链策略为该连接绑定的玩家全部下线；业务需要断线保留/租约等待时应调整此策略。
+- 登录业务须在数据加载与准入成功后调用 `player.enter_scene`；绑定鉴权不自动进入 AOI。进场后使用已验证的 clientEpoch 注册观察者。网络层不读取 Player 或 AOI。
+
+网关按实际场景通道进行 ONLINE 声明，首次声明可与首条业务合帧提交；稳定绑定后的业务只携带绑定信封，不再每次重复 ONLINE。重复 ONLINE 不清空视野基线、不提升 Actor epoch；声明成功只表示本地提交，不证明断线重连后的可靠在线集合恢复。
+
+部署和恢复有以下限制：
+
+- gatewayId 必须稳定，且在区服内唯一。当前拒绝跨网关覆盖绑定，尚无权威接管凭证。
+- 尚未处理网关重启后的 epoch 回绕、后端重连后的同 epoch 恢复，以及可靠的在线玩家集合对齐。
+- TCP send 成功不代表离线通知已处理。链路关闭时，场景服会逐个清理绑定；进程崩溃或连接未断但通知丢失，还需要租约或快照机制。
+- 多个场景实例按 sceneId 区分，但会话选定后固定到具体通道，没有自动迁移或故障接管。
+
+- **面向网关**：主动连接区服共享配置中的网关内网地址，使用 `GateFrame` 握手、收发业务消息；本地直连监听默认关闭。
+- **面向玩法**：按 `(module, method)` 路由 protobuf 请求，在玩家所属的逻辑线程中执行 Lua 处理器并生成响应或推送。
+- **面向数据和定时任务**：通过消息总线异步处理 MySQL/Redis 任务、定时回调、玩家状态保存与 Lua 热更新。
+
+## 与客户端之间的消息流
 
 场景服**不直接收发**客户端帧，客户端先经网关鉴权和转发：
 
@@ -139,7 +228,7 @@ sequenceDiagram
     N-->>G: GateFrame Response/Push
 ```
 
-### 断链和 OFFLINE 清理时序
+### 断链和离线清理时序
 
 内部 TCP 连接断开本身不等于某个玩家下线。只有带完整绑定信封的 OFFLINE，或网络线程枚举该网关连接上的全部绑定后逐玩家生成的离线通知，才会进入玩家生命周期处理。
 
@@ -203,7 +292,18 @@ GateFrame --> NetServer::onFrame --> MsgBus（玩家/会话所属 worker）
 
 无效路由会返回 `gs.RetTip{code=1001,text="route not found"}` 且不创建 Actor。关联请求的错误响应沿用原请求的 `module/method/seq/playerId`，因此能通过网关回程路由并恢复客户端 `requestId`；客户端需在该请求的 Response body 中识别 `gs.RetTip`（当前服务间协议没有显式错误类别）。无关联请求的 RetTip 通知仍使用 SYS 模块/方法。
 
-## 可靠 DB 任务投递与玩家持久化
+### 最小玩家交互流程
+
+1. 客户端在网关执行 Auth；实际选定场景通道后，网关首次声明 ONLINE（仅建立 Player/会话绑定，不是角色加载成功确认）。
+2. 客户端发送 `module=3, method=4`，body 为 `gs.EnterSceneReq`（空消息）。场景服 C++ 准入入口使用当前开发期默认 Player 数据，出生点 `(0,0,0)`，通过 PlayerService 建立 AOI 实体并注册观察者；返回 `gs.EnterSceneAck`，包含 entity_id、generation 和位置。重复请求保留当前位置，不重新分配世代。
+3. 客户端发送 `module=3, method=2` 的 `gs.WalkReq`。Lua 校验请求起点等于权威坐标、移动距离不超过 100，再调用 `player.move`；C++ 验证地图边界并同步 AOI。错误 RetTip 沿原请求头和 seq 返回，不改变位置。
+4. 客户端可以发送 `module=3, method=5` 的空 `gs.LogoutReq`，返回 `gs.LogoutAck`；Player 被清理，此客户端会话再发业务请求不会复活 Actor。重新 Auth 获得新 epoch 后可再次进入。客户端直接断开也通过网关 OFFLINE 完成同样的场景清理。
+
+上述无 DB 交互流程不包含生产登录系统。启用持久化时可从数据库加载角色快照并进行保存，见下文真实数据库验收；权威登录票据与正式账号认证不在此验收范围。AOI 观察者差集/全量推送已接入，但进场与移动成功不等于其他玩家已实际收到视野推送。
+
+## 可靠数据库任务投递与玩家持久化
+
+玩家所属 worker 生成固定快照，数据库线程异步执行保存并回传结果。下面说明任务归属、重试和停止时的处理顺序。
 
 ### 运行对象与所有权
 
@@ -266,23 +366,51 @@ sequenceDiagram
 
 周期保存由 `LogicThread::run()` 每轮主循环检查 `flushIntervalMs`，不依赖 `onIdle()`。因此逻辑 worker 即使持续处理消息、队列始终非空，也会扫描 dirty 玩家并创建快照任务。加载中的玩家、排空中的玩家和未启用持久化的实例不会生成普通周期保存。
 
-停服时的顺序是：停止接收新的业务生命周期 → 各逻辑 worker 进入排空 → 登出玩家并提交最终快照 → 等待 `PlayerPersistence`、`PendingDbTasks` 和结果 ACK 全部稳定，或达到 `shutdownDrainMs` → 最后停止 DB 线程。排空未完成时记录错误并将 worker 标记为未成功排空，不能把进程退出当作数据已经持久化。
+停服顺序：
+
+1. 停止接收新的业务生命周期消息，各逻辑 worker 进入排空。
+2. 登出玩家，提交最终快照。
+3. 等待 `PlayerPersistence`、`PendingDbTasks` 和结果 ACK 全部完成，最长等待 `shutdownDrainMs`。
+4. 最后停止 DB 线程。
+
+如果排空失败，会记录错误并将 worker 标记为未成功排空。进程退出不代表数据已经保存。
 
 ### 能力边界
 
-当前可靠性范围是**单进程内的有界内存任务登记、队列背压重试、DB 结果回投重试、幂等去重和 ACK 回收**。`PendingDbTasks` 与 `DbResultLedger` 不落盘，因此不提供进程崩溃后的任务恢复、跨重启去重、跨网关接管或 COMMIT 断链未知结果的自动对账。真实数据库验收也不等同于任意 MySQL/MariaDB 版本兼容性证明。
+目前支持单进程内的有界内存任务登记、队列背压重试、DB 结果回投重试、幂等去重和 ACK 回收。
+
+`PendingDbTasks` 与 `DbResultLedger` 不落盘，因此尚不支持崩溃后任务恢复、跨重启去重、跨网关接管，以及 COMMIT 时断链后的未知结果自动核对。真实数据库验收也只说明受测版本的结果，不保证所有 MySQL/MariaDB 版本兼容。
 
 ### 活跃任务调度索引
 
-Worker 构造时从 `SceneServer.db.activeIndex` 选择 `PendingDbTasks::SchedulingPolicy`：`true` 使用活跃索引，`false` 使用完整扫描。仓库 `Zone/sceneServer/config/sceneConfig.yaml` 当前显式设置 `true`，结构缺省仍为 `false`。这是场景本地 DB 调度键，不受共享 DB 配置迁移禁令影响；其他迁移 DB 键仍拒绝。旧环境变量 `SCENE_EXPERIMENT_ACTIVE_DB_INDEX` 不再控制策略，不支持热切换。
+`SceneServer.db.activeIndex` 在 Worker 构造时选择 `PendingDbTasks::SchedulingPolicy`：
 
-活跃索引集中维护需要投递、等待结果或待 ACK 的任务；失败项及时退出调度，但保留历史身份与原 `unsettled()` 语义。完整历史、60 秒回收窗口、ACK 背压及重复结果重新激活 ACK 语义不变。已有任务后 `enableActiveIndex()` 返回 `false`，不会静默切换；接口及 Sender 仅在所属线程调用，Sender 不可重入修改同一实例。启动日志记录 `active-index` / `legacy-scan`。
+| 设置 | 调度方式 |
+| --- | --- |
+| `true` | 只维护需要投递、等待结果或待 ACK 的活跃任务 |
+| `false` | 扫描完整任务表 |
 
-2026-10-19 的 3G2S、256 × 20 RPS、120 秒归档：成功吞吐 5,119.17 → 5,119.88 RPS（约 +0.014%），两 Scene 平均 CPU 约 4.02 → 2.48 核（原始值观测下降约 38.35%），p99 39.384 → 26.881 ms。后段两个维护函数 Self 合计 63.70% → 1.34%；固定 32 活跃/16,384 历史微基准 CPU/轮 325.017 → 0.259 μs（约 -99.92%），不是业务吞吐增幅。测试供给封顶且玩家分布不同，最大容量收益未测定。
+仓库 `Zone/sceneServer/config/sceneConfig.yaml` 显式设置为 `true`，结构缺省值仍是 `false`。这是场景本地 DB 调度配置，允许放在场景配置中；其他已迁移到共享配置的 DB 键仍会被拒绝。旧环境变量 `SCENE_EXPERIMENT_ACTIVE_DB_INDEX` 已不起作用，也不支持热切换。
 
-见[热点报告](../../docs/benchmark-results/busy-hotspot-profile-20261019/report.md)、[加固台账](../../docs/benchmark-results/active-index-hardening-20261019/execution-ledger.md)、[监测模块](src-cpp/metrics/README.md)及[压测索引](../../docs/benchmark-results/README.md)。历史报告中的实验开关状态只适用于当时二进制。
+任务历史仍完整保留，60 秒回收窗口、ACK 背压和重复结果重新激活 ACK 的规则不变。失败任务退出活跃索引，但保留身份和原 `unsettled()` 含义。
 
-## 与 BackendServer 的消息流
+已有任务后调用 `enableActiveIndex()` 会返回 `false`，不会切换策略。接口和 Sender 只能在所属线程调用，Sender 不得重入修改同一实例。启动日志会记录 `active-index` / `legacy-scan`。
+
+2026-10-19 历史测试：3G2S、256 × 20 RPS、120 秒。
+
+| 指标 | 完整扫描 → 活跃索引 |
+| --- | --- |
+| 成功 RPS | 5,119.17 → 5,119.88（约 +0.014%） |
+| 两 Scene 平均 CPU | 约 4.02 → 2.48 核，按原始值下降约 38.35% |
+| p99 | 39.384 → 26.881 ms |
+| 后段两个维护函数 Self 合计 | 63.70% → 1.34% |
+| 固定 32 活跃/16,384 历史任务的微基准 CPU/轮 | 325.017 → 0.259 μs（约 -99.92%） |
+
+主要变化是维护 CPU 成本下降，不是业务吞吐增长。当时客户端供给已到上限，前后玩家分布也不同，尚未测出最大容量收益。
+
+调度和诊断说明见[监测模块](src-cpp/metrics/README.md)。历史测试中的实验开关只适用于当时二进制。
+
+## 与后端服务器之间的消息流
 
 场景服本身是网关的后端服务：启动后从 `ZoneServer.gateways` 读取地址，**反向连接网关内网端口**，发送 `GateFrame(module=SYS, method=kHandshake)`。握手体是公共 `BackendHandshake` 定义的版本化 27 B 结构，包含服务类型、区服、场景实例、进程世代、目标网关和通道编号。出站 `srcServiceID` 取 `SceneServer.serviceId`，示例为 `8` (`ServerID::kScene`)，表示服务类型而非实例编号。网关检查区服 ID 与白名单，注册前不接受业务帧；不同 sceneId 可并存，同实例同通道重连替换旧连接。
 
@@ -378,65 +506,23 @@ flowchart TD
 
 ## 内部消息处理流程
 
+服务先完成配置和路由校验，再启动线程；运行中的请求和停止信号分别按以下流程处理。
+
 1. `main.cc` 在创建工作线程前阻塞 `SIGINT/SIGTERM/SIGUSR1`、忽略 `SIGPIPE`，读取两份配置并 `AttachZone()`，然后校验路由表及 protobuf 类型。
 2. `SceneServer` 创建总线并加载地图，地图失败则不启动网络；随后启动网络、定时器、可选 DB 和逻辑 worker，最后反向连接网关。
 3. `NetServer` 解码并校验绑定信封，经 `MsgBus` 按玩家/会话投递；ONLINE 创建/换绑 Actor，普通业务先查路由和已有绑定，再分派 C++ 或 Lua 处理。
 4. 玩法处理通过网络队列回传结果；DB/定时器结果回投所属逻辑线程。
 5. `SIGUSR1` 广播当前 `luaDir` 的脚本热更新；`SIGINT/SIGTERM` 经 `SceneServer::stop()` 按网络、逻辑、定时器、DB 的顺序有序停服。
 
-## 配置、构建与运行
+## 测试与数据
 
-### 最小玩家验收链路
+单元测试、无 DB 进程测试和真实数据库验收分别检查不同问题。下面给出运行方法与历史结果，不表示本次已重跑。
 
-1. 客户端在网关执行 Auth；实际选定场景通道后，网关首次声明 ONLINE（仅建立 Player/会话绑定，不是角色加载成功确认）。
-2. 客户端发送 `module=3, method=4`，body 为 `gs.EnterSceneReq`（空消息）。场景服 C++ 准入入口使用当前开发期默认 Player 数据，出生点 `(0,0,0)`，通过 PlayerService 建立 AOI 实体并注册观察者；返回 `gs.EnterSceneAck`，包含 entity_id、generation 和位置。重复请求保留当前位置，不重新分配世代。
-3. 客户端发送 `module=3, method=2` 的 `gs.WalkReq`。Lua 校验请求起点等于权威坐标、移动距离不超过 100，再调用 `player.move`；C++ 验证地图边界并同步 AOI。错误 RetTip 沿原请求头和 seq 返回，不改变位置。
-4. 客户端可以发送 `module=3, method=5` 的空 `gs.LogoutReq`，返回 `gs.LogoutAck`；Player 被清理，此客户端会话再发业务请求不会复活 Actor。重新 Auth 获得新 epoch 后可再次进入。客户端直接断开也通过网关 OFFLINE 完成同样的场景清理。
-
-上述无 DB 最小链路不是生产登录系统。启用持久化时可从数据库加载角色快照并进行保存，见下文真实数据库验收；权威登录票据与正式账号链路不在此验收范围。AOI 观察者差集/全量推送已接入，但进场与移动成功不等于其他玩家已实际收到视野推送。
-
-`SceneServer.mapPath` 可指定地图文件，默认 `map.yaml`，相对路径按场景配置文件目录解析。启动前加载地图并由 SceneServer 持有，向全部 worker 注入只读引用；地图加载失败不启动网络线程。
-
-依赖升级后请新建构建目录，避免旧 Protobuf 生成文件与当前运行库混用。Lua 绑定使用 5.4/5.3 API，构建优先查找对应版本：
+### 单元测试与进程测试
 
 ```bash
-cmake -S Zone \
-  -B Zone/build-acceptance -DSCENE_BUILD_TESTS=ON
-cmake --build Zone/build-acceptance \
-  --target sceneServer gatewayServer scene_tests -j4
-ctest --test-dir Zone/build-acceptance \
-  --output-on-failure -R '^(scene_tests|scene_smoke_invalid_route|gateway_real_scene)$'
-```
-
-`gateway_real_scene` 使用真实网关/场景服进程及标准库 Python 客户端，禁用 DB，覆盖进场、移动、错误回程、连接复用、主动退出与断开清理。
-
-- 共享配置 `Zone/config/zoneConfig.yaml`：`zoneId`、数据库、网关地址、日志。
-- 专属配置 `Zone/sceneServer/config/sceneConfig.yaml`：`sceneId/serviceId`、逻辑线程数、`luaDir`、可选监听及网络/定时器/AOI 参数。`net.listenEnable` 默认 `false`，Lua 脚本根目录默认 `./lua_script`。
-- AOI 当前仅支持 `nineGrid`，`tickMs/cellSize` 必须大于零，`viewRange` 为地图坐标单位，`cellPerLogicThread` 必须为 `0`；十字链表参数不支持。共享项不能重复放入场景配置，未知配置键会报错。
-- **网关地址：**共享配置默认 `gateways: 127.0.0.1:13145`，与网关 `privateConfig` 内网监听一致；`10000` 是客户端公网端口，不应用于场景服反向连接。跨机器部署须改成实际可达的内网地址，并确保 `zoneId` 一致、`serviceId=8` 位于网关 `allowedServices` 中。
-- 示例 `ZoneServer.db.enable: true`；实际运行需要可用的 MySQL、Redis 及对应账号。无数据库联调可以按需禁用 DB 通道，但相关持久化功能不工作。
-
-从场景服目录启动以使用相对路径的 `./lua_script` 和日志目录。默认共享配置 `./config/zoneConfig.yaml` **不在此目录**，所以务必提供第一个位置参数；第二个参数显式指定场景配置：
-
-```bash
-cmake -S Zone \
-  -B Zone/build-readme -DSCENE_BUILD_TESTS=ON
-cmake --build Zone/build-readme --target sceneServer -j 4
-(
-  cd Zone/sceneServer &&
-  ../build-readme/bin/sceneServer \
-    ../config/zoneConfig.yaml \
-    ./config/sceneConfig.yaml
-)
-```
-
-日志写入 `ZoneServer.log.dir` 指定的目录（相对路径基于工作目录）；发送 `SIGUSR1` 重载 `luaDir` 下脚本，`SIGTERM` 或 `SIGINT` 触发有序退出。
-
-测试：
-
-```bash
-cmake --build Zone/build-readme -j 4
-ctest --test-dir Zone/build-readme \
+cmake --build out/zone -j 4
+ctest --test-dir out/zone \
   --output-on-failure -R '^(scene_tests|scene_smoke_invalid_route|gateway_real_scene)$'
 ```
 
@@ -450,23 +536,30 @@ ctest --test-dir Zone/build-readme \
 
 ```bash
 cmake -S Zone \
-  -B Zone/build-acceptance
-cmake --build Zone/build-acceptance \
+  -B out/zone
+cmake --build out/zone \
   --target sceneServer gatewayServer persistence_dao_probe -j2
 python3 Zone/sceneServer/tests/persistence_e2e.py \
-  Zone/build-acceptance
+  out/zone
 ```
 
-成功摘要写入 `Zone/build-acceptance/persistence_e2e_summary.txt`。当前已通过的真实检查包括：DAO 加载/回滚/同版本重放/旧版本拒绝，非默认出生点加载，离线保存后立即重新绑定加载，在线周期快照，优雅停服最终保存，场景服重启恢复，以及复用网关连接时另一玩家断开后的独立持久化。
+历史验收通过的检查包括：DAO 加载/回滚/同版本重放/旧版本拒绝，非默认出生点加载，离线保存后立即重新绑定加载，在线周期快照，优雅停服最终保存，场景服重启恢复，以及复用网关连接时另一玩家断开后的独立持久化。
 
 该验收覆盖正常时序和受控的队列/结果处理，不证明进程崩溃后内存任务不丢失、跨重启任务恢复、COMMIT 断链后的未知结果自动对账、跨网关接管、死锁不存在或所有 MySQL/MariaDB 版本兼容。若因 `SIGKILL` 或主机故障无法清理，应先确认残留进程属于本次临时目录，再手工清理，不能停止其他数据库实例。
 
-文档路径以 `GameServer` 为根目录；各段构建与测试命令默认从根目录执行。运行示例在子 shell 中切换工作目录，退出后不改变当前终端目录。`luaDir` 和相对日志路径基于工作目录，`mapPath` 相对路径基于场景配置目录。
+### 吞吐测试数据
 
-## 最新吞吐观测的归属与边界
+最新测试结果统一维护在[主 README](../../README.md)，本节保留 2026-10-19 的历史记录：
 
-2026-10-19 最近客户端等待优化轮，3G2S、512 × 20 RPS、30 秒成功吞吐 **10,228.37 RPS**、p99 **178.06 ms**、业务错误/unresolved 为 0；较早独立 60 秒轮为 **10,239.08 RPS**、p99 **83.59 ms**、零业务错误。它们说明两个 Scene 合计在特定移动/AOI 场景下具有短时万级端到端成功吞吐证据，不保证单 Scene、混合业务或长期稳定。
+| 512 × 20 RPS 测试 | 成功 RPS | p99 | 业务错误 / unresolved |
+| --- | ---: | ---: | --- |
+| 客户端等待优化后，30 秒 | 10,228.37 | 178.06 ms | 0 / 0 |
+| 较早的独立 60 秒测试 | 10,239.08 | 83.59 ms | 0 / 0 |
 
-最新轮服务 CPU 0–9、客户端 CPU 10–15，仍有早段下探与追赶，最大调度滞后约 5.22 秒；与旧同绑核客户端的约 +73.2% 变化不能归于本节活跃索引，也不是严格冻结布局 A/B。capacity 模式未最终逐玩家核对 DB 快照；perf 收尾仍 exit=-15，不能用其不完整占比证明优化。数据和限制见[压测归档索引](../../docs/benchmark-results/README.md)。
+这些数据来自两个 Scene 合计的移动/AOI 测试，不代表单 Scene、混合业务或长期稳定性。
 
-LoginServer **待实现**，职责仅为账号认证、登录凭证、区服列表与角色归属查询。跨 worker AOI 不意味着不同 Scene 或不同 Zone 自动互通，详见[顶层区服关系](../../README.md)。
+30 秒轮的服务绑定 CPU 0–9，客户端绑定 CPU 10–15。早段吞吐下探，后段追赶，最大发送调度滞后约 5.22 秒。同绑核旧客户端前后约 +73.2% 的变化与客户端等待调整有关，不是活跃索引的收益，也不是严格冻结布局的 A/B。
+
+capacity 模式没有逐玩家核对最终 DB 快照。perf 收尾 exit=-15，不能用不完整的采样占比证明优化。最新测试摘要见主 README。
+
+LoginServer 尚未实现，规划负责账号认证、登录凭证、区服列表和角色归属查询。跨 worker AOI 只发生在同一 Scene 进程内，不会自动连接不同 Scene 或不同 Zone，详见[顶层区服关系](../../README.md)。
