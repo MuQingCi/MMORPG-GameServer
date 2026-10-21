@@ -34,19 +34,16 @@ struct Route;
  * @brief 逻辑线程（Actor 的执行体）：每个线程独占一个 lua_State 与一份玩家分片
  *
  * 线程内所有权的三条规则：
- *   1. **玩家分片属于本线程**：PlayerManager 是成员而不是全局单例，
- *      因为归属是 hash(playerId) % N 的纯函数 —— 分片内不存在并发访问，因此不需要锁；
- *   2. **lua_State 属于本线程**：跨线程调用 Lua 会破坏栈与 GC；
- *   3. **DB 结果必须回到本线程**：DB 线程只把 Msg 投回 srcWorkerId，
- *      由本线程进 Lua（DispatchDbAck），绝不从 DB 线程直接碰 state。
+ *   1. 玩家分片属于本线程：PlayerManager 是成员而不是全局单例，因为归属是 hash(playerId) % N 的纯函数 —— 分片内不存在并发访问，因此不需要锁；
+ *   2. lua_State 属于本线程：跨线程调用 Lua 会破坏栈与 GC；
+ *   3. DB 结果必须回到本线程：DB 线程只把 Msg 投回 srcWorkerId，由本线程进 Lua（DispatchDbAck），绝不从 DB 线程直接碰 state。
  *
  * 消息处理的三类入口：
  *   连接类：CONN_NEW / CONN_CLOSE / CONN_DATA（网络线程投来）
  *   异步回调：DB_RESULT_MYSQL / DB_RESULT_REDIS / TIMER_FIRE
  *   控制类：RELOAD / SHUTDOWN
  *
- * 异步回调的共同点：**必须先校验 epoch**。发起时 Actor 可能已下线重建，
- * 迟到结果要么写错对象，要么直接丢弃。
+ * 异步回调的共同点：必须先校验 epoch。发起时 Actor 可能已下线重建，迟到结果要么写错对象，要么直接丢弃。
  */
 
 class LogicThread

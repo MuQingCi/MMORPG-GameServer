@@ -16,12 +16,9 @@
  * 生命周期规则（与 Actor 模型配套）：
  *   - Player 只被"归属逻辑线程"访问，因此内部不加锁；
  *   - 跨线程要改它，只能给它所在的线程投消息；
- *   - 每次"上线/Actor 重建"都会分配一个新的 epoch，异步回调（DB/定时器）
- *     必须带 epoch 回来校验，避免迟到结果写进新生命周期的对象里。
+ *   - 每次"上线/Actor 重建"都会分配一个新的 epoch，异步回调（DB/定时器）必须带 epoch 回来校验，避免迟到结果写进新生命周期的对象里。
  *
- * 移动语义：显式声明移动、删除拷贝。
- *   旧实现只声明了 ~Player()，这会抑制隐式移动构造，而成员里有 unique_ptr
- *   （不可拷贝），一旦放进 vector 或想 emplace 就会编译失败。
+ * 移动语义：显式声明移动、删除拷贝
  */
 class Player
 {
@@ -70,7 +67,7 @@ public:
     bool consumeItem(uint32_t itemId, uint16_t count);
     void clearBag();
 
-    // 由所属线程可信业务提供计划，不能使用客户端自报价格。
+    // 由所属线程可信业务提供计划，不能使用客户端自报价格
     struct EconomyRequest {
         std::string operationId;
         uint32_t cost = 0, itemId = 0;
@@ -80,8 +77,7 @@ public:
     };
     bool reserveEconomy(const EconomyRequest& request);
     bool economyPending() const { return economyReservation_.has_value(); }
-    // 预留时冻结候选状态。持久化层必须将本计划与
-    // 前序写入串行执行，不能将购买前的实时经济状态作为后续保存内容。
+    // 预留时冻结候选状态。持久化层必须将本计划与前序写入串行执行，不能将购买前的实时经济状态作为后续保存内容。
     const PlayerSaveSnapshot* economyCandidate() const {
         return economyReservation_ ? &economyReservation_->candidate : nullptr;
     }
@@ -117,7 +113,7 @@ public:
     void touch(int64_t nowMs) { lastActiveMs_ = nowMs; }
 
 private:
-    friend class PlayerService; // 暂存位置、通知 AOI，然后记录一次数据变化。
+    friend class PlayerService; // 暂存位置、通知 AOI，然后记录一次数据变化
     void ensureRevisionAvailable() const;
     void recordMutation();
 

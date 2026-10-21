@@ -65,12 +65,16 @@ public:
     void recordDrainFinalUnfinished(uint64_t count);
     void recordBusinessError(const std::string& reason);
     void recordResult(Result res, uint64_t latencyUs = 0, uint64_t bytesReceived = 0);
+    // 连接/准备阶段故障不对应一次业务完成，避免破坏请求记账。
+    void recordFailure(Result res);
     void recordSentBytes(uint64_t bytes);
     void recordLogout(bool success);
     LoadStatsSnapshot snapshot() const;
+    LoadStatsSnapshot countersSnapshot() const;
     std::vector<uint64_t> latencySamples() const;
 
 private:
+    LoadStatsSnapshot snapshotImpl(bool percentiles) const;
     mutable std::mutex mutex_;
     uint64_t sent_ = 0;
     uint64_t scheduleDelayUs_ = 0;

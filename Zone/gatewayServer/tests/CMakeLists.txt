@@ -44,6 +44,7 @@ target_link_libraries(load_poll_wait_test PRIVATE gateway_core)
 add_test(NAME load_poll_wait_test COMMAND load_poll_wait_test)
 
 add_executable(gateway_load_client
+    loadClientReactor.cc
     load_client.cc
     loadStats.cc
     metricsReader.cc
@@ -136,4 +137,17 @@ endif()
 set_tests_properties(gateway_smoke gateway_e2e PROPERTIES RUN_SERIAL TRUE)
 if(PYTHON3_EXECUTABLE AND TARGET sceneServer)
     set_tests_properties(gateway_real_scene PROPERTIES RUN_SERIAL TRUE)
+endif()
+
+add_executable(gateway_load_schedule_tests test_main.cc test_loadClientSchedule.cc
+    test_loadStats.cc test_loadClientProtocol.cc loadStats.cc)
+target_link_libraries(gateway_load_schedule_tests PRIVATE gateway_core gs_proto)
+add_test(NAME gateway_load_schedule_tests COMMAND gateway_load_schedule_tests)
+
+if (PYTHON3_EXECUTABLE)
+    add_test(NAME gateway_load_reactor_behavior
+        COMMAND ${PYTHON3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_load_reactor_behavior.py)
+    set_tests_properties(gateway_load_reactor_behavior PROPERTIES
+        ENVIRONMENT "GATEWAY_LOAD_CLIENT=$<TARGET_FILE:gateway_load_client>"
+        TIMEOUT 30 RUN_SERIAL TRUE)
 endif()

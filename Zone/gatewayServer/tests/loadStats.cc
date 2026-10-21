@@ -114,6 +114,19 @@ void LoadStats::recordSentBytes(uint64_t bytes)
     bytesSent_ += bytes;
 }
 
+void LoadStats::recordFailure(Result res)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++errors_;
+    switch (res)
+    {
+        case Result::DecodeError: ++decodeErrors_; break;
+        case Result::UnknownResponse: ++unknownResponses_; break;
+        case Result::Timeout: ++timeouts_; break;
+        default: ++transportFailed_; break;
+    }
+}
+
 void LoadStats::recordLogout(bool success)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -129,7 +142,17 @@ std::vector<uint64_t> LoadStats::latencySamples() const
 
 LoadStatsSnapshot LoadStats::snapshot() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    return snapshotImpl(true);
+}
+
+LoadStatsSnapshot LoadStats::countersSnapshot() const
+{
+    return snapshotImpl(false);
+}
+
+LoadStatsSnapshot LoadStats::snapshotImpl(bool percentiles) const
+{
+    std::unique_lock<std::mutex> lock(mutex_);
     LoadStatsSnapshot out;
     out.sent = sent_;
     out.scheduleDelayUs = scheduleDelayUs_;
@@ -155,10 +178,11 @@ LoadStatsSnapshot LoadStats::snapshot() const
     out.decodeErrors = decodeErrors_;
     out.bytesSent = bytesSent_;
     out.bytesReceived = bytesReceived_;
-    if (latenciesUs_.empty())
+    if (!percentiles || latenciesUs_.empty())
         return out;
 
     std::vector<uint64_t> sorted = latenciesUs_;
+    lock.unlock();
     std::sort(sorted.begin(), sorted.end());
     const auto percentile = [&sorted](double p) {
         const size_t rank = static_cast<size_t>(std::ceil(p * static_cast<double>(sorted.size())));

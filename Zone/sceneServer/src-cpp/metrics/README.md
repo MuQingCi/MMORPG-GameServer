@@ -1,40 +1,26 @@
-# busy 独立取证（2026-10-19）
-
-> 同步日期：2026-10-19。本文按当前工作区维护，不代表已提交版本；`docs/*`、`LoginServer/` 和指定构建目录受根 `.gitignore` 忽略。本地证据链接不保证随仓库检出提供，历史测试不等于本轮重跑。
-
-`SCENE_BUSY_DIAGNOSTICS=1` 独立于完整诊断开关；每秒向 metricsPath 加
-`.busy.jsonl` 后缀的文件输出拒绝事件、累计分类计数、累计丢失数及 Worker Linux TID。
-每次采集最多保留 4096 个事件，拒绝时才锁定记录器；成功请求不新增事件或时钟读取。
-reason 0/1/2 为 direct/task-limit/byte-limit。事件携带内部 seq、玩家、客户端绑定及
-pending 状态；同一 Net 所有者在 submit 返回后读取状态，没有跨字段采样竞争。
-完整诊断仍有原有跨字段近似语义。客户端在此开关下仅输出前 4096 个 busy 的
-player/requestId/接收单调时间/是否正式请求；超过上限显式输出丢失标志。
-内部 seq 与客户端 requestId 不同，须通过 Gateway 现有 `relay b->c` 日志关联，
-不能直接将两者比较；没有日志或事件丢失时不得宣称逐请求完整对账。
-此探针不是性能修复，不改变队列或 ACK 语义，也不是零开销。
-
-当前策略由 Scene YAML 的 `SceneServer.db.activeIndex` 在 Worker 构造时确定：
-`true` 为活跃索引，`false` 回退完整扫描，不支持热切换。结构缺省值仍为 `false`，
-仓库当前 YAML 显式设置为 `true`。旧环境变量 `SCENE_EXPERIMENT_ACTIVE_DB_INDEX`
-不再控制 Worker；历史报告的环境变量仅适用于当时冻结二进制。
-启用时保留完整任务身份表，仅遍历需要投递、等结果或待 ACK 的活跃索引；
-完成且 ACK 成功的历史退出调度，重复结果可重新激活 ACK。任务间遍历顺序可能改变。
-启动日志输出 `active-index` / `legacy-scan`。内部构造参数为
-`PendingDbTasks::SchedulingPolicy`；兼容方法 `enableActiveIndex()` 在已有任务时返回
-`false`，不静默切换。所有方法及 Sender 必须在所属线程调用，Sender 不得重入修改同一实例。
-保留完整历史、60秒回收窗口、ACK背压及重复结果重新激活语义；失败任务移出索引但保留身份
-和原 `unsettled()` 语义。已有热点成本改善证据，不等于 busy 根因或上线验收闭环。
-
 # Scene 监测模块
 
-## 性能证据入口（2026-10-19）
+## 目录
 
-- [压测证据索引](../../../../docs/benchmark-results/README.md)分别记录活跃索引维护成本、客户端等待优化与短时万级吞吐，不能互相冒领收益。链接相对本文件；仓库文件路径和命令以仓库根目录为基准。
-- 活跃索引 256 连接归档：成功 RPS 5,119.17 → 5,119.88，供给封顶；两 Scene 平均 CPU 约 4.02 → 2.48 核，后段维护 Self 合计 63.70% → 1.34%。微基准约 -99.92% 是固定任务规模的维护 CPU，不是业务吞吐增幅。
-- 客户端优化最新 512 连接、30 秒轮成功 10,228.37 RPS，仍有最大约 5.22 秒调度滞后。该轮 perf 收尾 exit=-15，不能与旧轮占比作完整窗口对照；客户端 CPU 采用独立资源时间线量化。
-- 当前策略与回退见本文开头 YAML 说明；历史实验报告的环境变量和“默认关闭”仅描述当时二进制，不覆盖当前仓库 YAML。
+- [模块简介](#模块简介)
+- [职责与所有权](#职责与所有权)
+- [调度](#调度)
+- [输出及错误](#输出及错误)
+- [busy 独立取证](#busy-独立取证)
+- [DB 维护诊断](#db-维护诊断)
+- [活跃任务调度](#活跃任务调度)
+- [停机](#停机)
+- [成本与边界](#成本与边界)
+- [验证入口](#验证入口)
+- [历史测试数据](#历史测试数据)
+
+## 模块简介
+
+监测模块采集 Scene 和 worker 指标，输出常规 JSON，也可以按需记录队列、busy 和 DB 维护诊断。业务线程记录指标，监测线程负责采样和文件输出。
 
 ## 职责与所有权
+
+业务对象保留指标的所有权，监测服务借用它们采样。只有监测服务可以消费采样窗口。
 
 - `SceneMetrics` / `WorkerMetrics`：业务线程记录轻量原子指标，所有者仍是 `SceneServer`。
 - `QueueDiagnostics`：可选详细统计，所有者仍是 `MsgBus`；不执行文件 I/O。
@@ -44,9 +30,9 @@ player/requestId/接收单调时间/是否正式请求；超过上限显式输�
 
 ## 调度
 
-常规采样约 1s；`SCENE_QUEUE_DIAGNOSTICS=1` 时额外约 10ms 深度采样，每秒收集完整累计统计和取走事件。
-关闭诊断时没有 10ms 唤醒，也不额外创建诊断线程。截止时间按 steady_clock 推进，错过周期只记 missed，不补造历史样本。
-轻量诊断不调用 MetricsSampler，不消费极值窗口。stats 只读取缓存。
+常规采样约每秒一次。开启 `SCENE_QUEUE_DIAGNOSTICS=1` 后，额外约每 10ms 采样队列深度，每秒收集累计统计并取走事件。关闭诊断后没有 10ms 唤醒，也不会额外创建诊断线程。
+
+截止时间按 steady_clock 推进，错过周期只记录 missed，不补历史样本。轻量诊断不调用 MetricsSampler，也不消费极值窗口；stats 只读缓存。
 
 `sampleDue()` 是确定性调度测试入口，只能由生命周期所有者在后台线程不运行时调用。
 服务生命周期由一个所有者串行调用，snapshot/status 可供其他线程读取。记录器不得在服务存活期间重建或替换。
@@ -62,27 +48,18 @@ player/requestId/接收单调时间/是否正式请求；超过上限显式输�
 常规输出失败不改变原先业务排空验收语义；诊断失败仍使 shutdownSucceeded 为 false。
 显式诊断但路径无效时启动失败；不设置路径的普通 metrics 仍提供内存快照。
 
-## 停机
+## busy 独立取证
 
-先 stopPeriodic 并 join，按原业务顺序停止网络、排空 worker、停止 timer/DB，再 finish 最终采集并关闭输出。
-排空过程中无周期采样，最终快照不代表连续观测或持久化成功。
-finish 幂等；析构仅停止周期线程，不擅自假定业务已经停止。
+设置 `SCENE_BUSY_DIAGNOSTICS=1` 可以单独记录 busy，不必开启完整诊断。每秒输出到 metricsPath 加 `.busy.jsonl` 后缀的文件，内容包括拒绝事件、分类累计计数、丢失数和 Worker Linux TID。
 
-## 成本与边界
+- 每次采集最多保留 4096 个事件。只有拒绝请求时才锁定记录器，成功请求不额外记事件或读时钟。
+- reason 0/1/2 分别为 direct/task-limit/byte-limit。事件包含内部 seq、玩家、客户端绑定和 pending 状态。
+- 状态由同一 Net 所有者在 submit 返回后读取，没有跨字段采样竞争；完整诊断的跨字段数据仍是近似快照。
+- 客户端只记录前 4096 个 busy 的 player/requestId/接收单调时间/是否正式请求，超过上限会标记丢失。
 
-仍为同步写盘，慢磁盘会推迟共享线程的任务，不保证硬实时 10ms。
-事件每通道上限 4096，超出记录 droppedEvents；队列深度为近似值，等待直方图不包含未出队消息。
-没有新增长链路 tracing、DB 控制队列诊断或无锁优化。
-详细快照新增work字段：固定6类消息（business/db_result/service/timer/lifecycle/other）的
-入队成功/拒绝、首次拒绝单调时间、handler耗时直方图，以及4类维护阶段耗时。
-拒绝统计只含实际调用worker入队的尝试；网络层因生命周期pending而直接丢弃的请求不在此计数中。
-阶段顺序为load/drain/reload、flush、AOI/recovery、persistence/retry；耗时为墙钟而非CPU。
-统计有界、无逐请求事件；原子字段不是全局一致快照，采样跨字段存在并发偏差。
-直方图沿用原等待桶，仅能给分位所在桶；计数微秒精度，亚微秒耗时可能记0。
-诊断关闭不分配WorkDiagnostics；只保留已有开关判断，不新增采样或输出。
-线程数减少不是性能改善证据；完整重构前后 CPU/内存/吞吐/p99 对照仍需单独执行。
+内部 seq 与客户端 requestId 不能直接比较，需要通过 Gateway 的 `relay b->c` 日志关联。日志缺失或事件丢失时，无法逐请求完整核对。这个探针有开销，只用于诊断，不改变队列或 ACK 规则。
 
-### DB 维护诊断（可选）
+## DB 维护诊断
 
 `work[].phases` 保留前4项含义，追加 4=AOI tick、5=AOI恢复、
 6=PlayerPersistence tick、7=PendingDbTasks tick、8=tickControls、9=诊断状态扫描。
@@ -109,7 +86,64 @@ CPU时钟使用CLOCK_THREAD_CPUTIME_ID；wall与CPU时间区间略有偏差且�
 不能简单将采样值乘1024作为精确全量开销：周期采样可能偏向特定工作/截止时间。
 非采样路径不读CPU时钟、不计visited；函数保留相同状态机与发送顺序。
 
+## 活跃任务调度
+
+活跃索引设置：
+
+| 配置 | 作用 |
+| --- | --- |
+| `SceneServer.db.activeIndex` 为 `true` | 只遍历需要投递、等待结果或待 ACK 的任务 |
+| `SceneServer.db.activeIndex` 为 `false` | 回退完整扫描 |
+
+策略在 Worker 构造时确定，不能热切换。结构缺省为 `false`，仓库 YAML 显式设为 `true`。旧环境变量 `SCENE_EXPERIMENT_ACTIVE_DB_INDEX` 已不起作用，历史报告里的用法只适用于当时二进制。
+
+活跃索引保留完整身份表和 60 秒回收窗口。完成且 ACK 成功的任务退出调度，重复结果可以重新激活 ACK；失败任务退出索引，但保留身份和原 `unsettled()` 含义。ACK 背压规则不变，任务遍历顺序可能变化。
+
+启动日志记录 `active-index` / `legacy-scan`。内部构造参数是 `PendingDbTasks::SchedulingPolicy`，已有任务时调用 `enableActiveIndex()` 返回 `false`。所有方法和 Sender 都必须在所属线程调用，Sender 不得重入修改同一实例。
+
+历史测试表明维护热点成本下降，但还没有据此确定 busy 的根因，也不代表上线验收通过。
+
+## 停机
+
+1. 调用 stopPeriodic 并 join，等待周期线程结束。
+2. 按业务顺序停止网络、排空 worker、停止 timer/DB。
+3. 调用 finish 完成最后一次采集，关闭输出。
+
+排空期间没有周期采样，最终快照不能替代连续观测，也不能证明持久化成功。finish 可重复调用；析构只停止周期线程，不负责判断业务是否已停止。
+
+## 成本与边界
+
+文件输出使用同步写入，慢磁盘会推迟同一线程的后续任务，10ms 采样不是硬实时保证。事件每通道最多 4096 个，超出后累计到 droppedEvents；队列深度是近似值，等待直方图也不包含未出队消息。
+
+详细快照的 work 字段按 business/db_result/service/timer/lifecycle/other 六类消息记录入队成功、拒绝、首次拒绝单调时间和 handler 耗时直方图。拒绝计数只包含实际尝试入 worker 队列的消息，网络层因生命周期 pending 而直接丢弃的请求不在其中。
+
+四个维护阶段依次是 load/drain/reload、flush、AOI/recovery、persistence/retry，耗时使用墙钟时间，不是 CPU 时间。直方图沿用等待桶，只能确定分位数所在区间；微秒精度可能把亚微秒耗时记为 0。
+
+统计数量有上限，不记录逐请求事件。原子字段不构成全局一致快照，读取不同字段时可能存在并发偏差。关闭诊断后不分配 WorkDiagnostics，也不新增采样或输出，只保留开关判断。
+
+本模块没有完整请求追踪、DB 控制队列诊断或无锁优化。线程数减少不能单独证明性能改善，重构前后的 CPU、内存、吞吐和 p99 仍需另行测量。
+
 ## 验证入口
 
-通过现有 scene_tests/CTest 和 Python unittest 验证。进程测试默认跳过，显式设置绝对路径 `SCENE_MONITORING_BINARY` 后运行 `test_monitoring_process`：
-覆盖诊断开关不增加线程、最终输出、无效路径正常失败；不启用数据库。
+本模块随 Scene 构建，先按[场景服构建说明](../../README.md#构建与运行)生成可执行文件。
+
+通过现有 scene_tests/CTest 和 Python unittest 验证。进程测试默认跳过，可在仓库根目录执行：
+
+```bash
+SCENE_MONITORING_BINARY="$(realpath out/zone/bin/sceneServer)" \
+  python3 -B -m unittest discover -s Zone/sceneServer/tests -p 'test_monitoring_process.py'
+```
+
+示例中的二进制路径相对仓库根目录，请按实际构建目录调整。测试会切换到临时工作目录，所以用 `realpath` 在启动前解析路径，不依赖固定的项目安装位置。
+
+检查内容包括诊断开关不增加线程、最终输出、无效路径正常失败；不启用数据库。
+
+## 历史测试数据
+
+| 历史测试 | 结果和限制 |
+| --- | --- |
+| 活跃索引，256 连接 | 成功 RPS 5,119.17 → 5,119.88，供给已到上限；两 Scene 平均 CPU 约 4.02 → 2.48 核，后段维护 Self 合计 63.70% → 1.34% |
+| 固定任务规模微基准 | 维护 CPU 约 -99.92%，不是业务吞吐增幅 |
+| 旧客户端等待优化，512 连接、30 秒 | 成功 10,228.37 RPS，最大发送调度滞后仍约 5.22 秒；perf 收尾 exit=-15，CPU 数字取自独立资源时间线，不能用 perf 占比做完整窗口对比 |
+
+这些测试来自历史版本，用于区分维护成本与端到端吞吐；不是本次重构的测量结果。当前调度策略见上文。

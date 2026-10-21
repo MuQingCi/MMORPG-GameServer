@@ -92,6 +92,30 @@ TEST(WorkerPendingLifecycleSurvivesUnexpectedAdmissionFailure)
     CHECK_EQ(pending.stats(0).lifecycleTasks,1u);
 }
 
+TEST(WorkerPendingLifecycleRetryDoesNotDuplicateAndRecoveryReleasesAll)
+{
+    WorkerPendingTasks::Limits limits;
+    limits.maxBusinessTasks=1;
+    WorkerPendingTasks pending(1,limits);
+    auto blocked=[](size_t,const Msg&){return DispatchResult::kBackpressure;};
+    for(uint64_t n=1;n<=32;++n)
+        CHECK_EQ(pending.submit(0,Task(n),true,0,blocked),WorkerPendingTasks::Admission::Pending);
+    pending.submit(0,Task(100),false,0,blocked);
+    CHECK_EQ(pending.submit(0,Task(101),false,0,blocked),WorkerPendingTasks::Admission::Busy);
+    for(uint64_t n=1;n<=50;++n) pending.pump(n,blocked,[](const Msg&){return true;});
+    CHECK_EQ(pending.stats(0).lifecycleTasks,32u);
+    CHECK_EQ(pending.stats(0).businessTasks,1u);
+    pending.cancelSession(10);
+    CHECK_EQ(pending.stats(0).businessBytes,0u);
+    CHECK_EQ(pending.stats(0).lifecycleTasks,32u);
+    std::vector<uint64_t> delivered;
+    auto accepted=[&](size_t,const Msg& m){delivered.push_back(m.head.seq);return DispatchResult::kAccepted;};
+    pending.pump(100,accepted,[](const Msg&){return true;});
+    CHECK(pending.empty());CHECK_EQ(delivered.size(),32u);
+    for(size_t n=0;n<delivered.size();++n) CHECK_EQ(delivered[n],n+1);
+    CHECK_EQ(pending.stats(0).lifecycleTasks,0u);
+}
+
 // 在同一个所属线程中运行真实的 onFrame/信封/MsgBus/sendRetTip 套接字写入，
 // 避免依赖时序的 epoll 竞态，也不人为设置总线容量。
 struct NetServerTestPeer {

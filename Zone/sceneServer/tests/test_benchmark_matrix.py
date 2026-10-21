@@ -1,9 +1,30 @@
 """可复现的四拓扑运行器契约测试。"""
 import unittest
+import pathlib
+import tempfile
+import subprocess
 import benchmark_matrix as matrix
 
 
 class MatrixTests(unittest.TestCase):
+    def test_database_bootstrap_preserves_failure_output_and_small_redo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = pathlib.Path(tmp)
+            fake = work / 'bootstrap'
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\necho bootstrap-diagnostic >&2\nexit 7\n')
+            fake.chmod(0o700)
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                matrix.initialize_database(work / 'data', work / 'bootstrap.log', str(fake))
+            self.assertEqual(caught.exception.returncode, 7)
+            log = (work / 'bootstrap.log').read_text()
+            self.assertIn('bootstrap-diagnostic', log)
+            self.assertIn('--innodb-log-file-size=16777216', log)
+
+    def test_lifecycle_profile_is_small_and_explicit(self):
+        args = matrix.lifecycle_client_args()
+        self.assertEqual(args, ['--warmup', '0', '--idle-before', '15', '--hold-after', '20',
+                                '--preparation-timeout', '30', '--stagger'])
+
     def test_approved_six_cases_and_three_gateway_distribution(self):
         selected = matrix.approved_cases()
         self.assertEqual(len(selected), 6)

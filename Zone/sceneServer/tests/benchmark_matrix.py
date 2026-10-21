@@ -147,7 +147,22 @@ def seed(context, players):
     sql(context, '\n'.join(statements))
 
 
-def run_case(build, work, case, index, capacity=False, frozen_players=None, preparation_only=False):
+def lifecycle_client_args():
+    return ['--warmup', '0', '--idle-before', '15', '--hold-after', '20',
+            '--preparation-timeout', '30', '--stagger']
+
+
+def initialize_database(datadir, logfile, executable='mariadb-install-db'):
+    with pathlib.Path(logfile).open('w') as output:
+        subprocess.run([executable, '--no-defaults', '--datadir=' + str(datadir),
+                        '--auth-root-authentication-method=normal', '--skip-test-db',
+                        '--innodb-log-file-size=16777216'],
+                       stdout=output, stderr=subprocess.STDOUT, check=True, timeout=60)
+
+
+def run_case(build, work, case, index, capacity=False, frozen_players=None, preparation_only=False, lifecycle=False):
+    if lifecycle and (case != dict(gateways=1, scenes=1, connections=128, rps=1, persistence=True, duration=30) or capacity or preparation_only):
+        raise ValueError('lifecycle profile requires the single approved 128x1 case')
     work.mkdir(parents=True, mode=0o700)
     write_json(work / 'case.json', case)
     runner = Runner(build, work)
@@ -169,11 +184,11 @@ def run_case(build, work, case, index, capacity=False, frozen_players=None, prep
             mysql, redis = unique_port(), unique_port()
             context = dict(socket=str(dbwork / 'mysql.sock'), database='matrix_test', password=password)
             if case['persistence']:
-                subprocess.run(['mariadb-install-db', '--no-defaults', '--datadir=' + str(dbwork / 'data'),
-                    '--auth-root-authentication-method=normal', '--skip-test-db'], capture_output=True, check=True, timeout=60)
+                initialize_database(dbwork / 'data', work / 'database-bootstrap.log')
                 runner.start('mariadb', ['mariadbd', '--no-defaults', '--user=' + __import__('pwd').getpwuid(os.getuid()).pw_name,
                     '--datadir=' + str(dbwork / 'data'), '--socket=' + context['socket'],
-                    '--pid-file=' + str(dbwork / 'mysql.pid'), '--port=' + str(mysql), '--bind-address=127.0.0.1'])
+                    '--pid-file=' + str(dbwork / 'mysql.pid'), '--port=' + str(mysql), '--bind-address=127.0.0.1',
+                    '--innodb-log-file-size=16777216'])
                 def ready():
                     try:
                         return sql(context, 'SELECT 1;') == '1'
@@ -229,7 +244,7 @@ def run_case(build, work, case, index, capacity=False, frozen_players=None, prep
             for scene in range(1, case['scenes'] + 1):
                 text = (ZONE / 'sceneServer/config/sceneConfig.yaml').read_text()
                 for key, value in dict(sceneId=scene*10, luaDir=ZONE / 'sceneServer/lua_script',
-                    maxFramesPerSec=limit, flushIntervalMs=1000).items():
+                    maxFramesPerSec=limit, flushIntervalMs=30000 if lifecycle else 1000).items():
                     text = replace_scalar(text, key, value)
                 text += f'\n    mapPath: {ZONE}/sceneServer/config/map.yaml\n    metricsPath: {work}/scene{scene}.metrics.json\n'
                 path = work / f'scene{scene}.yaml'; path.write_text(text)
@@ -311,6 +326,8 @@ def run_case(build, work, case, index, capacity=False, frozen_players=None, prep
                     '--output', str(work / f'load-gw{gateway}.json')]
                 if capacity:
                     args += ['--warmup','20','--preparation-timeout','120','--stagger']
+                if lifecycle:
+                    args += lifecycle_client_args()
                 for scene in range(1, case['scenes']+1):
                     args += ['--scene-metrics' if scene == 1 else '--scene-metrics-extra', str(work / f'scene{scene}.metrics.json')]
                 clients.append(runner.start(f'client{gateway}', args))
@@ -320,7 +337,7 @@ def run_case(build, work, case, index, capacity=False, frozen_players=None, prep
                 return len(list(barrier.glob('*.ready'))) == case['connections']
             until(all_ready, 120 if capacity else 60)
             warmup_start = time.monotonic() + (5 if capacity else .5)
-            start = warmup_start + (20 if capacity else 0)
+            start = warmup_start + (15 if lifecycle else (20 if capacity else 0))
             (barrier / 'START').write_text(str(int(warmup_start*1000)))
             result['loadStartMonotonicMs'] = int(start*1000)
             deadline = start + case['duration'] + 35
@@ -338,6 +355,11 @@ def run_case(build, work, case, index, capacity=False, frozen_players=None, prep
                 time.sleep(1)
             runner.sample(resources)
             result['clientExitCodes'] = [p.returncode for p in clients]
+            if lifecycle:
+                result['postLogoutStartMonotonicMs'] = int(time.monotonic()*1000)
+                for _ in range(20):
+                    runner.sample(resources)
+                    time.sleep(1)
             result['onlineSaveEvidence'] = online_evidence
             if case['persistence'] and not capacity:
                 expected = {}

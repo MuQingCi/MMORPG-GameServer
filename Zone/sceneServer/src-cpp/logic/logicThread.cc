@@ -164,6 +164,7 @@ void LogicThread::run()
     uint64_t dbProbeRound=0;
     while (started_.load(std::memory_order_acquire))
     {
+        //埋点指标操作
         metrics_->setPlayers(players_.size());
         const auto cycleStart = std::chrono::steady_clock::now();
         auto* workDiagnostic=m_bus_->diagnostics();
@@ -178,6 +179,8 @@ void LogicThread::run()
         };
         metrics_->setProgress(monotonicMs());
         metrics_->setPhase(WorkerPhase::Maintenance, monotonicMs());
+
+        //————————————————————————————————————————
         // 安全点：热更只在"没有正在处理的消息"时发生
         doReloadIfNeeded();
 
@@ -339,6 +342,8 @@ void LogicThread::run()
 
         //-----------------处理事件----------------
 
+
+        //? 为什么此处不直接break
         if (m.head.msgType == MsgType::MSGTYPE_SHUTDOWN)
         {
             requestDrain();

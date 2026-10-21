@@ -1,7 +1,5 @@
 # 2026-10-17：取消队列早停后的阶梯、边界与恢复
 
-> 同步日期：2026-10-19。本文按当前工作区维护，不代表已提交版本；`docs/*`、`LoginServer/` 和指定构建目录受根 `.gitignore` 忽略。本地证据链接不保证随仓库检出提供，历史测试不等于本轮重跑。
-
 本节为新增实验，不覆盖先前结果。仅改造压测工具，未调整业务代码、后端帧率保护或系统 MariaDB；未提交工作区。
 
 ## 执行语义
@@ -53,12 +51,6 @@
 
 工具统计中 unknown response、控制错误、logout 失败可能额外计入 completed/errors，失败档不能用 completed 当成功吞吐；报告使用 business_succeeded。客户端最多每连接一个在途，调度延迟也可能来自服务响应反压，不能仅凭延迟断定发压端饱和。同机客户端与服务竞争资源，尚未排除发压端限制。恢复观测不是成功新请求探针，不证明服务重新可用。
 
-所有路径以仓库相对目录为前缀：`Zone/build-acceptance/`。
-
-- A：`persistence-staircase-1792208311770011905/`
-- B1/B2/B3：`persistence-staircase-1792209411500757902/`、`persistence-staircase-1792209719305943366/`、`persistence-staircase-1792210026404650801/`
-- C：`persistence-staircase-1792210333936618395/`
-- 各目录均有 `summary.json`、各档 `result.json`、`boundary-report.json`，以及原始客户端/逐 worker 指标/资源/恢复日志。
 - 历史失败日志含无条件 PASS 文案；以非零退出码、JSON passed=false 和核验产物为准。本轮最终代码已将这类文案改成条件输出，原始证据不篡改。
 
 # 隔离持久化验收
@@ -68,11 +60,11 @@
 
 ```bash
 cmake -S Zone \
-  -B Zone/build-acceptance
-cmake --build Zone/build-acceptance \
+  -B out/zone
+cmake --build out/zone \
   --target sceneServer gatewayServer persistence_dao_probe -j2
 python3 Zone/sceneServer/tests/persistence_e2e.py \
-  Zone/build-acceptance
+  out/zone
 ```
 
 工具使用 `/tmp/clearmoon-persistence-e2e-*` 独立目录、回环端口、数据库
@@ -105,12 +97,12 @@ MariaDB 是当前机器上的验收后端，不应将结果当作所有 MySQL �
 ## 双 Gateway 持久化准入与负例
 
 ```bash
-cmake --build Zone/build-acceptance \
+cmake --build out/zone \
   --target sceneServer gatewayServer gateway_load_client -j4
 python3 -B Zone/sceneServer/tests/persistence_load_e2e.py \
-  Zone/build-acceptance
+  out/zone
 python3 -B Zone/sceneServer/tests/persistence_load_e2e.py \
-  --negative-save Zone/build-acceptance
+  --negative-save out/zone
 ```
 
 每次运行独立初始化临时 MariaDB/Redis，导入根目录 SQL，创建随机密码的
@@ -129,9 +121,7 @@ python3 -B Zone/sceneServer/tests/persistence_load_e2e.py \
   要求已确认移动不能错误推进数据库，Scene 10 有界退出码为 1、Scene 20 为 0，
   并出现明确的未排空日志。负例通过不代表丢失的修改可以自动恢复。
 
-脱敏证据位于
-`Zone/build-acceptance/persistence-load-*/`，
-包括客户端汇总、逐玩家 JSONL、指标、服务日志和数据库校验摘要；不复制配置、
+每次运行生成脱敏结果，包括客户端汇总、逐玩家 JSONL、指标、服务日志和数据库校验摘要；不复制配置、
 凭据、临时库数据目录。`summary.json` 区分正常/负例并记录在线推进证据。
 保存失败后的 Scene 进程现在返回非零退出码，而不是仅写错误日志后返回成功。
 
@@ -140,8 +130,6 @@ python3 -B Zone/sceneServer/tests/persistence_load_e2e.py \
 
 ### 2026-10-16 本地验证记录
 
-- 正常模式证据：`Zone/build-acceptance/persistence-load-1792158078665673931/`。
-- 保存失败负例：`Zone/build-acceptance/persistence-load-1792158008528883215/`。
 - 两次均每侧 784 次移动成功、业务/解码错误为 0，16 个角色在线版本推进，
   最终位置/物品核对、两条 Gateway/Scene 路径重登与加载负例通过。
 - 新构建下单 Gateway 持久化及默认无 DB 双 Gateway 回归均通过；后者每侧 224 次移动。
@@ -158,10 +146,10 @@ python3 -B Zone/sceneServer/tests/persistence_load_e2e.py \
 
 ```bash
 python3 -B Zone/sceneServer/tests/persistence_load_e2e.py \
-  Zone/build-acceptance \
+  out/zone \
   --connections 16 --rps 10 --duration 30 --drain 10 --queue-seconds 3
 python3 -B Zone/sceneServer/tests/persistence_staircase.py \
-  Zone/build-acceptance
+  out/zone
 ```
 
 阶梯默认每侧 8→16→32→64，固定 10 RPS、30 秒负载、10 秒排空。
@@ -180,8 +168,6 @@ RPS×时长的移动预算，避免持续向右移动越过 x=2000 边界。
 角色为密集条带分布，不代表分散玩家或生产 AOI 场景。
 持久化 flush 固定 1 秒，用于保存推进证据，也不等同于默认 30 秒的生产配置。
 
-阶梯证据位于
-`Zone/build-acceptance/persistence-staircase-*/summary.json`。
 每档输出目标配置、实际完成吞吐、p95/p99、错误及对应证据目录。
 `resources.jsonl` 从 Linux `/proc` 每秒采样子进程树的 PID、启动时间、累计 CPU tick、
 RSS 和时钟频率，可区分客户端、Gateway、Scene、MariaDB 的资源占用；不含命令行凭据。
@@ -190,7 +176,6 @@ RSS 和时钟频率，可区分客户端、Gateway、Scene、MariaDB 的资源�
 
 #### 首轮阶梯结果（2026-10-16）
 
-证据：`Zone/build-acceptance/persistence-staircase-1792158788584252003/summary.json`。
 四档两种模式全部通过，实际完成吞吐约为目标的 99.3%，错误和未完成均为 0。
 
 | 每侧连接 | 总连接 | 单模式总完成数 | 持久化最差 p99 | 无 DB 最差 p99 |
@@ -204,17 +189,12 @@ RSS 和时钟频率，可区分客户端、Gateway、Scene、MariaDB 的资源�
 41 个样本。尚未触及停止门槛，不能认定瓶颈或最大容量。持久化尾延迟随档位上升，
 下一步应在已测高档重复/延长观察，并结合 CPU、队列与 DB 指标定位，而非直接翻倍。
 
-最终接口小档回归证据：
-`Zone/build-acceptance/persistence-staircase-1792159259332595822/`。
-此前一次小档在 Gateway bind 阶段因随机端口冲突失败，证据保留于
-`Zone/build-acceptance/persistence-staircase-1792159217526471173/`；
-该次按预期第一档即停止，未升级。端口选择和 bind 之间存在竞争，当前不自动重试。
+最终接口小档回归已通过。此前一次小档在 Gateway bind 阶段因随机端口冲突失败，按预期第一档即停止，未升级。端口选择和 bind 之间存在竞争，当前不自动重试。
 
 #### 最高档重复测试：保护触发，未进入长时阶段
 
 本轮构建和预检通过（CTest 8/8、Python 18 项）。计划串行执行三次每侧 64
 连接的 30 秒对照，然后在稳定时进入 120 秒；实际第一次持久化运行即失败停止。
-证据：`Zone/build-acceptance/persistence-staircase-1792159911505107405/`。
 
 - 第 3 秒触发队列保护：两 Scene 在第 1/2/3 秒的 worker 队列合计分别为
   16/46/81 和 24/44/124，连续三个非空样本，后端就绪数为 4。
@@ -252,11 +232,11 @@ worker 入队尝试前刷新进程内时间戳，出队时记录等待桶；重�
 当前尚未覆盖 net/DB 任务队列的驻留直方图、入队失败分类计数、完整逐 task 的
 提交到完成关联、保存扫描总数及 AOI 产生消息数。不能据此宣称已完成全部观测计划。
 
-离线聚合工具：
+离线聚合工具（先将 `QUEUE_DIAGNOSTICS_FILE` 设为本次生成的队列诊断文件路径）：
 
 ```bash
 python3 -B Zone/sceneServer/tests/analyze_queue_diagnostics.py \
-  Zone/build-acceptance/persistence-load-1792161269829229975/run/scene10.metrics.json.queues.jsonl
+  "$QUEUE_DIAGNOSTICS_FILE"
 ```
 
 输出相邻 `.summary.json`，包含 100ms 窗口 min/max/avg、非空样本比例、最长连续
@@ -264,15 +244,12 @@ python3 -B Zone/sceneServer/tests/analyze_queue_diagnostics.py \
 队列深度是近似值，连续非空采样跨度不能证明样本之间队列从未清空。
 
 小档观测开销检查（每侧 8、10 秒、5 秒 drain）：
-- 关闭证据：`Zone/build-acceptance/persistence-load-1792161115013459137/`。
-- 开启证据：`Zone/build-acceptance/persistence-load-1792161169112694236/`。
 - 两次均通过，每侧 784 次移动、错误 0。两 Scene 全过程平均单核 CPU 约
   6.67%/6.86%（关）与 6.75%/6.62%（开）；最差 p99 从 3.975ms 到 6.214ms。
   单次配对且含准备/收尾，不足以证明无扰动或给出稳定开销比例。
 - 开启时最大采样间隔约 97ms，名义 10ms 不代表硬实时保证。
 
-原配置短诊断证据：
-`Zone/build-acceptance/persistence-load-1792161269829229975/`。
+原配置短诊断：
 每侧 64、10 RPS、30 秒负载、10 秒 drain，原连续三秒非空保护保持不变。
 
 | 指标（负载期） | Scene 10 | Scene 20 |
@@ -288,8 +265,7 @@ python3 -B Zone/sceneServer/tests/analyze_queue_diagnostics.py \
 - 两侧各完成 19072 次移动，共 38144；业务/传输错误为 0，各 64 个正常登出。
   客户端 p99 分别 20.403ms/18.611ms。
 - 2005ms 时全部 128 角色版本推进；最终逐角色快照匹配、背包保留，两个代表角色
-  重登成功，缺失角色和 Scene 不匹配负例通过，见该目录下
-  `run/persistence-verification.json`。最终 playerCount、worker/net 队列均为 0。
+  重登成功，缺失角色和 Scene 不匹配负例通过。最终 playerCount、worker/net 队列均为 0。
 - 全过程 worker 等待记录无缺失时间戳，事件无丢弃。网络请求平均等待约
   1.227ms/1.127ms，最大 33.721ms/21.702ms；DB 结果平均等待约
   0.162ms/0.112ms。这是结果回到 worker 后的排队，不是 DB 执行耗时。
@@ -316,10 +292,7 @@ python3 -B Zone/sceneServer/tests/analyze_queue_diagnostics.py \
 连接恢复和解码；现有事务重试执行尚未完整展开计时，不能宣称覆盖所有重试耗时。
 
 首次小档批次在第二次运行停止：业务验收通过，但加载被误分类为保存导致关联缺失。
-失败证据保留：
-`Zone/build-acceptance/phase-small-1792162674825254693/`。
-修正后重新执行关→开→开→关，每侧 8、10 秒负载、5 秒 drain：
-`Zone/build-acceptance/phase-small-1792162979806142099/`。
+修正后重新执行关→开→开→关，每侧 8、10 秒负载、5 秒 drain。
 
 | 次序 | 诊断 | 两 Scene 负载区间单核 CPU | 两客户端 p99 |
 |---|---|---|---|
@@ -356,14 +329,10 @@ python3 -B Zone/sceneServer/tests/analyze_queue_diagnostics.py \
 
 ```bash
 python3 -B Zone/sceneServer/tests/persistence_staircase.py \
-  Zone/build-acceptance \
+  out/zone \
   --stages 64 --rps 10 --duration 30 --drain 10 --queue-seconds 3
 ```
 
-证据目录：
-`Zone/build-acceptance/persistence-staircase-1792206256192878386/`。
-构建产物 SHA256 和运行边界记录于
-`Zone/build-acceptance/controlled-load-20261017-metadata.json`。
 
 | 模式 | Gateway 1/2 各完成移动数 | Gateway 1/2 实际 RPS | Gateway 1/2 p99 |
 |---|---:|---:|---:|
@@ -393,14 +362,10 @@ Python 测试 13 项及 CTest 8/8 通过。
 
 ```bash
 python3 -B Zone/sceneServer/tests/persistence_staircase.py \
-  Zone/build-acceptance \
+  out/zone \
   --stages 64,96,128 --rps 10 --duration 30 --drain 10 --queue-seconds 3
 ```
 
-证据目录：
-`Zone/build-acceptance/persistence-staircase-1792206776612037306/`。
-边界、构建产物摘要及执行决定见
-`Zone/build-acceptance/expanded-load-20261017-ledger.json`。
 
 本批次在首档总计 128 连接的持久化模式失败并返回 1；未执行该档无 DB 对照，也未启动
 192/256 连接。原保护于 4000ms 触发：后端就绪数 4、连续三次采样工作队列非零，
@@ -448,13 +413,10 @@ MariaDB 未被停止，运行前后服务及客户端二进制 SHA256 一致。
 
 结论：**提高网关阈值在本轮确实解决了 192/256 两模式原失败，但未让所有更高档通过。** 当前可用边界只可描述为 256 总连接单次控制成功、384 总连接长测退化；测试时长不同，未完成边界重复细化。无 DB 的最佳观测成功吞吐约 3834 RPS；不能把它称为已精确定位的物理极限。闭环、同机发压、密集 AOI 和日志开销均限制外推。
 
-证据目录：
-- 控制：`Zone/build-acceptance/persistence-staircase-1792211828045914812/`
-- 扩容及恢复：`Zone/build-acceptance/persistence-staircase-1792212492011814284/`
-- 各含 summary/result/boundary-report 及原始指标、资源和恢复时序。旧日志和旧报告不篡改；旧批 backendReady=0 的失败结论不受此次身份计数修正影响。
+旧批 backendReady=0 的失败结论不受此次身份计数修正影响。
 
 ## 当前状态与历史记录边界（2026-10-19）
 
 本文各阶段表格均是原批次历史结果，不代表当前配置的容量上限或当前全量回归结论。当前已接入版本化角色/背包加载、固定快照事务保存、结果回投与 ACK；正式账号归属校验、进程崩溃任务恢复和未知 COMMIT 结果自动对账仍不具备。最新活跃索引策略、客户端等待优化和 3G2S 结果见场景及网关 README。
 
-旧 build-acceptance 大日志已按清单删除，docs 中大诊断时间线部分改为 gzip，报告/摘要/配置/脚本保留；不可再宣称原始证据完整。本文提供操作方法，不自动授权运行负载、A/B 或全量回归。
+历史运行记录不完整，不能据此声称原始证据齐全。本文提供操作方法，不自动授权运行负载、A/B 或全量回归。
