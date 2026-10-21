@@ -220,6 +220,9 @@ cmake --build out/zone --target globalServer -j 2
 ## 计划清单
 
 ### 实现LoginServer
+LoginServer
+- [ ] 框架
+- [ ] 功能
 
 ### 实现区服
 SceneServer
@@ -241,8 +244,8 @@ SceneServer
     - [ ] 实现商城功能
   
 ChatServer
-    - [x] 实现最简交流
-    - [ ] 实现跨服交流与全局广播
+- [x] 实现最简交流
+- [ ] 实现跨服交流与全局广播
   
 GlobalServer
 - [x] 实现最简GlobalServer：如支持Ping、Echo
